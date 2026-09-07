@@ -392,7 +392,7 @@ impl RecordingSaver {
             .unwrap_or_else(super::recording_preferences::get_default_recordings_folder);
 
         // Create meeting folder structure (with or without .checkpoints/ subdirectory)
-        let meeting_folder = create_meeting_folder(&base_folder, meeting_name, false)?;
+        let meeting_folder = create_meeting_folder(&base_folder, meeting_name)?;
 
         // The encoders themselves are opened by the writing thread, which owns
         // them; here we only know whether there will be any.

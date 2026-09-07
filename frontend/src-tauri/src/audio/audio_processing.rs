@@ -27,17 +27,11 @@ pub fn sanitize_filename(name: &str) -> String {
 
 /// Create a meeting folder with timestamp and return the path
 /// Creates structure: base_path/MeetingName_YYYY-MM-DD_HH-MM-SS-mmm/
-///                    ├── .checkpoints/  (for incremental saves, optional)
 ///
 /// # Arguments
 /// * `base_path` - Base directory for meetings
 /// * `meeting_name` - Name of the meeting
-/// * `create_checkpoints_dir` - Whether to create .checkpoints/ subdirectory (only needed when auto_save is true)
-pub fn create_meeting_folder(
-    base_path: &PathBuf,
-    meeting_name: &str,
-    create_checkpoints_dir: bool,
-) -> Result<PathBuf> {
+pub fn create_meeting_folder(base_path: &PathBuf, meeting_name: &str) -> Result<PathBuf> {
     std::fs::create_dir_all(base_path)?;
     let timestamp = Utc::now().format("%Y-%m-%d_%H-%M-%S-%3f").to_string();
     let sanitized_name = sanitize_filename(meeting_name);
@@ -59,15 +53,7 @@ pub fn create_meeting_folder(
         .transpose()?
         .ok_or_else(|| anyhow::anyhow!("Could not create a unique meeting folder"))?;
 
-    // Only create .checkpoints subdirectory if requested (when auto_save is true)
-    if create_checkpoints_dir {
-        let checkpoints_dir = meeting_folder.join(".checkpoints");
-        std::fs::create_dir_all(&checkpoints_dir)?;
-        log::info!("Created meeting folder with checkpoints: {}", meeting_folder.display());
-    } else {
-        log::info!("Created meeting folder without checkpoints: {}", meeting_folder.display());
-    }
-
+    log::info!("Created meeting folder: {}", meeting_folder.display());
     Ok(meeting_folder)
 }
 
@@ -507,8 +493,8 @@ mod loudness_normalizer_tests {
     #[test]
     fn meeting_folders_never_reuse_an_existing_directory() {
         let root = tempfile::tempdir().unwrap();
-        let first = create_meeting_folder(&root.path().to_path_buf(), "Standup", false).unwrap();
-        let second = create_meeting_folder(&root.path().to_path_buf(), "Standup", false).unwrap();
+        let first = create_meeting_folder(&root.path().to_path_buf(), "Standup").unwrap();
+        let second = create_meeting_folder(&root.path().to_path_buf(), "Standup").unwrap();
 
         assert_ne!(first, second);
         assert!(first.is_dir());
