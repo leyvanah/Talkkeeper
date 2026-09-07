@@ -36,6 +36,11 @@ use super::constants::AUDIO_EXTENSIONS;
 /// Tauri's `convertFileSrc(path, "recording")` rather than by hand.
 pub const SCHEME: &str = "recording";
 
+/// Most that goes back in one answer. The player streams: it asks for what it
+/// is about to need, and a whole recording in one response is both a wait
+/// before the first sound and a copy of the session held in memory.
+const MAX_RANGE_BYTES: u64 = 1024 * 1024;
+
 /// The file the player should open for a meeting, if its recording is still
 /// on disk. The frontend turns this into a URL with `convertFileSrc`.
 ///
@@ -173,11 +178,23 @@ fn serve(path: &Path, range: Option<&header::HeaderValue>) -> std::io::Result<Re
     let mut file = std::fs::File::open(path)?;
     let length = file.metadata()?.len();
 
+    let asked_for_range = range.is_some();
     let asked = range
         .and_then(|value| value.to_str().ok())
         .and_then(|value| parse_range(value, length));
 
+    // A range that cannot be answered has to be refused as one. Answering it
+    // with the file from the start is how a player ends up decoding the middle
+    // of a recording as if it were the beginning.
+    if asked_for_range && asked.is_none() {
+        return Ok(unsatisfiable(length));
+    }
+
     let (start, end) = asked.unwrap_or((0, length.saturating_sub(1)));
+    // Hand back a block at a time rather than the whole recording. The player
+    // asks for `bytes=0-` and would otherwise be sent an hour of audio to hold
+    // before the first second of it plays.
+    let end = end.min(start + MAX_RANGE_BYTES - 1);
     let wanted = end.saturating_sub(start) + 1;
 
     let mut body = vec![0u8; wanted as usize];
@@ -195,13 +212,10 @@ fn serve(path: &Path, range: Option<&header::HeaderValue>) -> std::io::Result<Re
         end
     );
 
-    let builder = Response::builder()
+    let builder = base_response()
         .header(header::CONTENT_TYPE, content_type(path))
         .header(header::ACCEPT_RANGES, "bytes")
-        .header(header::CONTENT_LENGTH, body.len())
-        // Recordings are private; a copy in the webview cache would be one
-        // more place holding a session, outside anything that protects them.
-        .header(header::CACHE_CONTROL, "no-store");
+        .header(header::CONTENT_LENGTH, body.len());
 
     let response = if asked.is_some() {
         builder
@@ -255,8 +269,31 @@ fn parse_range(value: &str, length: u64) -> Option<(u64, u64)> {
     Some((start, end.min(last)))
 }
 
-fn refuse(status: StatusCode, reason: &str) -> Response<Vec<u8>> {
+/// The headers every answer carries.
+///
+/// The page and the recording are different origins (`tauri.localhost` and
+/// `recording.localhost`), so the webview needs to be told the response may be
+/// used, and that the player may read the range it was given back. Tauri's own
+/// protocols answer the same way.
+fn base_response() -> tauri::http::response::Builder {
     Response::builder()
+        .header(header::ACCESS_CONTROL_ALLOW_ORIGIN, "*")
+        .header(header::ACCESS_CONTROL_EXPOSE_HEADERS, "content-range")
+        // Recordings are private; a copy in the webview cache would be one
+        // more place holding a session, outside anything that protects them.
+        .header(header::CACHE_CONTROL, "no-store")
+}
+
+fn unsatisfiable(length: u64) -> Response<Vec<u8>> {
+    base_response()
+        .status(StatusCode::RANGE_NOT_SATISFIABLE)
+        .header(header::CONTENT_RANGE, format!("bytes */{length}"))
+        .body(Vec::new())
+        .expect("a refusal is always a valid response")
+}
+
+fn refuse(status: StatusCode, reason: &str) -> Response<Vec<u8>> {
+    base_response()
         .status(status)
         .header(header::CONTENT_TYPE, "text/plain")
         .body(reason.as_bytes().to_vec())
@@ -343,6 +380,66 @@ mod tests {
             "bytes 10-19/256"
         );
         assert_eq!(response.headers().get(header::ACCEPT_RANGES).unwrap(), "bytes");
+    }
+
+    #[test]
+    fn a_player_is_given_a_block_at_a_time_not_the_whole_recording() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("audio.mp4");
+        let long = vec![7u8; (MAX_RANGE_BYTES * 2) as usize];
+        std::fs::write(&path, &long).unwrap();
+
+        // What a player opens with: everything from the start.
+        let range = header::HeaderValue::from_static("bytes=0-");
+        let response = serve(&path, Some(&range)).unwrap();
+
+        assert_eq!(response.status(), StatusCode::PARTIAL_CONTENT);
+        assert_eq!(response.body().len() as u64, MAX_RANGE_BYTES);
+        // The total is still declared, so the player knows what it is playing
+        // and can ask for the rest.
+        assert_eq!(
+            response.headers().get(header::CONTENT_RANGE).unwrap(),
+            format!("bytes 0-{}/{}", MAX_RANGE_BYTES - 1, long.len()).as_str()
+        );
+    }
+
+    #[test]
+    fn a_range_beyond_the_recording_is_refused_as_one() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("audio.mp4");
+        std::fs::write(&path, b"short").unwrap();
+
+        let range = header::HeaderValue::from_static("bytes=500-600");
+        let response = serve(&path, Some(&range)).unwrap();
+
+        // Answering with the start of the file instead would have the player
+        // decode the beginning as if it were the part it asked for.
+        assert_eq!(response.status(), StatusCode::RANGE_NOT_SATISFIABLE);
+        assert_eq!(response.headers().get(header::CONTENT_RANGE).unwrap(), "bytes */5");
+        assert!(response.body().is_empty());
+    }
+
+    #[test]
+    fn every_answer_may_be_used_by_the_page_that_asked() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("audio.mp4");
+        std::fs::write(&path, b"a recording").unwrap();
+
+        // The page and the recording are different origins, so without this
+        // the webview drops the response and the player has nothing to decode.
+        for response in [
+            serve(&path, None).unwrap(),
+            refuse(StatusCode::FORBIDDEN, "no"),
+            unsatisfiable(11),
+        ] {
+            assert_eq!(
+                response
+                    .headers()
+                    .get(header::ACCESS_CONTROL_ALLOW_ORIGIN)
+                    .unwrap(),
+                "*"
+            );
+        }
     }
 
     #[test]

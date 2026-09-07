@@ -174,8 +174,14 @@ export const RecordingPlayer = forwardRef<RecordingPlayerHandle, RecordingPlayer
           </span>
         </div>
 
-        {/* The reason is technical and English; the reader gets the fact. */}
-        {error && <p className="mt-1 text-xs text-red-400">{t('playerError')}</p>}
+        {/* The reason is technical and English, so it lives in the tooltip;
+            the reader gets the fact, and whoever is asked to look gets the
+            reason without opening a console. */}
+        {error && (
+          <p className="mt-1 text-xs text-red-400" title={error}>
+            {t('playerError')}
+          </p>
+        )}
       </div>
     );
   },
