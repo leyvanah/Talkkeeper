@@ -151,22 +151,39 @@ export function PostCallProcessingDialog({
     setMessage(job.message);
   }, [job, meetingId]);
 
+  // Whether the answer below is the stored one rather than the initial guess.
+  // The workflow may not start on a guess: with one conversation partner it
+  // asks nothing, and asking nothing is only right if the setting says so.
+  const [preferencesRead, setPreferencesRead] = useState(false);
+
   useEffect(() => {
     invoke<{ single_remote_speaker?: boolean }>('get_recording_preferences')
       .then((prefs) => setSingleRemoteSpeaker(prefs.single_remote_speaker !== false))
-      .catch((error) => console.error('Failed to read recording preferences:', error));
+      .catch((error) => console.error('Failed to read recording preferences:', error))
+      .finally(() => setPreferencesRead(true));
   }, []);
 
   useEffect(() => {
-    if (!enabled || !meetingId || initializedMeetingRef.current === meetingId) return;
+    if (!enabled || !meetingId || !preferencesRead) return;
+    if (initializedMeetingRef.current === meetingId) return;
     initializedMeetingRef.current = meetingId;
     const terminalState = sessionStorage.getItem(storageKey);
     if (terminalState === 'completed') {
       onComplete();
       return;
     }
+    // One to one: the two capture channels already say who is who, so the
+    // count is known and speaker identification is skipped anyway. Asking
+    // would only hold the work behind a question with one possible answer.
+    if (singleRemoteSpeaker) {
+      void start();
+      return;
+    }
     setStage('prompt');
-  }, [enabled, meetingId, onComplete, storageKey]);
+    // `start` reads the speaker count from state, which at this point is still
+    // the default two - the answer this branch already assumes.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [enabled, meetingId, onComplete, storageKey, preferencesRead, singleRemoteSpeaker]);
 
   const completeWorkflow = () => {
     sessionStorage.setItem(storageKey, 'completed');
