@@ -2,7 +2,7 @@
 
 use crate::audio::decoder::decode_audio_file;
 use crate::audio::vad::get_speech_chunks_with_thresholds_and_progress;
-use super::common::{create_transcript_segments, split_segment_at_silence, write_transcripts_json};
+use super::common::{create_transcript_segments, split_segment_at_silence};
 use super::constants::AUDIO_EXTENSIONS;
 use super::working_track::find_working_track;
 use crate::config::{DEFAULT_WHISPER_MODEL, DEFAULT_PARAKEET_MODEL};
@@ -657,12 +657,9 @@ async fn run_retranscription<R: Runtime>(
         meeting_id
     );
 
-    // Write updated transcripts.json and metadata.json to the meeting folder
-    emit_progress(&app, &meeting_id, "saving", 90, "Writing transcript files...");
-
-    if let Err(e) = write_transcripts_json(&folder_path, &segments) {
-        warn!("Failed to write transcripts.json: {}", e);
-    }
+    // The transcript has just replaced the rows in the database; nothing beside
+    // the audio needs a second copy of it.
+    emit_progress(&app, &meeting_id, "saving", 90, "Writing meeting details...");
 
     // Find audio filename for metadata
     let audio_filename = audio_path
@@ -953,7 +950,6 @@ fn write_retranscription_metadata(
         if let Some(obj) = value.as_object_mut() {
             obj.insert("retranscribed_at".to_string(), serde_json::json!(now));
             obj.insert("status".to_string(), serde_json::json!("completed"));
-            obj.insert("transcript_file".to_string(), serde_json::json!("transcripts.json"));
             obj.remove("detected_summary_language");
         }
         value
@@ -966,7 +962,6 @@ fn write_retranscription_metadata(
             "retranscribed_at": now,
             "duration_seconds": duration_seconds,
             "audio_file": audio_filename,
-            "transcript_file": "transcripts.json",
             "status": "completed",
             "source": "retranscription"
         })

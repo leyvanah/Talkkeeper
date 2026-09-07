@@ -198,8 +198,9 @@ export function useTranscriptRecovery(): UseTranscriptRecoveryReturn {
         });
       }
 
-      // 7. Mark as saved in IndexedDB
-      await indexedDBService.markMeetingSaved(meetingId);
+      // 7. The recording is in the database now; the browser copy that carried
+      //    it through the crash has nothing left to do.
+      await indexedDBService.deleteMeeting(meetingId);
 
 
       // 8. Clean up checkpoint files

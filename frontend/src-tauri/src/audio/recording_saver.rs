@@ -45,7 +45,6 @@ pub struct MeetingMetadata {
     /// Dedicated system/remote track for remote-speaker clustering.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub system_audio_file: Option<String>,
-    pub transcript_file: String,
     pub sample_rate: u32,
     pub status: String,  // "recording", "completed", "error"
 }
@@ -247,17 +246,15 @@ impl RecordingSaver {
         }
     }
 
-    /// Add or update a structured transcript segment (upserts based on sequence_id)
-    /// Also saves incrementally to disk
+    /// Add or update a structured transcript segment (upserts based on sequence_id).
+    ///
+    /// The transcript is held here for the duration of the recording and saved
+    /// to the database at the end. It used to be written to a file beside the
+    /// audio as well, once per segment — a second copy of the session in plain
+    /// text that nothing ever read back, rewritten in full a thousand times
+    /// over an hour. What that file was for is now the export button.
     pub fn add_transcript_segment(&self, segment: TranscriptSegment) {
         Self::upsert_transcript_segment(&self.transcript_segments, segment);
-
-        // NEW: Save incrementally to disk
-        if let Some(folder) = &self.meeting_folder {
-            if let Err(e) = self.write_transcripts_json(folder) {
-                warn!("Failed to write incremental transcript update: {}", e);
-            }
-        }
     }
 
     pub(crate) fn transcript_segments_handle(&self) -> Arc<Mutex<Vec<TranscriptSegment>>> {
@@ -418,7 +415,6 @@ impl RecordingSaver {
             audio_file: if create_checkpoints { "audio.mp4".to_string() } else { "".to_string() },
             mic_audio_file: create_checkpoints.then(|| "mic.mp4".to_string()),
             system_audio_file: create_checkpoints.then(|| "system.mp4".to_string()),
-            transcript_file: "transcripts.json".to_string(),
             sample_rate: 48000,
             status: "recording".to_string(),
         };
@@ -444,61 +440,6 @@ impl RecordingSaver {
         Ok(())
     }
 
-    /// Write transcripts.json to disk (atomic write with temp file and validation)
-    fn write_transcripts_json(&self, folder: &PathBuf) -> Result<()> {
-        // Clone segments to avoid holding lock during I/O
-        let segments_clone = if let Ok(segments) = self.transcript_segments.lock() {
-            segments.clone()
-        } else {
-            error!("Failed to lock transcript segments for writing");
-            return Err(anyhow::anyhow!("Failed to lock transcript segments"));
-        };
-
-        info!("Writing {} transcript segments to JSON", segments_clone.len());
-
-        let transcript_path = folder.join("transcripts.json");
-        let temp_path = folder.join(".transcripts.json.tmp");
-
-        // Create JSON structure
-        let json = serde_json::json!({
-            "version": "1.0",
-            "segments": segments_clone,
-            "last_updated": chrono::Utc::now().to_rfc3339(),
-            "total_segments": segments_clone.len()
-        });
-
-        // Serialize to pretty JSON string
-        let json_string = serde_json::to_string_pretty(&json)
-            .map_err(|e| {
-                error!("Failed to serialize transcripts to JSON: {}", e);
-                anyhow::anyhow!("JSON serialization failed: {}", e)
-            })?;
-
-        // Write to temp file with error handling
-        std::fs::write(&temp_path, &json_string)
-            .map_err(|e| {
-                error!("Failed to write transcript temp file to {}: {}", temp_path.display(), e);
-                anyhow::anyhow!("Failed to write temp file: {}", e)
-            })?;
-
-        // Verify temp file was written correctly
-        if !temp_path.exists() {
-            error!("Temp transcript file does not exist after write: {}", temp_path.display());
-            return Err(anyhow::anyhow!("Temp file verification failed"));
-        }
-
-        // Atomic rename
-        std::fs::rename(&temp_path, &transcript_path)
-            .map_err(|e| {
-                error!("Failed to rename transcript file from {} to {}: {}",
-                       temp_path.display(), transcript_path.display(), e);
-                anyhow::anyhow!("Failed to rename transcript file: {}", e)
-            })?;
-
-        info!("✅ Successfully wrote transcripts.json with {} segments", segments_clone.len());
-        Ok(())
-    }
-
     /// Close the tracks and write the meeting out.
     ///
     /// # Arguments
@@ -518,12 +459,7 @@ impl RecordingSaver {
         let should_save_audio = self.saving_audio;
 
         if !should_save_audio {
-            info!("⚠️  No audio saver initialized (auto-save was disabled) - skipping audio finalization");
-            if let Some(folder) = &self.meeting_folder {
-                self.write_transcripts_json(folder)
-                    .map_err(|e| format!("Failed to save final transcripts: {e}"))?;
-            }
-            info!("✅ Final transcripts saved");
+            info!("⚠️  Audio was not being saved (auto-save disabled) - nothing to finalize");
             return Ok(None);
         }
 
@@ -539,22 +475,6 @@ impl RecordingSaver {
         let final_audio_path = finished.mixed?;
         let mic_audio_path = finished.mic;
         let system_audio_path = finished.system;
-
-        // Save final transcripts.json with validation
-        if let Some(folder) = &self.meeting_folder {
-            if let Err(e) = self.write_transcripts_json(folder) {
-                error!("❌ Failed to write final transcripts: {}", e);
-                return Err(format!("Failed to save transcripts: {}", e));
-            }
-
-            // Verify transcripts were written correctly
-            let transcript_path = folder.join("transcripts.json");
-            if !transcript_path.exists() {
-                error!("❌ Transcript file was not created at: {}", transcript_path.display());
-                return Err("Transcript file verification failed".to_string());
-            }
-            info!("✅ Transcripts saved and verified at: {}", transcript_path.display());
-        }
 
         // Update metadata to completed status with actual recording duration
         if let (Some(folder), Some(mut metadata)) = (&self.meeting_folder, self.metadata.clone()) {
@@ -585,11 +505,9 @@ impl RecordingSaver {
             info!("✅ Metadata updated with duration: {:?}s", metadata.duration_seconds);
         }
 
-        // Emit save event with audio and transcript paths
+        // Emit save event with where the recording ended up
         let save_event = serde_json::json!({
             "audio_file": final_audio_path.to_string_lossy(),
-            "transcript_file": self.meeting_folder.as_ref()
-                .map(|f| f.join("transcripts.json").to_string_lossy().to_string()),
             "meeting_name": self.meeting_name,
             "meeting_folder": self.meeting_folder.as_ref()
                 .map(|f| f.to_string_lossy().to_string())
