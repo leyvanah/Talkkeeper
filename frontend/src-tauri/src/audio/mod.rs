@@ -6,6 +6,7 @@ pub mod echo_filter;
 pub mod encode;
 pub mod ffmpeg;
 pub mod vad;
+pub mod working_track;
 
 // Modularized device management
 pub mod devices;
@@ -114,6 +115,9 @@ pub use diagnostics::{
 pub use ffmpeg_mixer::{FFmpegAudioMixer, BufferStats, RNNOISE_APPLY_ENABLED};
 
 pub use vad::{extract_speech_16k};
+
+// The 16 kHz working track written alongside the recording
+pub use working_track::{find_working_track, WorkingTrack, WORKING_SAMPLE_RATE};
 
 // Export decoder for retranscription
 pub use decoder::{decode_audio_file, DecodedAudio};
