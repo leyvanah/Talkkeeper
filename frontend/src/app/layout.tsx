@@ -26,7 +26,6 @@ import { DownloadProgressToastProvider } from '@/components/shared/DownloadProgr
 import { UpdateCheckProvider } from '@/components/UpdateCheckProvider'
 import { RecordingPostProcessingProvider } from '@/contexts/RecordingPostProcessingProvider'
 import { RetranscriptionProvider } from '@/contexts/RetranscriptionContext'
-import { RetranscriptionIndicator } from '@/components/shared/RetranscriptionIndicator'
 import { ImportAudioDialog, ImportDropOverlay } from '@/components/ImportAudio'
 import { ImportDialogProvider } from '@/contexts/ImportDialogContext'
 import { isAudioExtension, getAudioFormatsDisplayList } from '@/constants/audioFormats'
@@ -392,15 +391,9 @@ export default function RootLayout({
                                 {showOnboarding ? (
                                   <OnboardingFlow onComplete={handleOnboardingComplete} />
                                 ) : (
-                                  <div className="flex h-screen min-h-0 flex-col overflow-hidden">
-                                    <div className="flex min-h-0 min-w-0 flex-1 overflow-hidden">
-                                      <Sidebar />
-                                      <MainContent>{children}</MainContent>
-                                    </div>
-                                    {/* Background work reports here, in the
-                                        layout rather than over it, so it never
-                                        covers what it is reporting about. */}
-                                    <RetranscriptionIndicator />
+                                  <div className="flex min-h-0 min-w-0 h-screen overflow-hidden">
+                                    <Sidebar />
+                                    <MainContent>{children}</MainContent>
                                   </div>
                                 )}
                                 {/* Import audio overlay and dialog */}

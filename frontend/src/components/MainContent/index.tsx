@@ -2,6 +2,7 @@
 
 import React from 'react';
 import { useSidebar } from '@/components/Sidebar/SidebarProvider';
+import { RetranscriptionIndicator } from '@/components/shared/RetranscriptionIndicator';
 
 interface MainContentProps {
   children: React.ReactNode;
@@ -15,13 +16,17 @@ const MainContent: React.FC<MainContentProps> = ({ children }) => {
     // shrink below their content, which clipped Settings (and other pages)
     // when the window was narrower than sidebar + content.
     <main
-      className={`flex-1 min-w-0 min-h-0 h-screen overflow-hidden transition-all duration-300 ${
+      className={`flex flex-1 min-w-0 min-h-0 h-screen flex-col overflow-hidden transition-all duration-300 ${
         isCollapsed ? 'ml-16' : 'ml-64'
       }`}
     >
-      <div className="h-full min-w-0 min-h-0 overflow-hidden pl-4 sm:pl-6 lg:pl-8">
+      <div className="min-w-0 min-h-0 flex-1 overflow-hidden pl-4 sm:pl-6 lg:pl-8">
         {children}
       </div>
+      {/* Background work reports here rather than over the page. It belongs to
+          this column and not to the window, because the sidebar is fixed and
+          full-height: a strip across the window would run underneath it. */}
+      <RetranscriptionIndicator />
     </main>
   );
 };
