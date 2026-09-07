@@ -599,32 +599,13 @@ fn find_meeting_audio(folder_path: Option<String>, meeting_title: Option<&str>) 
         }
     }
 
-    // 2. The configured recordings folder, matched by meeting title.
-    let recordings_root = crate::audio::recording_preferences::get_default_recordings_folder();
-    if recordings_root.is_dir() {
-        if let Some(title) = meeting_title {
-            // Folder names are sanitized versions of the meeting title, and get a
-            // timestamp suffix, so match on prefix rather than equality.
-            let needle = title.to_lowercase();
-            for entry in std::fs::read_dir(&recordings_root).ok()?.flatten() {
-                let dir = entry.path();
-                if !dir.is_dir() {
-                    continue;
-                }
-                let name = dir
-                    .file_name()
-                    .map(|n| n.to_string_lossy().to_lowercase())
-                    .unwrap_or_default();
-                if name.starts_with(&needle) || needle.starts_with(name.as_str()) {
-                    if let Some(found) = newest_audio_in(&dir) {
-                        return Some(found);
-                    }
-                }
-            }
-        }
-    }
+    // A meeting used to be findable by its title, because the folder was named
+    // after it. Folders are named by an opaque identifier now — deliberately,
+    // so that a name on disk cannot say who was recorded — and the meeting's
+    // own `folder_path` above is the only way back to its audio.
+    let _ = meeting_title;
 
-    // 3. Install-local data root (where tray/UI stop-recording saves land).
+    // 2. Install-local data root (where tray/UI stop-recording saves land).
     newest_audio_in(&crate::paths::install_data_root())
 }
 
