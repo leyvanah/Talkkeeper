@@ -19,9 +19,9 @@ import {
   SelectValue,
 } from '../ui/select';
 import { invoke } from '@tauri-apps/api/core';
-import { listen, UnlistenFn } from '@tauri-apps/api/event';
 import { toast } from 'sonner';
 import { useConfig } from '@/contexts/ConfigContext';
+import { useRetranscription, ENHANCEMENT_STALLED } from '@/contexts/RetranscriptionContext';
 import { useRouter } from 'next/navigation';
 import { LANGUAGES } from '@/constants/languages';
 import { useTranscriptionModels, ModelOption } from '@/hooks/useTranscriptionModels';
@@ -33,25 +33,6 @@ interface RetranscribeDialogProps {
   meetingId: string;
   meetingFolderPath: string | null;
   onComplete?: () => void;
-}
-
-interface RetranscriptionProgress {
-  meeting_id: string;
-  stage: string;
-  progress_percentage: number;
-  message: string;
-}
-
-interface RetranscriptionResult {
-  meeting_id: string;
-  segments_count: number;
-  duration_seconds: number;
-  language: string | null;
-}
-
-interface RetranscriptionError {
-  meeting_id: string;
-  error: string;
 }
 
 interface WhisperVocabularyConfig {
@@ -75,15 +56,18 @@ export function RetranscribeDialog({
   const tc = useTranslations('common');
   const router = useRouter();
   const { selectedLanguage, transcriptModelConfig } = useConfig();
-  const [isProcessing, setIsProcessing] = useState(false);
-  const [progress, setProgress] = useState<RetranscriptionProgress | null>(null);
+  const { job, start: startRetranscription, cancel: cancelRetranscription, registerJobView } =
+    useRetranscription();
+  // The job is the application's, not this dialog's: it keeps running while the
+  // dialog is closed, and the dialog only shows it while it happens to be open.
+  const isProcessing = job?.meetingId === meetingId;
+  const progress = isProcessing ? job : null;
   const [error, setError] = useState<string | null>(null);
   const [selectedLang, setSelectedLang] = useState(selectedLanguage || 'auto');
   const [vocabularyTerms, setVocabularyTerms] = useState('');
   const [vocabularyScope, setVocabularyScope] = useState<'meeting' | 'global'>('meeting');
   const [savedMeetingVocabulary, setSavedMeetingVocabulary] = useState('');
   const [isClearingMeetingVocabulary, setIsClearingMeetingVocabulary] = useState(false);
-  const [listenersReady, setListenersReady] = useState(false);
 
   // Use centralized model fetching hook
   const {
@@ -138,8 +122,6 @@ export function RetranscribeDialog({
 
     if (open && !wasOpen) {
       resetSelection();
-      setIsProcessing(false);
-      setProgress(null);
       setError(null);
       setSelectedLang(selectedLanguage || 'auto');
       setVocabularyTerms('');
@@ -162,105 +144,20 @@ export function RetranscribeDialog({
     }
   }, [open, selectedLanguage, transcriptModelConfig, fetchModels, meetingId]);
 
-  // Listen for retranscription events
+  // While this dialog is on screen it shows the job itself, so the ambient
+  // indicator stands down; when it closes, the indicator takes over.
   useEffect(() => {
-    if (!open) {
-      setListenersReady(false);
-      return;
-    }
-
-    setListenersReady(false);
-    const unlisteners: UnlistenFn[] = [];
-    const cleanedUpRef = { current: false };
-
-    const setupListeners = async () => {
-      // Progress events
-      const unlistenProgress = await listen<RetranscriptionProgress>(
-        'retranscription-progress',
-        (event) => {
-          if (event.payload.meeting_id === meetingId) {
-            setProgress(event.payload);
-          }
-        }
-      );
-      if (cleanedUpRef.current) {
-        unlistenProgress();
-        return;
-      }
-      unlisteners.push(unlistenProgress);
-
-      // Completion event
-      const unlistenComplete = await listen<RetranscriptionResult>(
-        'retranscription-complete',
-        async (event) => {
-          if (event.payload.meeting_id === meetingId) {
-            await Analytics.track('enhance_transcript_completed', {
-              success: 'true',
-              duration_seconds: event.payload.duration_seconds.toString(),
-              segments_count: event.payload.segments_count.toString()
-            });
-
-            setIsProcessing(false);
-            toast.success(t('retranscribeComplete', { count: event.payload.segments_count }));
-            onCompleteRef.current?.();
-            onOpenChangeRef.current(false);
-          }
-        }
-      );
-      if (cleanedUpRef.current) {
-        unlistenComplete();
-        unlisteners.forEach(u => u());
-        return;
-      }
-      unlisteners.push(unlistenComplete);
-
-      // Error event
-      const unlistenError = await listen<RetranscriptionError>(
-        'retranscription-error',
-        async (event) => {
-          if (event.payload.meeting_id === meetingId) {
-            await Analytics.trackError('enhance_transcript_failed', event.payload.error);
-
-            setIsProcessing(false);
-            setError(event.payload.error);
-          }
-        }
-      );
-      if (cleanedUpRef.current) {
-        unlistenError();
-        unlisteners.forEach(u => u());
-        return;
-      }
-      unlisteners.push(unlistenError);
-      setListenersReady(true);
-    };
-
-    void setupListeners().catch((listenerError) => {
-      if (!cleanedUpRef.current) {
-        setError(t('retranscribeEventsFailed', { error: String(listenerError) }));
-      }
-    });
-
-    return () => {
-      cleanedUpRef.current = true;
-      setListenersReady(false);
-      unlisteners.forEach((unlisten) => unlisten());
-    };
-  }, [open, meetingId]);
+    if (!open || !isProcessing) return;
+    return registerJobView();
+  }, [open, isProcessing, registerJobView]);
 
   const handleStartRetranscription = async () => {
-    if (!listenersReady) {
-      setError(t('retranscribeInitializing'));
-      return;
-    }
     if (!meetingFolderPath) {
       setError(t('retranscribeNoFolder'));
       return;
     }
 
-    setIsProcessing(true);
     setError(null);
-    setProgress(null);
 
     try {
       const languageToSend = isParakeetModel ? null : selectedLang === 'auto' ? null : selectedLang;
@@ -271,7 +168,8 @@ export function RetranscribeDialog({
         vocabulary_scope: vocabularyTerms.trim() ? vocabularyScope : 'unchanged'
       });
 
-      await invoke('start_retranscription_command', {
+      // Settles when the job does, wherever the owner happens to be by then.
+      const result = await startRetranscription({
         meetingId,
         meetingFolderPath,
         language: languageToSend,
@@ -280,9 +178,19 @@ export function RetranscribeDialog({
         vocabularyTerms: isParakeetModel ? null : vocabularyTerms.trim() || null,
         vocabularyScope: isParakeetModel ? null : vocabularyScope,
       });
+
+      await Analytics.track('enhance_transcript_completed', {
+        success: 'true',
+        duration_seconds: result.duration_seconds.toString(),
+        segments_count: result.segments_count.toString(),
+      });
+      toast.success(t('retranscribeComplete', { count: result.segments_count }));
+      onCompleteRef.current?.();
+      onOpenChangeRef.current(false);
     } catch (err: any) {
-      setIsProcessing(false);
-      const errorMsg = typeof err === 'string' ? err : (err?.message || String(err));
+      const errorMsg = err?.message === ENHANCEMENT_STALLED
+        ? t('retranscribeStalled')
+        : (typeof err === 'string' ? err : (err?.message || String(err)));
       setError(errorMsg);
 
       await Analytics.trackError('enhance_transcript_failed', errorMsg);
@@ -291,14 +199,8 @@ export function RetranscribeDialog({
 
   const handleCancel = async () => {
     if (isProcessing) {
-      try {
-        await invoke('cancel_retranscription_command');
-        setIsProcessing(false);
-        setProgress(null);
-        toast.info(t('retranscribeCancelled'));
-      } catch (err) {
-        console.error('Failed to cancel retranscription:', err);
-      }
+      await cancelRetranscription();
+      toast.info(t('retranscribeCancelled'));
     }
     onOpenChange(false);
   };
@@ -319,32 +221,17 @@ export function RetranscribeDialog({
     }
   };
 
-  // Prevent closing during processing
+  // Closing puts the work out of sight, never stops it: the job belongs to the
+  // application and keeps its progress in the ambient indicator. Only Cancel
+  // stops it, because only Cancel says so.
   const handleOpenChange = (newOpen: boolean) => {
-    if (!newOpen && isProcessing) {
-      return;
-    }
     onOpenChange(newOpen);
-  };
-
-  const handleEscapeKeyDown = (event: KeyboardEvent) => {
-    if (isProcessing) {
-      event.preventDefault();
-    }
-  };
-
-  const handleInteractOutside = (event: Event) => {
-    if (isProcessing) {
-      event.preventDefault();
-    }
   };
 
   return (
     <Dialog open={open} onOpenChange={handleOpenChange}>
       <DialogContent
         className="max-h-[85vh] overflow-y-auto sm:max-w-[500px]"
-        onEscapeKeyDown={handleEscapeKeyDown}
-        onInteractOutside={handleInteractOutside}
       >
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2">
@@ -547,12 +434,12 @@ export function RetranscribeDialog({
                 <div className="w-full bg-gray-200 rounded-full h-3">
                   <div
                     className="bg-blue-600 h-3 rounded-full transition-all duration-300 ease-out"
-                    style={{ width: `${Math.min(progress.progress_percentage, 100)}%` }}
+                    style={{ width: `${Math.min(progress.progress, 100)}%` }}
                   />
                 </div>
                 <div className="flex justify-between text-xs text-gray-600 mt-1">
                   <span>{progress.stage}</span>
-                  <span>{Math.round(progress.progress_percentage)}%</span>
+                  <span>{Math.round(progress.progress)}%</span>
                 </div>
               </div>
               <p className="text-sm text-muted-foreground text-center">
@@ -577,7 +464,7 @@ export function RetranscribeDialog({
               <Button
                 onClick={handleStartRetranscription}
                 className="bg-blue-600 hover:bg-blue-700"
-                disabled={!meetingFolderPath || !listenersReady || isClearingMeetingVocabulary || loadingModels || !selectedModelDetails}
+                disabled={!meetingFolderPath || isClearingMeetingVocabulary || loadingModels || !selectedModelDetails}
               >
                 <RefreshCw className="h-4 w-4 mr-2" />
                 {t('retranscribeStart')}
@@ -598,7 +485,6 @@ export function RetranscribeDialog({
               <Button
                 onClick={() => {
                   setError(null);
-                  setProgress(null);
                 }}
                 variant="outline"
               >

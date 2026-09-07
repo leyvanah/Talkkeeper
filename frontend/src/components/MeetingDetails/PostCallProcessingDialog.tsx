@@ -17,10 +17,10 @@
 import { useEffect, useRef, useState } from 'react';
 import { useTranslations } from 'next-intl';
 import { invoke } from '@tauri-apps/api/core';
-import { listen, UnlistenFn } from '@tauri-apps/api/event';
 import { Loader2, Sparkles, Users } from 'lucide-react';
 import { toast } from 'sonner';
 import { useConfig } from '@/contexts/ConfigContext';
+import { useRetranscription, ENHANCEMENT_STALLED } from '@/contexts/RetranscriptionContext';
 import { Button } from '@/components/ui/button';
 import {
   Dialog,
@@ -35,27 +35,11 @@ import { isVisibleParakeetModel } from '@/lib/parakeet';
 import { externalSttLabel, type ExternalSttConfig } from '@/components/ExternalSttSettings';
 import { GIGAAM_MODEL_NAME, type GigaamModelStatus } from '@/components/GigaamModelManager';
 
-/// Marks the one failure the dialog raises itself, so it can be shown in the
-/// reader's language instead of the English text a thrown Error carries.
-const ENHANCEMENT_STALLED = 'enhancement-stalled';
-
 type Stage = 'idle' | 'prompt' | 'enhancing' | 'diarizing' | 'refreshing' | 'error';
 type FailedStage = 'enhancing' | 'diarizing' | 'pre-diarization-refresh' | 'post-diarization-refresh';
 
-interface RetranscriptionProgress {
-  meeting_id: string;
-  progress_percentage: number;
-  message: string;
-}
 
-interface RetranscriptionResult {
-  meeting_id: string;
-}
 
-interface RetranscriptionError {
-  meeting_id: string;
-  error: string;
-}
 
 interface ModelChoice {
   provider: 'whisper' | 'parakeet' | 'gigaam' | 'externalStt';
@@ -122,109 +106,6 @@ async function resolveEnhancementModel(
   throw new Error('No downloaded transcription model is available for post-call enhancement.');
 }
 
-async function runRetranscription({
-  meetingId,
-  meetingFolderPath,
-  language,
-  model,
-  onProgress,
-}: {
-  meetingId: string;
-  meetingFolderPath: string;
-  language: string | null;
-  model: ModelChoice;
-  onProgress: (progress: RetranscriptionProgress) => void;
-}): Promise<void> {
-  const unlisteners: UnlistenFn[] = [];
-  let settled = false;
-  let timedOut = false;
-  let resolveCompletion!: () => void;
-  let rejectCompletion!: (error: unknown) => void;
-  let stallTimerId: ReturnType<typeof setTimeout> | undefined;
-  const completion = new Promise<void>((resolve, reject) => {
-    resolveCompletion = resolve;
-    rejectCompletion = reject;
-  });
-  const cleanup = () => {
-    if (stallTimerId) clearTimeout(stallTimerId);
-    unlisteners.splice(0).forEach((unlisten) => unlisten());
-  };
-  // How the work is judged: not by how long it takes, but by whether it is
-  // still moving. An hour of recording is two hours of audio to re-transcribe
-  // - both source tracks - so any fixed budget large enough for a long session
-  // is useless as a stall detector, and any budget small enough to detect a
-  // stall cancels honest work. The backend reports progress through decoding,
-  // resampling, voice detection and every transcribed segment, so the longest
-  // legitimate silence is about a minute; five is a stall.
-  const STALL_TIMEOUT_MS = 5 * 60 * 1000;
-  const armStallTimer = () => {
-    if (settled) return;
-    if (stallTimerId) clearTimeout(stallTimerId);
-    stallTimerId = setTimeout(() => {
-      timedOut = true;
-      void (async () => {
-        await invoke('cancel_retranscription_command').catch(() => undefined);
-        for (let attempt = 0; attempt < 60; attempt++) {
-          const active = await invoke<boolean>('is_retranscription_in_progress_command')
-            .catch(() => false);
-          if (!active) break;
-          await new Promise((resolve) => setTimeout(resolve, 500));
-        }
-        finish(new Error(ENHANCEMENT_STALLED));
-      })();
-    }, STALL_TIMEOUT_MS);
-  };
-  const finish = (error?: unknown) => {
-    if (settled) return;
-    settled = true;
-    cleanup();
-    if (error) rejectCompletion(error);
-    else resolveCompletion();
-  };
-
-  try {
-    unlisteners.push(await listen<RetranscriptionProgress>(
-      'retranscription-progress',
-      (event) => {
-        if (event.payload.meeting_id !== meetingId) return;
-        armStallTimer();
-        onProgress(event.payload);
-      },
-    ));
-    unlisteners.push(await listen<RetranscriptionResult>(
-      'retranscription-complete',
-      (event) => {
-        if (!timedOut && event.payload.meeting_id === meetingId) finish();
-      },
-    ));
-    unlisteners.push(await listen<RetranscriptionError>(
-      'retranscription-error',
-      (event) => {
-        if (!timedOut && event.payload.meeting_id === meetingId) {
-          finish(new Error(event.payload.error));
-        }
-      },
-    ));
-
-    try {
-      await invoke('start_retranscription_command', {
-        meetingId,
-        meetingFolderPath,
-        language,
-        model: model.name,
-        provider: model.provider,
-        vocabularyTerms: null,
-        vocabularyScope: null,
-      });
-    } catch (error) {
-      finish(error);
-    }
-    armStallTimer();
-    await completion;
-  } finally {
-    cleanup();
-  }
-}
 
 export function PostCallProcessingDialog({
   enabled,
@@ -246,6 +127,7 @@ export function PostCallProcessingDialog({
     return message === ENHANCEMENT_STALLED ? t('postCallTimedOut') : message;
   };
   const { selectedLanguage, transcriptModelConfig } = useConfig();
+  const { job, start: startRetranscription, registerJobView } = useRetranscription();
   const [stage, setStage] = useState<Stage>('idle');
   const [speakerCount, setSpeakerCount] = useState('2');
   const [autoDetectSpeakers, setAutoDetectSpeakers] = useState(false);
@@ -260,6 +142,14 @@ export function PostCallProcessingDialog({
   const skippedEnhancementRef = useRef(false);
 
   const storageKey = `post-call-processing:${meetingId}`;
+
+  // The card below covers the whole workflow, retranscription included, so it
+  // mirrors the shared job while that stage runs rather than listening itself.
+  useEffect(() => {
+    if (job?.meetingId !== meetingId) return;
+    setProgress(job.progress);
+    setMessage(job.message);
+  }, [job, meetingId]);
 
   useEffect(() => {
     invoke<{ single_remote_speaker?: boolean }>('get_recording_preferences')
@@ -334,17 +224,14 @@ export function PostCallProcessingDialog({
       useLiveDefault ? transcriptModelConfig?.provider : postCallConfig.provider,
       useLiveDefault ? transcriptModelConfig?.model : postCallConfig.model,
     );
-    await runRetranscription({
+    await startRetranscription({
       meetingId,
       meetingFolderPath,
       language: model.provider === 'parakeet' || selectedLanguage === 'auto'
         ? null
         : selectedLanguage || null,
-      model,
-      onProgress: (nextProgress) => {
-        setProgress(nextProgress.progress_percentage);
-        setMessage(nextProgress.message);
-      },
+      model: model.name,
+      provider: model.provider,
     });
     // Retranscription transactionally replaces the rows. Refresh immediately so
     // a later diarization error can never leave the old live transcript onscreen.
@@ -421,6 +308,13 @@ export function PostCallProcessingDialog({
   };
 
   const isWorking = stage === 'enhancing' || stage === 'diarizing' || stage === 'refreshing';
+
+  // This dialog's own card is on screen for the whole workflow, so the ambient
+  // indicator stands down while it is.
+  useEffect(() => {
+    if (!isWorking) return;
+    return registerJobView();
+  }, [isWorking, registerJobView]);
   const visibleProgress = Math.max(4, Math.min(100, progress));
 
   // DialogContent already renders a compact X button. At the count prompt that

@@ -25,6 +25,8 @@ import { loadBetaFeatures } from '@/types/betaFeatures'
 import { DownloadProgressToastProvider } from '@/components/shared/DownloadProgressToast'
 import { UpdateCheckProvider } from '@/components/UpdateCheckProvider'
 import { RecordingPostProcessingProvider } from '@/contexts/RecordingPostProcessingProvider'
+import { RetranscriptionProvider } from '@/contexts/RetranscriptionContext'
+import { RetranscriptionIndicator } from '@/components/shared/RetranscriptionIndicator'
 import { ImportAudioDialog, ImportDropOverlay } from '@/components/ImportAudio'
 import { ImportDialogProvider } from '@/contexts/ImportDialogContext'
 import { isAudioExtension, getAudioFormatsDisplayList } from '@/constants/audioFormats'
@@ -378,6 +380,7 @@ export default function RootLayout({
                     <OnboardingProvider>
                       <SidebarProvider>
                         <TooltipProvider>
+                          <RetranscriptionProvider>
                           <RecordingPostProcessingProvider>
                             <UpdateCheckProvider onboardingCompleted={onboardingCompleted}>
                               {onboardingCompleted && !showOnboarding && <GlobalSearchDialog />}
@@ -404,6 +407,8 @@ export default function RootLayout({
                               </ImportDialogProvider>
                             </UpdateCheckProvider>
                           </RecordingPostProcessingProvider>
+                          <RetranscriptionIndicator />
+                          </RetranscriptionProvider>
                         </TooltipProvider>
                       </SidebarProvider>
                     </OnboardingProvider>
