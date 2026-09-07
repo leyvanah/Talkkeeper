@@ -509,8 +509,26 @@ pub async fn recording_roots<R: Runtime>(app: &AppHandle<R>) -> Vec<PathBuf> {
     .collect()
 }
 
-/// Delete a just-written meeting folder (used when a take is discarded as too short).
-/// Only removes paths under the configured recordings root for safety.
+/// Whether a path is one meeting inside a recording folder, and so something
+/// this application may delete.
+///
+/// Equality with a root is rejected in a pass of its own: a custom recordings
+/// folder can be nested beneath the default one, and must not pass merely
+/// because it is that root's child.
+pub(crate) fn is_meeting_folder(path: &Path, roots: &[PathBuf]) -> bool {
+    if roots.iter().any(|root| path == root) {
+        return false;
+    }
+    roots.iter().any(|root| path.starts_with(root))
+}
+
+/// Delete a meeting folder — the recording, its source tracks and everything
+/// derived from them.
+///
+/// Used when a take is discarded as too short, and when a meeting is deleted:
+/// removing the rows and leaving the audio would mean a deleted session is
+/// only hidden. Only paths inside a recording folder of this application are
+/// touched.
 #[tauri::command]
 pub async fn discard_recording_folder<R: Runtime>(
     app: AppHandle<R>,
@@ -527,11 +545,7 @@ pub async fn discard_recording_folder<R: Runtime>(
     let path_canon = path.canonicalize().map_err(|e| e.to_string())?;
 
     let roots_canon = recording_roots(&app).await;
-    // Reject equality in a separate pass. A custom root can be nested beneath
-    // the default root and must not pass merely because it is that root's child.
-    let is_root = roots_canon.iter().any(|root| path_canon == *root);
-    let is_meeting_folder = !is_root && roots_canon.iter().any(|root| path_canon.starts_with(root));
-    if !is_meeting_folder {
+    if !is_meeting_folder(&path_canon, &roots_canon) {
         return Err("Refusing to delete path outside recordings folders".into());
     }
 
@@ -749,5 +763,31 @@ mod tests {
         assert!(reject_path_inside_bundle(&traversal, &bundle).is_err());
 
         std::fs::remove_dir_all(root).unwrap();
+    }
+
+    /// Deleting a meeting now deletes its folder, so what counts as a meeting
+    /// folder is the whole of that guard.
+    #[test]
+    fn only_a_meeting_inside_a_recordings_folder_may_be_deleted() {
+        let roots = vec![
+            PathBuf::from("/recordings"),
+            PathBuf::from("/recordings/custom"),
+        ];
+
+        assert!(is_meeting_folder(Path::new("/recordings/Meeting 2026"), &roots));
+        assert!(is_meeting_folder(
+            Path::new("/recordings/custom/Meeting 2026"),
+            &roots
+        ));
+
+        // A root itself is never a meeting, even when it sits inside another
+        // root — which is how a custom folder under the default one would
+        // otherwise take every recording with it.
+        assert!(!is_meeting_folder(Path::new("/recordings"), &roots));
+        assert!(!is_meeting_folder(Path::new("/recordings/custom"), &roots));
+
+        // Anywhere else is not ours to delete.
+        assert!(!is_meeting_folder(Path::new("/elsewhere/Meeting"), &roots));
+        assert!(!is_meeting_folder(Path::new("/"), &roots));
     }
 }

@@ -920,6 +920,16 @@ pub async fn api_delete_api_key<R: Runtime>(
     }
 }
 
+/// Delete a meeting: its rows, and the recording they describe.
+///
+/// Deleting used to take out the database rows and leave everything on disk —
+/// the tracks, the working tracks, the metadata — so a deleted session was
+/// only hidden. For an application whose purpose is that sessions stay
+/// private, that is the wrong reading of the word, and the folder goes too.
+///
+/// The folder is read before the rows, because afterwards nothing knows where
+/// the recording was, and it is removed only if it sits inside a recording
+/// folder of this application.
 #[tauri::command]
 pub async fn api_delete_meeting<R: Runtime>(
     _app: AppHandle<R>,
@@ -934,10 +944,28 @@ pub async fn api_delete_meeting<R: Runtime>(
     );
 
     let pool = state.db_manager.pool();
+    let folder: Option<String> = sqlx::query_scalar("SELECT folder_path FROM meetings WHERE id = ?")
+        .bind(&meeting_id)
+        .fetch_optional(pool)
+        .await
+        .unwrap_or(None)
+        .flatten();
 
     match MeetingsRepository::delete_meeting(pool, &meeting_id).await {
         Ok(true) => {
             log_info!("Successfully deleted meeting {}", meeting_id);
+            if let Some(folder) = folder {
+                crate::audio::recording_preferences::discard_recording_folder(
+                    _app.clone(),
+                    folder,
+                )
+                .await
+                // A recording that cannot be removed is worth saying out loud:
+                // the meeting is gone from the application and the audio is not.
+                .unwrap_or_else(|error| {
+                    log_error!("Deleted meeting {meeting_id}, but its recording is still on disk: {error}");
+                });
+            }
             Ok(serde_json::json!({
                 "status": "success",
                 "message": "Meeting deleted successfully"
