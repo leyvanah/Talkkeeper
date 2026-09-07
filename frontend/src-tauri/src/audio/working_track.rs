@@ -336,10 +336,14 @@ impl WorkingTrack {
         if let Some(writer) = self.writer.take() {
             let seconds = self.samples_written as f64 / WORKING_SAMPLE_RATE as f64;
             match writer.finish() {
+                // The size is logged because it is the one cost of keeping the
+                // track, and an hour of real speech is the only honest measure
+                // of it.
                 Ok(path) => info!(
-                    "✅ Working track for {}: {:.1}s → {}",
+                    "✅ Working track for {}: {:.1}s, {:.1} MB → {}",
                     self.label,
                     seconds,
+                    std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0) as f64 / 1_048_576.0,
                     path.display()
                 ),
                 Err(error) => warn!("Could not finish the {} working track: {error}", self.label),
