@@ -55,9 +55,17 @@ pub struct EncodeFormat {
 /// The delivery format: AAC-LC in MP4, played wherever the app shows audio.
 ///
 /// Fragmented, because it is written to a pipe and because an interrupted
-/// recording has to remain playable. `frag_keyframe+empty_moov` starts the
-/// file with an empty index and closes each fragment as it is written;
-/// `default_base_moof` makes those fragments self-describing.
+/// recording has to remain playable. `empty_moov` starts the file with an
+/// empty index and `default_base_moof` makes each fragment self-describing.
+///
+/// **`frag_duration` is what closes the fragments, and it is not optional.**
+/// A fragment is otherwise cut at a video keyframe, and a recording has no
+/// video: FFmpeg then holds the whole thing open, and past about a minute it
+/// gives up and writes a fragment header with a length of zero. The file that
+/// comes out has the right size and the right duration and almost none of it
+/// decodes — which is exactly what happened to the first real recording made
+/// this way. Two seconds also bounds what an interrupted recording loses and
+/// what the encoder holds in memory while it runs.
 pub const MP4_AAC: EncodeFormat = EncodeFormat {
     codec_args: &[
         "-c:a",
@@ -67,7 +75,9 @@ pub const MP4_AAC: EncodeFormat = EncodeFormat {
         "-profile:a",
         "aac_low",
         "-movflags",
-        "frag_keyframe+empty_moov+default_base_moof",
+        "empty_moov+default_base_moof",
+        "-frag_duration",
+        "2000000",
     ],
     container: "mp4",
 };
@@ -387,6 +397,40 @@ pub fn recover_partial_tracks(folder: &Path) -> Vec<PathBuf> {
     recovered
 }
 
+/// What FFmpeg complains about while decoding every frame of a file.
+///
+/// A track can carry the right length and still hold broken audio: that is
+/// what a player refuses and what a duration check does not see.
+#[cfg(test)]
+pub(crate) fn decode_complaints(path: &Path) -> Vec<String> {
+    let Some(ffmpeg) = find_ffmpeg_path() else {
+        return Vec::new();
+    };
+    let mut command = Command::new(ffmpeg);
+    command
+        .args(["-hide_banner", "-loglevel", "warning", "-i"])
+        .arg(path)
+        .args(["-f", "null", "-"])
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped());
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::process::CommandExt;
+        command.creation_flags(0x08000000);
+    }
+    let Ok(output) = command.output() else {
+        return Vec::new();
+    };
+    String::from_utf8_lossy(&output.stderr)
+        .lines()
+        .filter(|line| {
+            let line = line.to_ascii_lowercase();
+            line.contains("invalid") || line.contains("error") || line.contains("[aac")
+        })
+        .map(str::to_string)
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -439,6 +483,34 @@ mod tests {
             (decoded.duration_seconds - 2.0).abs() < 0.15,
             "expected about two seconds, got {:.3}s",
             decoded.duration_seconds
+        );
+    }
+
+    /// The recording has to hold sound, not just a length. Written the way the
+    /// pipeline writes it: one window at a time, for the whole recording.
+    ///
+    /// **The length matters.** The defect this guards against does not appear
+    /// until a recording runs past about a minute, which is why the first
+    /// version of this test — twenty seconds — passed while the first real
+    /// recording came out undecodable.
+    #[test]
+    fn a_recorded_track_holds_undamaged_audio() {
+        if ffmpeg_missing() {
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("audio.mp4");
+        let mut encoder =
+            StreamingEncoder::start("mixed", path.clone(), 48000, 1, MP4_AAC).expect("start");
+        record(&mut encoder, 48000, 100.0);
+        encoder.finish().expect("finish");
+
+        let complaints = decode_complaints(&path);
+        assert!(
+            complaints.is_empty(),
+            "the recording decodes with {} complaints, first: {}",
+            complaints.len(),
+            complaints.first().map(String::as_str).unwrap_or("")
         );
     }
 

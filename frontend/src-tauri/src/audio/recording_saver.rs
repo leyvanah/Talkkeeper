@@ -696,7 +696,18 @@ mod tests {
         assert_eq!(finished.system.unwrap().file_name().unwrap(), "system.mp4");
 
         for name in ["audio.mp4", "mic.mp4", "system.mp4"] {
-            let decoded = super::super::decoder::decode_audio_file(&folder.path().join(name))
+            let path = folder.path().join(name);
+            // A track can carry the right length and still hold broken audio,
+            // which is what a player refuses to decode and a length check does
+            // not see.
+            let complaints = super::super::streaming_encoder::decode_complaints(&path);
+            assert!(
+                complaints.is_empty(),
+                "{name} decodes with {} complaints, first: {}",
+                complaints.len(),
+                complaints.first().map(String::as_str).unwrap_or("")
+            );
+            let decoded = super::super::decoder::decode_audio_file(&path)
                 .unwrap_or_else(|e| panic!("{name} unreadable: {e}"));
             assert_eq!(decoded.sample_rate, RECORDING_SAMPLE_RATE);
             assert!(
