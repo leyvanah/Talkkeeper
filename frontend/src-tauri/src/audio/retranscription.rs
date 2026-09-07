@@ -4,6 +4,7 @@ use crate::audio::decoder::decode_audio_file;
 use crate::audio::vad::get_speech_chunks_with_thresholds_and_progress;
 use super::common::{create_transcript_segments, split_segment_at_silence, write_transcripts_json};
 use super::constants::AUDIO_EXTENSIONS;
+use super::working_track::find_working_track;
 use crate::config::{DEFAULT_WHISPER_MODEL, DEFAULT_PARAKEET_MODEL};
 use crate::database::models::DateTimeUtc;
 use crate::database::repositories::vocabulary::VocabularyRepository;
@@ -215,8 +216,22 @@ struct RetranscriptionSource {
 }
 
 fn find_retranscription_sources(folder: &Path, fallback: &Path) -> Vec<RetranscriptionSource> {
-    let mic_path = folder.join("mic.mp4");
-    let system_path = folder.join("system.mp4");
+    // The recording kept the 16 kHz stream it was already producing for VAD.
+    // Reading it is the same audio without the decode and the resampling —
+    // on an hour-long session, minutes saved before the first word. Only a
+    // complete pair is used, so a half-written one cannot silently truncate
+    // the transcript; recordings made before this fall back to the delivery
+    // tracks (see `super::working_track`).
+    let (mic_path, system_path) = match (
+        find_working_track(folder, "mic"),
+        find_working_track(folder, "system"),
+    ) {
+        (Some(mic), Some(system)) => {
+            info!("Retranscribing from the 16 kHz working tracks");
+            (mic, system)
+        }
+        _ => (folder.join("mic.mp4"), folder.join("system.mp4")),
+    };
     let mut sources = Vec::new();
 
     if mic_path.is_file() && system_path.is_file() {
@@ -1260,6 +1275,63 @@ mod tests {
         assert_eq!(sources[0].positive_threshold, 0.20);
         assert_eq!(sources[0].negative_threshold, 0.10);
         assert_eq!(sources[1].label, "system audio");
+    }
+
+    /// Writes a complete working-track pair, as a finished recording leaves it.
+    fn write_working_tracks(folder: &Path, tracks: &[&str]) {
+        for track in tracks {
+            let path = super::super::working_track::working_track_path(folder, track);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, b"working").unwrap();
+        }
+    }
+
+    #[test]
+    fn the_working_tracks_are_read_in_place_of_the_delivery_tracks() {
+        let dir = tempfile::tempdir().unwrap();
+        let fallback = dir.path().join("audio.mp4");
+        std::fs::write(&fallback, b"mixed").unwrap();
+        std::fs::write(dir.path().join("mic.mp4"), b"mic").unwrap();
+        std::fs::write(dir.path().join("system.mp4"), b"system").unwrap();
+        write_working_tracks(dir.path(), &["mic", "system"]);
+
+        let sources = find_retranscription_sources(dir.path(), &fallback);
+
+        assert_eq!(sources.len(), 2);
+        assert_eq!(sources[0].path.extension().unwrap(), "flac");
+        assert_eq!(sources[1].path.extension().unwrap(), "flac");
+        // Which source a track is, and how it is read, must not change with it.
+        assert_eq!(sources[0].speaker_hint, Some("You"));
+        assert_eq!(sources[1].speaker_hint, Some("Guest"));
+        assert_eq!(sources[0].positive_threshold, 0.20);
+    }
+
+    #[test]
+    fn half_a_working_pair_is_ignored_rather_than_transcribed_alone() {
+        let dir = tempfile::tempdir().unwrap();
+        let fallback = dir.path().join("audio.mp4");
+        std::fs::write(&fallback, b"mixed").unwrap();
+        std::fs::write(dir.path().join("mic.mp4"), b"mic").unwrap();
+        std::fs::write(dir.path().join("system.mp4"), b"system").unwrap();
+        write_working_tracks(dir.path(), &["mic"]);
+
+        let sources = find_retranscription_sources(dir.path(), &fallback);
+
+        assert_eq!(sources.len(), 2);
+        assert_eq!(sources[0].path, dir.path().join("mic.mp4"));
+        assert_eq!(sources[1].path, dir.path().join("system.mp4"));
+    }
+
+    #[test]
+    fn working_tracks_do_not_stand_in_for_a_missing_recording() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("audio.mp4"), b"mixed").unwrap();
+        write_working_tracks(dir.path(), &["mic", "system"]);
+
+        // The mixed recording is what playback and the fallback path look for;
+        // derived audio in `.work/` must never be offered in its place.
+        let found = find_audio_file(dir.path()).unwrap();
+        assert_eq!(found.file_name().unwrap(), "audio.mp4");
     }
 
     #[test]

@@ -760,8 +760,22 @@ pub async fn diarize_meeting(
     let voiceprint_source = meeting_id.clone();
     let (result, used_source_tracks) = tokio::task::spawn_blocking(move || -> Result<(DiarizationResult, bool)> {
         let parent = source.parent().map(Path::to_path_buf);
-        let mic_source = parent.as_ref().map(|p| p.join("mic.mp4"));
-        let system_source = parent.as_ref().map(|p| p.join("system.mp4"));
+        // The recording keeps a 16 kHz copy of each source — already the rate
+        // this pipeline works in, so preferring it drops a decode of 48 kHz
+        // AAC and a resample from the start of every run. Only a complete pair
+        // is used; recordings made before it fall back to the delivery tracks.
+        let working_pair = parent.as_ref().and_then(|p| {
+            let mic = crate::audio::find_working_track(p, "mic")?;
+            let system = crate::audio::find_working_track(p, "system")?;
+            Some((mic, system))
+        });
+        let (mic_source, system_source) = match working_pair {
+            Some((mic, system)) => (Some(mic), Some(system)),
+            None => (
+                parent.as_ref().map(|p| p.join("mic.mp4")),
+                parent.as_ref().map(|p| p.join("system.mp4")),
+            ),
+        };
 
         if let (Some(mic), Some(system)) = (mic_source, system_source) {
             if mic.exists() && system.exists() {
