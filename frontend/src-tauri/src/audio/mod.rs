@@ -6,6 +6,7 @@ pub mod echo_filter;
 pub mod encode;
 pub mod ffmpeg;
 pub mod vad;
+pub mod streaming_encoder;
 pub mod working_track;
 
 // Modularized device management

@@ -21,18 +21,15 @@
 //! * FLAC, so the track is lossless: what is stored is what the live pass
 //!   heard, and a retranscription cannot be worse for having read it.
 
-use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::process::{Child, ChildStdin, Command, Stdio};
 
-use anyhow::{anyhow, Result};
+use anyhow::Result;
 use log::{info, warn};
 use rubato::{
     Resampler, SincFixedIn, SincInterpolationParameters, SincInterpolationType, WindowFunction,
 };
 
-use super::encode::FLAC_OUTPUT_ARGS;
-use super::ffmpeg::find_ffmpeg_path;
+use super::streaming_encoder::{self, StreamingEncoder};
 
 /// Every pass over stored audio runs at this rate; so does the working track.
 pub const WORKING_SAMPLE_RATE: u32 = 16000;
@@ -46,6 +43,9 @@ const WORKING_EXT: &str = "flac";
 
 /// Extension of one still being written. Never read.
 const PARTIAL_EXT: &str = "flac.part";
+
+/// FLAC at the working rate, written as the recording runs.
+const WORKING_FORMAT: streaming_encoder::EncodeFormat = streaming_encoder::FLAC;
 
 /// Where the working track for `track` ("mic" / "system") lives.
 pub fn working_track_path(meeting_folder: &Path, track: &str) -> PathBuf {
@@ -174,114 +174,13 @@ impl WorkingRateResampler {
     }
 }
 
-/// FLAC encoder fed by the live pipeline, one per track.
-///
-/// The encoder runs for the whole recording rather than per checkpoint: the
-/// track is complete the moment the recording stops, with nothing left to
-/// merge or re-encode while the owner waits.
-struct WorkingTrackWriter {
-    child: Child,
-    stdin: Option<ChildStdin>,
-    partial_path: PathBuf,
-    final_path: PathBuf,
-}
-
-impl WorkingTrackWriter {
-    fn start(final_path: PathBuf) -> Result<Self> {
-        let ffmpeg_path = find_ffmpeg_path()
-            .ok_or_else(|| anyhow!("FFmpeg not found — cannot write the working track"))?;
-        if let Some(parent) = final_path.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
-        let partial_path = final_path.with_extension(PARTIAL_EXT);
-        let _ = std::fs::remove_file(&partial_path);
-        let partial_arg = partial_path
-            .to_str()
-            .ok_or_else(|| anyhow!("Working track path is not valid UTF-8"))?;
-
-        let mut command = Command::new(ffmpeg_path);
-        command
-            .args([
-                "-hide_banner",
-                "-loglevel",
-                "error",
-                "-f",
-                "f32le",
-                "-ar",
-                &WORKING_SAMPLE_RATE.to_string(),
-                "-ac",
-                "1",
-                "-i",
-                "pipe:0",
-            ])
-            .args(FLAC_OUTPUT_ARGS)
-            .args(["-f", WORKING_EXT, "-y", partial_arg])
-            .stdin(Stdio::piped())
-            .stdout(Stdio::null())
-            .stderr(Stdio::piped());
-
-        // Hide the console window on Windows, as everywhere else FFmpeg is spawned.
-        #[cfg(target_os = "windows")]
-        {
-            use std::os::windows::process::CommandExt;
-            const CREATE_NO_WINDOW: u32 = 0x08000000;
-            command.creation_flags(CREATE_NO_WINDOW);
-        }
-
-        let mut child = command.spawn()?;
-        let stdin = child
-            .stdin
-            .take()
-            .ok_or_else(|| anyhow!("Failed to open the FFmpeg input pipe"))?;
-
-        Ok(Self {
-            child,
-            stdin: Some(stdin),
-            partial_path,
-            final_path,
-        })
-    }
-
-    fn write(&mut self, samples: &[f32]) -> Result<()> {
-        let stdin = self
-            .stdin
-            .as_mut()
-            .ok_or_else(|| anyhow!("Working track writer is already closed"))?;
-        stdin.write_all(bytemuck::cast_slice(samples))?;
-        Ok(())
-    }
-
-    /// Close the encoder and publish the track under its final name.
-    fn finish(mut self) -> Result<PathBuf> {
-        drop(self.stdin.take());
-        let output = self.child.wait_with_output()?;
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            let _ = std::fs::remove_file(&self.partial_path);
-            return Err(anyhow!("FFmpeg failed to write the working track: {stderr}"));
-        }
-        if self.final_path.exists() {
-            std::fs::remove_file(&self.final_path)?;
-        }
-        std::fs::rename(&self.partial_path, &self.final_path)?;
-        Ok(self.final_path.clone())
-    }
-
-    /// Abandon this track, leaving nothing for a later pass to read.
-    fn abandon(mut self) {
-        drop(self.stdin.take());
-        let _ = self.child.wait();
-        let _ = std::fs::remove_file(&self.partial_path);
-    }
-}
-
 /// One capture source, converted to the working rate and — when the recording
 /// is being kept — written down as it goes.
 pub struct WorkingTrack {
     label: &'static str,
     resampler: WorkingRateResampler,
     /// `None` when nothing is being saved, or once writing has failed.
-    writer: Option<WorkingTrackWriter>,
+    writer: Option<StreamingEncoder>,
     samples_written: u64,
 }
 
@@ -296,7 +195,13 @@ impl WorkingTrack {
     ) -> Result<Self> {
         let resampler = WorkingRateResampler::new(input_rate, input_chunk)?;
         let writer = match path {
-            Some(path) => match WorkingTrackWriter::start(path) {
+            Some(path) => match StreamingEncoder::start(
+                label,
+                path,
+                WORKING_SAMPLE_RATE,
+                1,
+                WORKING_FORMAT,
+            ) {
                 Ok(writer) => {
                     info!("📝 Working track for {label} opened at {WORKING_SAMPLE_RATE} Hz");
                     Some(writer)
@@ -354,6 +259,7 @@ impl WorkingTrack {
 
         if let Some(writer) = self.writer.take() {
             let seconds = self.samples_written as f64 / WORKING_SAMPLE_RATE as f64;
+            let path = writer.final_path().to_path_buf();
             match writer.finish() {
                 // The size is logged because it is the one cost of keeping the
                 // track, and an hour of real speech is the only honest measure
@@ -365,7 +271,13 @@ impl WorkingTrack {
                     std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0) as f64 / 1_048_576.0,
                     path.display()
                 ),
-                Err(error) => warn!("Could not finish the {} working track: {error}", self.label),
+                // Unlike a recording, a partial working track is worse than
+                // none: it would be read as the whole session and quietly
+                // transcribe only part of it.
+                Err(error) => {
+                    warn!("Could not finish the {} working track: {error}", self.label);
+                    streaming_encoder::discard_partial(&path);
+                }
             }
         }
     }
@@ -374,6 +286,7 @@ impl WorkingTrack {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::audio::ffmpeg::find_ffmpeg_path;
 
     /// A 440 Hz tone — well inside the band both rates keep.
     fn tone(sample_rate: u32, seconds: f32) -> Vec<f32> {
