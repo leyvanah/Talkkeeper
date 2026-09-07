@@ -77,6 +77,12 @@ impl RecordingManager {
         // Pass auto_save to control whether audio checkpoints are created
         let recording_sender = self.recording_saver.start_accumulation(auto_save)?;
 
+        // The meeting folder now exists. The working tracks live inside it and
+        // are only written when the audio is being kept at all.
+        let meeting_folder = auto_save
+            .then(|| self.recording_saver.get_meeting_folder().cloned())
+            .flatten();
+
         // Start recording state first
         self.state.start_recording()?;
 
@@ -118,6 +124,7 @@ impl RecordingManager {
             sys_name,
             sys_kind,
             level_sender, // Live per-source level meter for the frontend visualizer
+            meeting_folder, // Where to keep the 16 kHz working tracks
         )?;
 
         // Give the pipeline a moment to fully initialize before starting streams
@@ -356,11 +363,6 @@ impl RecordingManager {
 
         info!("Recording manager stopped");
         Ok(())
-    }
-
-    /// Get recording stats from the saver
-    pub fn get_recording_stats(&self) -> (usize, u32) {
-        self.recording_saver.get_stats()
     }
 
     /// Check if currently recording

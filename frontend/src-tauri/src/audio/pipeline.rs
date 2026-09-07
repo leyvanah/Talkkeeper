@@ -2,12 +2,14 @@
 //! (b) speech segments for transcription.
 //!
 //! ```text
-//!   mic ─▶ mic VAD ─────────────▶ transcription_sender
+//!   mic ─▶ 16 kHz ─▶ mic VAD ───▶ transcription_sender
+//!      │        └───────────────▶ .work/mic.flac
 //!      ├▶ mic.mp4
 //!      └─┐
 //!        ├▶ mixer ──────────────▶ audio.mp4
 //!   sys ─┬┘
-//!      ├▶ system VAD ──────────▶ transcription_sender
+//!      ├▶ 16 kHz ─▶ system VAD ▶ transcription_sender
+//!      │        └───────────────▶ .work/system.flac
 //!      └▶ system.mp4
 //! ```
 //!
@@ -26,6 +28,13 @@
 //! ## VAD
 //! Only speech reaches the transcriber, which removes most of the silence a
 //! meeting contains and correspondingly reduces transcription cost.
+//!
+//! ## The working track
+//! VAD, recognition and diarization all run at 16 kHz, so each source is
+//! converted once here and everything downstream is handed that stream. It is
+//! also written to `.work/` (see [`super::working_track`]), which is what lets
+//! a later pass over this recording start at the first word instead of
+//! decoding and resampling the delivery tracks again.
 
 use super::batch_processor::AudioMetricsBatcher;
 use crate::batch_audio_metric;
@@ -46,6 +55,7 @@ use super::devices::AudioDevice;
 use super::recording_preferences;
 use super::recording_state::{AudioChunk, AudioError, DeviceType, RecordingState};
 use super::vad::{ContinuousVadProcessor, SpeechSegment};
+use super::working_track::{working_track_path, WorkingTrack, WORKING_SAMPLE_RATE};
 
 /// Per-source live audio level sample emitted to the frontend visualizer.
 /// One of these is sent per incoming (single-source) audio chunk, throttled
@@ -75,6 +85,15 @@ const TIMELINE_GAP_SECONDS: f64 = 0.1;
 /// A sustained shortfall this large is no longer a gap to fill but a stream
 /// that has to be picked up again from where it now is.
 const TIMELINE_RESET_SECONDS: f64 = 5.0;
+
+/// The block the pipeline works in: mic and system are aligned, echo-cancelled,
+/// mixed and converted to the working rate one window at a time.
+const MIXING_WINDOW_MS: f32 = 50.0;
+
+/// That window in capture samples.
+fn mixing_window_samples(sample_rate: u32) -> usize {
+    ((sample_rate as f32 * MIXING_WINDOW_MS / 1000.0) as usize).max(1)
+}
 
 /// One capture source's place on the shared timeline.
 ///
@@ -168,7 +187,7 @@ struct AudioMixerRingBuffer {
 
 impl AudioMixerRingBuffer {
     fn new(sample_rate: u32, mic_enabled: bool, system_enabled: bool) -> Self {
-        Self::with_window_ms(sample_rate, mic_enabled, system_enabled, 50.0)
+        Self::with_window_ms(sample_rate, mic_enabled, system_enabled, MIXING_WINDOW_MS)
     }
 
     fn with_window_ms(
@@ -1089,6 +1108,11 @@ pub struct AudioPipeline {
     /// so simultaneous talk never soft-limits one source into the other for STT.
     mic_vad: ContinuousVadProcessor,
     system_vad: ContinuousVadProcessor,
+    /// Each source at the rate everything downstream works in. Also written to
+    /// `.work/` once the manager, which is where the meeting folder is known,
+    /// has said the recording is being kept.
+    mic_work: WorkingTrack,
+    system_work: WorkingTrack,
     sample_rate: u32,
     chunk_id_counter: u64,
     // Performance optimization: reduce logging frequency
@@ -1152,9 +1176,12 @@ impl AudioPipeline {
         let redemption_time = 800;
 
         // One VAD per capture source so simultaneous talk is segmented independently.
+        // Both are fed the working track, already converted, rather than the
+        // capture stream: one conversion, of known quality, shared by VAD, the
+        // recognizer and every later pass over this recording.
         let make_vad = |label: &str, positive_threshold, negative_threshold| {
             match ContinuousVadProcessor::new_with_thresholds(
-            sample_rate,
+            WORKING_SAMPLE_RATE,
             redemption_time,
             positive_threshold,
             negative_threshold,
@@ -1172,6 +1199,21 @@ impl AudioPipeline {
         // Headset/array microphones are usually quieter than digital loopback.
         let mic_vad = make_vad("microphone", 0.20, 0.10);
         let system_vad = make_vad("system", 0.50, 0.35);
+
+        // Conversion to the working rate, one persistent resampler per source,
+        // fed exactly the windows the ring buffer hands out. Nothing is written
+        // to disk until the manager supplies a meeting folder.
+        let make_working_track = |label: &'static str| {
+            match WorkingTrack::new(label, sample_rate, mixing_window_samples(sample_rate), None) {
+                Ok(track) => track,
+                Err(e) => {
+                    error!("Failed to create the {label} working track: {e}");
+                    panic!("Working track creation failed: {e}");
+                }
+            }
+        };
+        let mic_work = make_working_track("microphone");
+        let system_work = make_working_track("system");
 
         // Initialize professional audio mixing components (recording file only)
         let ring_buffer = AudioMixerRingBuffer::new(sample_rate, mic_enabled, system_enabled);
@@ -1196,6 +1238,8 @@ impl AudioPipeline {
             state,
             mic_vad,
             system_vad,
+            mic_work,
+            system_work,
             sample_rate,
             chunk_id_counter: 0,
             // Performance optimization: reduce logging frequency
@@ -1215,6 +1259,28 @@ impl AudioPipeline {
             system_limiter_hit_since_emit: false,
             last_mic_input: std::time::Instant::now(),
             last_system_input: std::time::Instant::now(),
+        }
+    }
+
+    /// Point the working tracks at a meeting folder, which is only known once
+    /// the recording is being saved. Without this the conversion still runs —
+    /// VAD needs it — but nothing is written down.
+    fn open_working_tracks(&mut self, meeting_folder: &std::path::Path) {
+        let chunk = mixing_window_samples(self.sample_rate);
+        for (label, name) in [("microphone", "mic"), ("system", "system")] {
+            let path = working_track_path(meeting_folder, name);
+            match WorkingTrack::new(label, self.sample_rate, chunk, Some(path)) {
+                Ok(track) => {
+                    if name == "mic" {
+                        self.mic_work = track;
+                    } else {
+                        self.system_work = track;
+                    }
+                }
+                // The recording itself is unaffected; later passes fall back
+                // to decoding the delivery track.
+                Err(e) => warn!("Could not open the {label} working track: {e}"),
+            }
         }
     }
 
@@ -1457,27 +1523,34 @@ impl AudioPipeline {
                                 Some(canceller) => canceller.process(&mic_window, &sys_window),
                                 None => mic_window,
                             };
-                            // STEP 3: Transcribe each source independently.
+                            // STEP 3: Convert each source to the working rate,
+                            // once, and store it. Everything that reads this
+                            // recording later — VAD now, recognition and
+                            // diarization afterwards — listens to this stream.
+                            let mic_16k = self.mic_work.push(&mic_window);
+                            let sys_16k = self.system_work.push(&sys_window);
+
+                            // STEP 4: Transcribe each source independently.
                             // Same wall-clock windows (aligned by the ring buffer),
                             // separate sample streams + VAD state — so when both
                             // sides talk at once neither is soft-limited into the
                             // other before Whisper, and device_type is exact.
                             Self::emit_source_speech(
                                 &mut self.mic_vad,
-                                &mic_window,
+                                &mic_16k,
                                 DeviceType::Microphone,
                                 &self.transcription_sender,
                                 &mut self.chunk_id_counter,
                             );
                             Self::emit_source_speech(
                                 &mut self.system_vad,
-                                &sys_window,
+                                &sys_16k,
                                 DeviceType::System,
                                 &self.transcription_sender,
                                 &mut self.chunk_id_counter,
                             );
 
-                            // STEP 4: Persist three tracks for offline diarization + playback.
+                            // STEP 5: Persist three tracks for offline diarization + playback.
                             //   mic.mp4     → local user ("You")
                             //   system.mp4  → remote / computer audio
                             //   audio.mp4   → mixed playback (ducked)
@@ -1532,6 +1605,13 @@ impl AudioPipeline {
         // Flush any remaining VAD segments
         self.flush_remaining_audio()?;
 
+        // Nothing more will arrive: convert what the resamplers still hold and
+        // publish the working tracks. That tail is under one window — shorter
+        // than the shortest segment VAD will emit — so it is stored for later
+        // passes but not put through a VAD that has already been flushed.
+        self.mic_work.finish();
+        self.system_work.finish();
+
         info!(
             "🧵 Capture seams for this recording - {}",
             self.ring_buffer.seam_report()
@@ -1552,16 +1632,18 @@ impl AudioPipeline {
                 Some(canceller) => canceller.process(&mic_window, &sys_window),
                 None => mic_window,
             };
+            let mic_16k = self.mic_work.push(&mic_window);
+            let sys_16k = self.system_work.push(&sys_window);
             Self::emit_source_speech(
                 &mut self.mic_vad,
-                &mic_window,
+                &mic_16k,
                 DeviceType::Microphone,
                 &self.transcription_sender,
                 &mut self.chunk_id_counter,
             );
             Self::emit_source_speech(
                 &mut self.system_vad,
-                &sys_window,
+                &sys_16k,
                 DeviceType::System,
                 &self.transcription_sender,
                 &mut self.chunk_id_counter,
@@ -1663,6 +1745,9 @@ impl AudioPipelineManager {
         system_device_name: String,
         system_device_kind: super::device_detection::InputDeviceKind,
         level_sender: Option<mpsc::UnboundedSender<AudioLevels>>,
+        // Meeting folder to write the working tracks into. `None` when the
+        // recording is not being kept, and nothing derived from it should be.
+        meeting_folder: Option<std::path::PathBuf>,
     ) -> Result<()> {
         // Log device information for adaptive buffering
         info!("🎙️ Starting pipeline with device info:");
@@ -1700,6 +1785,12 @@ impl AudioPipelineManager {
 
         // Connect live level meter output (mic + system) for the frontend visualizer
         pipeline.level_sender = level_sender;
+
+        // Keep the 16 kHz stream this pipeline produces anyway, so a later pass
+        // over the recording does not have to reconstruct it.
+        if let Some(folder) = meeting_folder {
+            pipeline.open_working_tracks(&folder);
+        }
 
         let handle = tokio::spawn(async move { pipeline.run().await });
 
@@ -1780,6 +1871,122 @@ impl AudioPipelineManager {
 impl Default for AudioPipelineManager {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(test)]
+mod working_track_tests {
+    use super::*;
+    use crate::audio::decoder::decode_audio_file;
+    use crate::audio::device_detection::InputDeviceKind;
+    use crate::audio::working_track::find_working_track;
+
+    /// The whole recording chain, without a sound card: blocks in as a device
+    /// delivers them, and a finished working track for each source out.
+    #[tokio::test]
+    async fn a_recording_leaves_a_working_track_for_each_source() {
+        let folder = tempfile::tempdir().expect("temp folder");
+        let state = RecordingState::new();
+        state.start_recording().expect("recording state");
+
+        let (audio_sender, audio_receiver) = mpsc::unbounded_channel::<AudioChunk>();
+        let (transcription_sender, _transcription_receiver) = mpsc::unbounded_channel();
+        let sample_rate = 48_000u32;
+        let mut pipeline = AudioPipeline::new(
+            audio_receiver,
+            transcription_sender,
+            state.clone(),
+            0,
+            sample_rate,
+            "Test microphone".to_string(),
+            InputDeviceKind::Unknown,
+            "Test system audio".to_string(),
+            InputDeviceKind::Unknown,
+        );
+        pipeline.open_working_tracks(folder.path());
+        let running = tokio::spawn(async move { pipeline.run().await });
+
+        // Two seconds of speech-shaped tone from both sources, in the 10 ms
+        // blocks a capture callback hands over.
+        let block = sample_rate as usize / 100;
+        let blocks = 200;
+        let mut clock = 0.0f64;
+        for index in 0..blocks {
+            let samples: Vec<f32> = (0..block)
+                .map(|i| {
+                    let t = (index * block + i) as f32 / sample_rate as f32;
+                    (t * 220.0 * std::f32::consts::TAU).sin() * 0.3
+                })
+                .collect();
+            clock += block as f64 / sample_rate as f64;
+            for device_type in [DeviceType::Microphone, DeviceType::System] {
+                let _ = audio_sender.send(AudioChunk {
+                    data: samples.clone(),
+                    sample_rate,
+                    timestamp: clock,
+                    chunk_id: index as u64,
+                    device_type,
+                });
+            }
+        }
+        drop(audio_sender);
+        running.await.expect("pipeline task").expect("pipeline run");
+
+        for track in ["mic", "system"] {
+            let path = working_track_path(folder.path(), track);
+            let decoded = decode_audio_file(&path)
+                .unwrap_or_else(|e| panic!("{track} working track unreadable: {e}"));
+            assert_eq!(decoded.sample_rate, WORKING_SAMPLE_RATE);
+            assert_eq!(decoded.channels, 1);
+            assert!(
+                (decoded.duration_seconds - 2.0).abs() < 0.05,
+                "{track} working track is {:.3}s, not the two seconds recorded",
+                decoded.duration_seconds
+            );
+        }
+    }
+
+    /// Without a meeting folder there is nothing to keep, and the recording
+    /// must not start writing derived audio somewhere of its own choosing.
+    #[tokio::test]
+    async fn a_recording_that_is_not_saved_writes_nothing() {
+        let folder = tempfile::tempdir().expect("temp folder");
+        let state = RecordingState::new();
+        state.start_recording().expect("recording state");
+
+        let (audio_sender, audio_receiver) = mpsc::unbounded_channel::<AudioChunk>();
+        let (transcription_sender, _transcription_receiver) = mpsc::unbounded_channel();
+        let sample_rate = 48_000u32;
+        let mut pipeline = AudioPipeline::new(
+            audio_receiver,
+            transcription_sender,
+            state.clone(),
+            0,
+            sample_rate,
+            "Test microphone".to_string(),
+            InputDeviceKind::Unknown,
+            "Test system audio".to_string(),
+            InputDeviceKind::Unknown,
+        );
+        let running = tokio::spawn(async move { pipeline.run().await });
+
+        let block = sample_rate as usize / 100;
+        for index in 0..50 {
+            for device_type in [DeviceType::Microphone, DeviceType::System] {
+                let _ = audio_sender.send(AudioChunk {
+                    data: vec![0.1; block],
+                    sample_rate,
+                    timestamp: (index + 1) as f64 * 0.01,
+                    chunk_id: index as u64,
+                    device_type,
+                });
+            }
+        }
+        drop(audio_sender);
+        running.await.expect("pipeline task").expect("pipeline run");
+
+        assert!(find_working_track(folder.path(), "mic").is_none());
+        assert!(!folder.path().join(".work").exists());
     }
 }
 
