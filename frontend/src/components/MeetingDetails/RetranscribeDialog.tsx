@@ -144,8 +144,8 @@ export function RetranscribeDialog({
     }
   }, [open, selectedLanguage, transcriptModelConfig, fetchModels, meetingId]);
 
-  // While this dialog is on screen it shows the job itself, so the ambient
-  // indicator stands down; when it closes, the indicator takes over.
+  // Reopened while the work runs, this dialog shows it, so the ambient
+  // indicator stands down for as long as it is on screen.
   useEffect(() => {
     if (!open || !isProcessing) return;
     return registerJobView();
@@ -169,7 +169,7 @@ export function RetranscribeDialog({
       });
 
       // Settles when the job does, wherever the owner happens to be by then.
-      const result = await startRetranscription({
+      const completion = startRetranscription({
         meetingId,
         meetingFolderPath,
         language: languageToSend,
@@ -179,6 +179,14 @@ export function RetranscribeDialog({
         vocabularyScope: isParakeetModel ? null : vocabularyScope,
       });
 
+      // Asking for the work is the whole reason this dialog exists; once it is
+      // under way the dialog steps aside, because an hour of audio takes about
+      // an hour and nobody asked to spend it watching a progress bar. The
+      // ambient indicator carries it from here, and this can be reopened to
+      // look at it closely.
+      onOpenChangeRef.current(false);
+
+      const result = await completion;
       await Analytics.track('enhance_transcript_completed', {
         success: 'true',
         duration_seconds: result.duration_seconds.toString(),
@@ -192,6 +200,9 @@ export function RetranscribeDialog({
         ? t('retranscribeStalled')
         : (typeof err === 'string' ? err : (err?.message || String(err)));
       setError(errorMsg);
+      // The dialog steps aside as soon as the work starts, so by the time this
+      // fails there may be nothing on screen to read the message off.
+      toast.error(t('retranscribeFailed'), { description: errorMsg });
 
       await Analytics.trackError('enhance_transcript_failed', errorMsg);
     }

@@ -324,6 +324,7 @@
     "retranscribeComplete": "{count, plural, one {Retranscription complete! # segment created.} other {Retranscription complete! # segments created.}}",
     "retranscribeCancelled": "Retranscription cancelled",
     "retranscribeStalled": "Retranscription stopped making progress and was cancelled.",
+    "retranscribeFailed": "Retranscription failed",
     "retranscribeEventsFailed": "Could not prepare retranscription events: {error}",
     "retranscribeInitializing": "Retranscription is still initializing. Please try again.",
     "retranscribeNoFolder": "Meeting folder path not available",
