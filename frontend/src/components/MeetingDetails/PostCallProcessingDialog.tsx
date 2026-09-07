@@ -35,6 +35,10 @@ import { isVisibleParakeetModel } from '@/lib/parakeet';
 import { externalSttLabel, type ExternalSttConfig } from '@/components/ExternalSttSettings';
 import { GIGAAM_MODEL_NAME, type GigaamModelStatus } from '@/components/GigaamModelManager';
 
+/// Marks the one failure the dialog raises itself, so it can be shown in the
+/// reader's language instead of the English text a thrown Error carries.
+const ENHANCEMENT_STALLED = 'enhancement-stalled';
+
 type Stage = 'idle' | 'prompt' | 'enhancing' | 'diarizing' | 'refreshing' | 'error';
 type FailedStage = 'enhancing' | 'diarizing' | 'pre-diarization-refresh' | 'post-diarization-refresh';
 
@@ -136,14 +140,39 @@ async function runRetranscription({
   let timedOut = false;
   let resolveCompletion!: () => void;
   let rejectCompletion!: (error: unknown) => void;
-  let timeoutId: ReturnType<typeof setTimeout> | undefined;
+  let stallTimerId: ReturnType<typeof setTimeout> | undefined;
   const completion = new Promise<void>((resolve, reject) => {
     resolveCompletion = resolve;
     rejectCompletion = reject;
   });
   const cleanup = () => {
-    if (timeoutId) clearTimeout(timeoutId);
+    if (stallTimerId) clearTimeout(stallTimerId);
     unlisteners.splice(0).forEach((unlisten) => unlisten());
+  };
+  // How the work is judged: not by how long it takes, but by whether it is
+  // still moving. An hour of recording is two hours of audio to re-transcribe
+  // - both source tracks - so any fixed budget large enough for a long session
+  // is useless as a stall detector, and any budget small enough to detect a
+  // stall cancels honest work. The backend reports progress through decoding,
+  // resampling, voice detection and every transcribed segment, so the longest
+  // legitimate silence is about a minute; five is a stall.
+  const STALL_TIMEOUT_MS = 5 * 60 * 1000;
+  const armStallTimer = () => {
+    if (settled) return;
+    if (stallTimerId) clearTimeout(stallTimerId);
+    stallTimerId = setTimeout(() => {
+      timedOut = true;
+      void (async () => {
+        await invoke('cancel_retranscription_command').catch(() => undefined);
+        for (let attempt = 0; attempt < 60; attempt++) {
+          const active = await invoke<boolean>('is_retranscription_in_progress_command')
+            .catch(() => false);
+          if (!active) break;
+          await new Promise((resolve) => setTimeout(resolve, 500));
+        }
+        finish(new Error(ENHANCEMENT_STALLED));
+      })();
+    }, STALL_TIMEOUT_MS);
   };
   const finish = (error?: unknown) => {
     if (settled) return;
@@ -157,7 +186,9 @@ async function runRetranscription({
     unlisteners.push(await listen<RetranscriptionProgress>(
       'retranscription-progress',
       (event) => {
-        if (event.payload.meeting_id === meetingId) onProgress(event.payload);
+        if (event.payload.meeting_id !== meetingId) return;
+        armStallTimer();
+        onProgress(event.payload);
       },
     ));
     unlisteners.push(await listen<RetranscriptionResult>(
@@ -188,19 +219,7 @@ async function runRetranscription({
     } catch (error) {
       finish(error);
     }
-    timeoutId = setTimeout(() => {
-      timedOut = true;
-      void (async () => {
-        await invoke('cancel_retranscription_command').catch(() => undefined);
-        for (let attempt = 0; attempt < 60; attempt++) {
-          const active = await invoke<boolean>('is_retranscription_in_progress_command')
-            .catch(() => false);
-          if (!active) break;
-          await new Promise((resolve) => setTimeout(resolve, 500));
-        }
-        finish(new Error('Enhancement timed out and was cancelled.'));
-      })();
-    }, 30 * 60 * 1000);
+    armStallTimer();
     await completion;
   } finally {
     cleanup();
@@ -221,6 +240,11 @@ export function PostCallProcessingDialog({
   onComplete: () => void;
 }) {
   const t = useTranslations('app');
+  // The stall is ours to name; everything else already arrives as a message.
+  const describeFailure = (cause: unknown) => {
+    const message = cause instanceof Error ? cause.message : String(cause);
+    return message === ENHANCEMENT_STALLED ? t('postCallTimedOut') : message;
+  };
   const { selectedLanguage, transcriptModelConfig } = useConfig();
   const [stage, setStage] = useState<Stage>('idle');
   const [speakerCount, setSpeakerCount] = useState('2');
@@ -355,7 +379,7 @@ export function PostCallProcessingDialog({
         await runWorkflow(count);
       }
     } catch (cause) {
-      const nextError = cause instanceof Error ? cause.message : String(cause);
+      const nextError = describeFailure(cause);
       setFailedStage(activeStageRef.current);
       setError(nextError);
       setStage('error');
@@ -372,7 +396,7 @@ export function PostCallProcessingDialog({
     try {
       await identifySpeakers(count);
     } catch (cause) {
-      const nextError = cause instanceof Error ? cause.message : String(cause);
+      const nextError = describeFailure(cause);
       setFailedStage(activeStageRef.current);
       setError(nextError);
       setStage('error');
@@ -389,7 +413,7 @@ export function PostCallProcessingDialog({
         description: t('postCallUsingLiveDescription'),
       });
     } catch (cause) {
-      const nextError = cause instanceof Error ? cause.message : String(cause);
+      const nextError = describeFailure(cause);
       setFailedStage('post-diarization-refresh');
       setError(nextError);
       setStage('error');

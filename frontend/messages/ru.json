@@ -1211,7 +1211,7 @@
     "postCallSpeakerCountAria": "Общее число спикеров",
     "postCallImprovingTranscript": "Улучшаем транскрипт",
     "postCallNoModel": "Нет загруженной модели распознавания для пост-обработки.",
-    "postCallTimedOut": "Уточнение превысило время ожидания и было отменено.",
+    "postCallTimedOut": "Уточнение перестало продвигаться и было отменено.",
     "postCallPreparing": "Готовим уточнённый транскрипт…",
     "postCallSpeakersRefreshed": "Метки спикеров обновлены по сохранённому транскрипту.",
     "postCallEnhancedAndRefreshed": "Транскрипт уточнён, метки спикеров обновлены.",

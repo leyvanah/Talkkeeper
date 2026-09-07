@@ -1211,7 +1211,7 @@
     "postCallSpeakerCountAria": "Total number of speakers",
     "postCallImprovingTranscript": "Improving transcript",
     "postCallNoModel": "No downloaded transcription model is available for post-call enhancement.",
-    "postCallTimedOut": "Enhancement timed out and was cancelled.",
+    "postCallTimedOut": "Enhancement stopped making progress and was cancelled.",
     "postCallPreparing": "Preparing enhanced transcript…",
     "postCallSpeakersRefreshed": "Speaker labels refreshed from the saved transcript.",
     "postCallEnhancedAndRefreshed": "Transcript enhanced and speaker labels refreshed.",
