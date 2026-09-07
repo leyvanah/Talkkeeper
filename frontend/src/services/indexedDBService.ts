@@ -165,36 +165,6 @@ class IndexedDBService {
     }
   }
 
-  /**
-   * Mark meeting as saved to SQLite
-   */
-  async markMeetingSaved(meetingId: string): Promise<void> {
-    try {
-      if (!this.db) await this.init();
-
-      const transaction = this.db!.transaction(['meetings'], 'readwrite');
-      const store = transaction.objectStore('meetings');
-
-      return new Promise((resolve, reject) => {
-        const getRequest = store.get(meetingId);
-        getRequest.onsuccess = () => {
-          const meeting = getRequest.result;
-          if (meeting) {
-            meeting.savedToSQLite = true;
-            meeting.lastUpdated = Date.now();
-            const putRequest = store.put(meeting);
-            putRequest.onsuccess = () => resolve();
-            putRequest.onerror = () => reject(putRequest.error);
-          } else {
-            resolve();
-          }
-        };
-        getRequest.onerror = () => reject(getRequest.error);
-      });
-    } catch (error) {
-      console.warn('Failed to mark meeting as saved:', error);
-    }
-  }
 
   /**
    * Delete meeting and all its transcripts

@@ -504,7 +504,11 @@ export function TranscriptProvider({ children }: { children: ReactNode }) {
     }
 
     try {
-      await indexedDBService.markMeetingSaved(meetingId);
+      // The browser copy exists so a recording survives a crash before it is
+      // saved. It has just been saved, and recovery only ever looks at
+      // unsaved recordings — so from here it is a third copy of the session
+      // sitting in the webview profile, and it goes.
+      await indexedDBService.deleteMeeting(meetingId);
 
       // Clear both sources
       setCurrentMeetingId(null);

@@ -20,7 +20,7 @@ use tauri_plugin_dialog::DialogExt;
 use uuid::Uuid;
 
 use super::audio_processing::create_meeting_folder;
-use super::common::{create_transcript_segments, split_segment_at_silence, write_transcripts_json};
+use super::common::{create_transcript_segments, split_segment_at_silence};
 use super::constants::AUDIO_EXTENSIONS;
 use super::recording_preferences::get_default_recordings_folder;
 
@@ -706,12 +706,9 @@ async fn run_import<R: Runtime>(
     )
     .await?;
 
-    // Write transcripts.json and metadata.json to the meeting folder
-    emit_progress(&app, "saving", 90, "Writing transcript files...");
-
-    if let Err(e) = write_transcripts_json(&meeting_folder, &segments) {
-        warn!("Failed to write transcripts.json: {}", e);
-    }
+    // The transcript itself lives in the database; only the note of what this
+    // folder holds is written beside the audio.
+    emit_progress(&app, "saving", 90, "Writing meeting details...");
 
     if let Err(e) = write_import_metadata(
         &meeting_folder,
@@ -1030,7 +1027,6 @@ fn write_import_metadata(
         "completed_at": now,
         "duration_seconds": duration_seconds,
         "audio_file": audio_filename,
-        "transcript_file": "transcripts.json",
         "status": "completed",
         "source": source
     });
@@ -1318,49 +1314,6 @@ mod tests {
         assert!(total_samples >= 60 * 16000, "Overlap should not lose samples");
     }
 
-    #[test]
-    fn test_write_transcripts_json() {
-        let dir = tempfile::tempdir().unwrap();
-        let segments = vec![
-            TranscriptSegment {
-                id: "t-1".to_string(),
-                text: "Hello world".to_string(),
-                timestamp: "2024-01-01T00:00:00Z".to_string(),
-                audio_start_time: Some(0.0),
-                audio_end_time: Some(1.5),
-                duration: Some(1.5),
-                speaker: None,
-            },
-            TranscriptSegment {
-                id: "t-2".to_string(),
-                text: "Second segment".to_string(),
-                timestamp: "2024-01-01T00:00:01Z".to_string(),
-                audio_start_time: Some(2.0),
-                audio_end_time: Some(3.5),
-                duration: Some(1.5),
-                speaker: None,
-            },
-        ];
-
-        let result = write_transcripts_json(dir.path(), &segments);
-        assert!(result.is_ok(), "write_transcripts_json failed: {:?}", result);
-
-        // Verify file exists and is valid JSON
-        let path = dir.path().join("transcripts.json");
-        assert!(path.exists());
-
-        let content = std::fs::read_to_string(&path).unwrap();
-        let parsed: serde_json::Value = serde_json::from_str(&content).unwrap();
-        assert_eq!(parsed["total_segments"], 2);
-        assert_eq!(parsed["version"], "1.0");
-        assert_eq!(parsed["segments"][0]["text"], "Hello world");
-        assert_eq!(parsed["segments"][1]["text"], "Second segment");
-        assert_eq!(parsed["segments"][0]["sequence_id"], 0);
-        assert_eq!(parsed["segments"][1]["sequence_id"], 1);
-
-        // Verify temp file was cleaned up
-        assert!(!dir.path().join(".transcripts.json.tmp").exists());
-    }
 
     #[test]
     fn test_write_import_metadata() {
