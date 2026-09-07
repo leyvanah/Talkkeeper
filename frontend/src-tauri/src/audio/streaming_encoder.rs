@@ -525,6 +525,54 @@ mod tests {
         );
     }
 
+    /// What Stop costs now against what it cost before: closing a pipe over a
+    /// recording that is already encoded, against encoding it from the start.
+    /// Opt-in because the numbers only mean something in a release build:
+    ///   cargo test --release --lib streaming_encoder -- --ignored --nocapture
+    #[test]
+    #[ignore = "timing measurement, run in release"]
+    fn stop_cost_against_re_encoding_the_recording() {
+        if ffmpeg_missing() {
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let sample_rate = 48000u32;
+        let minutes = 10.0;
+        let audio = tone(sample_rate, 60.0 * minutes);
+
+        // As it happens now: encoded during the recording, so Stop is the tail.
+        let streamed = dir.path().join("streamed.mp4");
+        let mut encoder =
+            StreamingEncoder::start("mixed", streamed, sample_rate, 1, MP4_AAC).expect("start");
+        let block = (sample_rate / 20) as usize;
+        for chunk in audio.chunks(block) {
+            encoder.write(chunk).expect("write");
+        }
+        let stop = std::time::Instant::now();
+        encoder.finish().expect("finish");
+        let closing = stop.elapsed().as_secs_f64();
+
+        // As it happened before: one pass over the whole recording at Stop.
+        // (The old path also decoded the pieces first, which this leaves out,
+        // so the comparison is generous to it.)
+        let reference = dir.path().join("reference.mp4");
+        let started = std::time::Instant::now();
+        crate::audio::encode::encode_single_audio(
+            bytemuck::cast_slice(&audio),
+            sample_rate,
+            1,
+            &reference,
+        )
+        .expect("encode");
+        let re_encoding = started.elapsed().as_secs_f64();
+
+        println!(
+            "stop cost for {minutes:.0} minutes of one track: {closing:.2} s closing the encoder, \
+             against {re_encoding:.2} s to encode it again ({:.0}x)",
+            re_encoding / closing.max(0.001)
+        );
+    }
+
     #[test]
     fn recovery_keeps_the_finished_track_over_the_leftover() {
         let dir = tempfile::tempdir().unwrap();

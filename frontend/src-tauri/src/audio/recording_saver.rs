@@ -147,10 +147,11 @@ impl RecordingTracks {
             "Stopped recording the {} track after {seconds:.0}s: {error}",
             track.name()
         );
-        if let Some(encoder) = slot.take() {
-            drop(encoder.finish());
-        }
-        match streaming_encoder::publish_partial(&path) {
+        let Some(encoder) = slot.take() else { return };
+        let kept = encoder
+            .finish()
+            .or_else(|_| streaming_encoder::publish_partial(&path));
+        match kept {
             Ok(path) => warn!("Kept what was recorded: {}", path.display()),
             Err(error) => error!("Nothing could be kept of that track: {error}"),
         }
@@ -323,9 +324,9 @@ impl RecordingSaver {
             .ok_or_else(|| anyhow::anyhow!("Meeting name is required before recording starts"))?;
         self.initialize_meeting_folder(&name, auto_save)?;
         if auto_save {
-            info!("Successfully initialized meeting folder with checkpoints");
+            info!("Meeting folder ready, tracks will be written as they are captured");
         } else {
-            info!("Successfully initialized meeting folder (transcripts only)");
+            info!("Meeting folder ready (transcripts only)");
         }
 
         // Create the channel only after the destination is ready.
@@ -661,6 +662,51 @@ mod tests {
         let segments = saver.get_transcript_segments();
         assert_eq!(segments.len(), 1);
         assert_eq!(segments[0].text, "updated");
+    }
+
+    /// The three tracks of a meeting, end to end: samples in as the pipeline
+    /// delivers them, three readable recordings of the right length out.
+    #[test]
+    fn a_meeting_leaves_three_readable_tracks() {
+        if super::super::ffmpeg::find_ffmpeg_path().is_none() {
+            eprintln!("skipping: FFmpeg is not installed");
+            return;
+        }
+        let folder = tempfile::tempdir().unwrap();
+        let mut tracks = RecordingTracks::start(folder.path().to_path_buf());
+
+        // Two seconds in the 50 ms windows the pipeline hands over.
+        let window = (RECORDING_SAMPLE_RATE / 20) as usize;
+        for index in 0..40 {
+            let samples: Vec<f32> = (0..window)
+                .map(|i| {
+                    let t = (index * window + i) as f32 / RECORDING_SAMPLE_RATE as f32;
+                    (t * 440.0 * std::f32::consts::TAU).sin() * 0.3
+                })
+                .collect();
+            for track in [Track::Mixed, Track::Mic, Track::System] {
+                tracks.write(track, &samples);
+            }
+        }
+
+        let finished = tracks.finish();
+        let mixed = finished.mixed.expect("the mixed track is the recording");
+        assert_eq!(mixed.file_name().unwrap(), "audio.mp4");
+        assert_eq!(finished.mic.unwrap().file_name().unwrap(), "mic.mp4");
+        assert_eq!(finished.system.unwrap().file_name().unwrap(), "system.mp4");
+
+        for name in ["audio.mp4", "mic.mp4", "system.mp4"] {
+            let decoded = super::super::decoder::decode_audio_file(&folder.path().join(name))
+                .unwrap_or_else(|e| panic!("{name} unreadable: {e}"));
+            assert_eq!(decoded.sample_rate, RECORDING_SAMPLE_RATE);
+            assert!(
+                (decoded.duration_seconds - 2.0).abs() < 0.15,
+                "{name} is {:.3}s, not the two seconds recorded",
+                decoded.duration_seconds
+            );
+        }
+        // Nothing is left half-written once a meeting has closed.
+        assert!(!folder.path().join("audio.mp4.part").exists());
     }
 
     #[tokio::test]
