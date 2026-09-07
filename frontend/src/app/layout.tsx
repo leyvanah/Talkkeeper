@@ -392,9 +392,15 @@ export default function RootLayout({
                                 {showOnboarding ? (
                                   <OnboardingFlow onComplete={handleOnboardingComplete} />
                                 ) : (
-                                  <div className="flex min-h-0 min-w-0 h-screen overflow-hidden">
-                                    <Sidebar />
-                                    <MainContent>{children}</MainContent>
+                                  <div className="flex h-screen min-h-0 flex-col overflow-hidden">
+                                    <div className="flex min-h-0 min-w-0 flex-1 overflow-hidden">
+                                      <Sidebar />
+                                      <MainContent>{children}</MainContent>
+                                    </div>
+                                    {/* Background work reports here, in the
+                                        layout rather than over it, so it never
+                                        covers what it is reporting about. */}
+                                    <RetranscriptionIndicator />
                                   </div>
                                 )}
                                 {/* Import audio overlay and dialog */}
@@ -407,7 +413,6 @@ export default function RootLayout({
                               </ImportDialogProvider>
                             </UpdateCheckProvider>
                           </RecordingPostProcessingProvider>
-                          <RetranscriptionIndicator />
                           </RetranscriptionProvider>
                         </TooltipProvider>
                       </SidebarProvider>

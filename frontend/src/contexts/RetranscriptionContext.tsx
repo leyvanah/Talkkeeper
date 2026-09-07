@@ -100,6 +100,14 @@ interface RetranscriptionContextValue {
   needsAmbientIndicator: boolean;
   /** Called by a view that shows the job itself, while it is doing so. */
   registerJobView: () => () => void;
+  /**
+   * What the strip should report. Usually the job, but a longer workflow that
+   * merely contains a retranscription can speak for itself here, so the two do
+   * not each grow their own indicator.
+   */
+  ambientStatus: RetranscriptionJob | null;
+  /** Report a workflow's own step, or null once it is over. */
+  setAmbientStep: (step: RetranscriptionJob | null) => void;
 }
 
 const RetranscriptionContext = createContext<RetranscriptionContextValue | null>(null);
@@ -265,16 +273,23 @@ export function RetranscriptionProvider({ children }: { children: React.ReactNod
     return () => setViewerCount((count) => Math.max(0, count - 1));
   }, []);
 
+  const [ambientStep, setAmbientStep] = useState<RetranscriptionJob | null>(null);
+  // A containing workflow speaks for the whole of itself, retranscription
+  // included; on its own the job speaks for itself.
+  const ambientStatus = ambientStep ?? job;
+
   const value = useMemo(
     () => ({
       job,
       isRunningFor,
       start,
       cancel,
-      needsAmbientIndicator: job !== null && viewerCount === 0,
+      needsAmbientIndicator: ambientStatus !== null && viewerCount === 0,
       registerJobView,
+      ambientStatus,
+      setAmbientStep,
     }),
-    [job, isRunningFor, start, cancel, viewerCount, registerJobView],
+    [job, isRunningFor, start, cancel, viewerCount, registerJobView, ambientStatus],
   );
 
   return (
