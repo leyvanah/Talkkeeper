@@ -366,6 +366,12 @@ pub async fn recover_audio_from_checkpoints(
 
     let folder_path = PathBuf::from(&meeting_folder);
     let checkpoints_root = folder_path.join(".checkpoints");
+
+    // Getting here means the recording never closed, so its working tracks are
+    // half-written and unreadable. Recovery rebuilds the delivery tracks, which
+    // is what the later passes will fall back to.
+    super::working_track::discard_partial_tracks(&folder_path);
+
     // New format stores each track in its own subfolder. Recover mixed playback
     // exactly as legacy recovery did; mic/system remain optional diagnostics.
     let checkpoints_dir = if checkpoints_root.join("audio").is_dir() {

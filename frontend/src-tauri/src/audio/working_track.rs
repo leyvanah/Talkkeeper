@@ -60,6 +60,25 @@ pub fn find_working_track(meeting_folder: &Path, track: &str) -> Option<PathBuf>
     path.is_file().then_some(path)
 }
 
+/// Throw away tracks left half-written by a recording that never closed.
+///
+/// Nothing reads them — they never got their final name — so all they would do
+/// is hold an hour of unaccounted-for speech on disk. Called when a recording
+/// is recovered, which is the moment we know one was interrupted.
+pub fn discard_partial_tracks(meeting_folder: &Path) {
+    let Ok(entries) = std::fs::read_dir(meeting_folder.join(WORKING_DIR)) else {
+        return;
+    };
+    for path in entries.flatten().map(|entry| entry.path()) {
+        if path.to_string_lossy().ends_with(PARTIAL_EXT) {
+            match std::fs::remove_file(&path) {
+                Ok(()) => info!("Discarded the unfinished working track {}", path.display()),
+                Err(error) => warn!("Could not discard {}: {error}", path.display()),
+            }
+        }
+    }
+}
+
 /// Streaming conversion of the capture rate to the working rate.
 ///
 /// The resampler is persistent and fed fixed-size chunks: creating one per
@@ -438,6 +457,23 @@ mod tests {
 
         std::fs::write(&path, b"a whole recording").unwrap();
         assert_eq!(find_working_track(dir.path(), "mic"), Some(path));
+    }
+
+    #[test]
+    fn an_interrupted_recording_leaves_nothing_behind() {
+        let dir = tempfile::tempdir().unwrap();
+        let finished = working_track_path(dir.path(), "mic");
+        std::fs::create_dir_all(finished.parent().unwrap()).unwrap();
+        let unfinished = working_track_path(dir.path(), "system").with_extension(PARTIAL_EXT);
+        std::fs::write(&finished, b"a whole recording").unwrap();
+        std::fs::write(&unfinished, b"half a recording").unwrap();
+
+        discard_partial_tracks(dir.path());
+
+        assert!(!unfinished.exists(), "the half-written track was kept");
+        assert!(finished.exists(), "a finished track must survive");
+        // A folder that never had one must not be a problem either.
+        discard_partial_tracks(tempfile::tempdir().unwrap().path());
     }
 
     /// Needs FFmpeg, like every other encoding path in the app; skipped when it
