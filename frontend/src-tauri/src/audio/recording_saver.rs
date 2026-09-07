@@ -304,13 +304,13 @@ impl RecordingSaver {
     /// Start accumulation with optional incremental saving
     ///
     /// # Arguments
-    /// * `auto_save` - If true, creates checkpoints and enables saving. If false, audio chunks are discarded.
+    /// * `auto_save` - If true the three tracks are written as they arrive. If false, audio chunks are discarded.
     pub fn start_accumulation(
         &mut self,
         auto_save: bool,
     ) -> Result<mpsc::UnboundedSender<AudioChunk>> {
         if auto_save {
-            info!("Initializing incremental audio saver for recording (auto-save ENABLED)");
+            info!("Recording will be written to disk (auto-save ENABLED)");
         } else {
             info!("Starting recording without audio saving (auto-save DISABLED - transcripts only)");
         }
