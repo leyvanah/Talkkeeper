@@ -16,7 +16,7 @@ use log::{debug, error, info, warn};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use tauri::{AppHandle, Emitter, Manager, Runtime};
 
 /// Global flag to track if retranscription is in progress
@@ -25,18 +25,29 @@ static RETRANSCRIPTION_IN_PROGRESS: AtomicBool = AtomicBool::new(false);
 /// Global flag to signal cancellation
 static RETRANSCRIPTION_CANCELLED: AtomicBool = AtomicBool::new(false);
 
+/// Which meeting the running retranscription belongs to.
+///
+/// A window can be reloaded, or opened after the work began, and then nothing
+/// on screen knows what is running: progress events are the only announcement,
+/// and there are none while a long recording is being decoded. So the answer
+/// has to be available on demand, not only as it happens.
+static RETRANSCRIPTION_MEETING: Mutex<Option<String>> = Mutex::new(None);
+
 /// RAII guard for RETRANSCRIPTION_IN_PROGRESS flag
 /// Ensures flag is cleared even if retranscription panics or returns early
 struct RetranscriptionGuard;
 
 impl RetranscriptionGuard {
     /// Create guard and set flag atomically
-    fn acquire() -> Result<Self, String> {
+    fn acquire(meeting_id: &str) -> Result<Self, String> {
         if RETRANSCRIPTION_IN_PROGRESS
             .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
             .is_err()
         {
             return Err("Retranscription already in progress".to_string());
+        }
+        if let Ok(mut current) = RETRANSCRIPTION_MEETING.lock() {
+            *current = Some(meeting_id.to_string());
         }
         Ok(RetranscriptionGuard)
     }
@@ -44,8 +55,18 @@ impl RetranscriptionGuard {
 
 impl Drop for RetranscriptionGuard {
     fn drop(&mut self) {
+        if let Ok(mut current) = RETRANSCRIPTION_MEETING.lock() {
+            *current = None;
+        }
         RETRANSCRIPTION_IN_PROGRESS.store(false, Ordering::SeqCst);
     }
+}
+
+/// What the application is working on, for a window that has just opened.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RetranscriptionStatus {
+    pub in_progress: bool,
+    pub meeting_id: Option<String>,
 }
 
 /// VAD redemption time in milliseconds - bridges natural pauses in speech
@@ -968,7 +989,7 @@ pub async fn start_retranscription_command<R: Runtime>(
 
     // Reserve before returning so duplicate requests and cancellation also see
     // jobs queued behind an offline diarization pass.
-    let guard = RetranscriptionGuard::acquire()?;
+    let guard = RetranscriptionGuard::acquire(&meeting_id)?;
     RETRANSCRIPTION_CANCELLED.store(false, Ordering::SeqCst);
 
     let use_parakeet = provider.as_deref() == Some("parakeet");
@@ -1047,6 +1068,16 @@ pub async fn cancel_retranscription_command() -> Result<(), String> {
 #[tauri::command]
 pub async fn is_retranscription_in_progress_command() -> bool {
     is_retranscription_in_progress()
+}
+
+/// What is being retranscribed, if anything - so a window that opens mid-job
+/// can show it and offer to stop it.
+#[tauri::command]
+pub async fn retranscription_status_command() -> RetranscriptionStatus {
+    RetranscriptionStatus {
+        in_progress: is_retranscription_in_progress(),
+        meeting_id: RETRANSCRIPTION_MEETING.lock().ok().and_then(|id| id.clone()),
+    }
 }
 
 #[cfg(test)]
