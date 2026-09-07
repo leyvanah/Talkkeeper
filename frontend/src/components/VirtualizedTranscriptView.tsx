@@ -65,6 +65,17 @@ export interface VirtualizedTranscriptViewProps {
      * yet, so renaming is only offered on saved meetings.
      */
     onRenameSpeaker?: (speaker: string) => void;
+
+    /**
+     * The line the recording is currently at. Given as an id rather than a
+     * time because the playhead moves every frame and this list is expensive
+     * to re-render; the id changes when the speaker moves on.
+     */
+    activeSegmentId?: string | null;
+    /** Called with where a line starts when it is clicked. */
+    onSeekTo?: (seconds: number) => void;
+    /** Keep the current line in view. On while the recording is playing. */
+    followActiveSegment?: boolean;
 }
 
 // Threshold for enabling virtualization (below this, use simple rendering)
@@ -154,7 +165,7 @@ function speakerPaletteIndex(speaker: string): number {
  * Collapse back-to-back lines from the same speaker into one bubble when the
  * gap is small. Live VAD often emits many short fragments for one turn.
  */
-function mergeAdjacentSameSpeaker(
+export function mergeAdjacentSameSpeaker(
     segments: TranscriptSegmentData[],
     maxGapSecs = 2.5,
 ): TranscriptSegmentData[] {
@@ -210,6 +221,8 @@ const TranscriptSegment = memo(function TranscriptSegment({
     speaker,
     userName,
     onRenameSpeaker,
+    isActive = false,
+    onSeekTo,
 }: {
     id: string;
     timestamp: number;
@@ -221,6 +234,10 @@ const TranscriptSegment = memo(function TranscriptSegment({
     userName: string;
     /** When provided, speaker labels become clickable for renaming. */
     onRenameSpeaker?: (speaker: string) => void;
+    /** True while the recording is playing this line. */
+    isActive?: boolean;
+    /** When provided, the line can be clicked to play from there. */
+    onSeekTo?: (seconds: number) => void;
 }) {
     const t = useTranslations('recording');
     const displayText = cleanStopWords(text) || (text.trim() === '' ? t('silencePlaceholder') : text);
@@ -273,11 +290,31 @@ const TranscriptSegment = memo(function TranscriptSegment({
                 </div>
 
                 <div
-                    className={
+                    role={onSeekTo ? 'button' : undefined}
+                    tabIndex={onSeekTo ? 0 : undefined}
+                    title={onSeekTo ? t('playFromHere') : undefined}
+                    onClick={onSeekTo ? () => onSeekTo(timestamp) : undefined}
+                    onKeyDown={
+                        onSeekTo
+                            ? (event) => {
+                                  if (event.key === 'Enter' || event.key === ' ') {
+                                      event.preventDefault();
+                                      onSeekTo(timestamp);
+                                  }
+                              }
+                            : undefined
+                    }
+                    className={[
                         isYou
                             ? 'rounded-2xl rounded-tr-sm bg-blue-500/15 border border-blue-500/25 px-3.5 py-2'
-                            : 'rounded-2xl rounded-tl-sm bg-[var(--af-panel-2)] border border-[var(--af-border)] px-3.5 py-2'
-                    }
+                            : 'rounded-2xl rounded-tl-sm bg-[var(--af-panel-2)] border border-[var(--af-border)] px-3.5 py-2',
+                        onSeekTo ? 'cursor-pointer transition-colors' : '',
+                        // The line being spoken, marked on the bubble itself so
+                        // it reads at a glance without moving the layout.
+                        isActive ? 'ring-2 ring-[var(--af-accent)] ring-offset-0' : '',
+                    ]
+                        .filter(Boolean)
+                        .join(' ')}
                 >
                     <p
                         className={`text-sm leading-relaxed ${
@@ -308,6 +345,9 @@ export const VirtualizedTranscriptView: React.FC<VirtualizedTranscriptViewProps>
     onLoadMore,
     // eslint-disable-next-line @typescript-eslint/no-unused-vars
     onRenameSpeaker,
+    activeSegmentId = null,
+    onSeekTo,
+    followActiveSegment = false,
 }) => {
     const t = useTranslations('recording');
     // Greet the user by name when they've set one (Settings → General → Your
@@ -357,6 +397,7 @@ export const VirtualizedTranscriptView: React.FC<VirtualizedTranscriptViewProps>
         virtualizationThreshold: VIRTUALIZATION_THRESHOLD,
         disableAutoScroll,
     });
+
 
     // Streaming text effect hook (typewriter animation for new transcripts)
     const { streamingSegmentId, getDisplayText } = useTranscriptStreaming(
@@ -423,6 +464,34 @@ export const VirtualizedTranscriptView: React.FC<VirtualizedTranscriptViewProps>
 
     // Use simple rendering for small lists, virtualization for large lists
     const useVirtualization = displaySegments.length >= VIRTUALIZATION_THRESHOLD;
+
+    // Follow the playhead: bring the line being spoken into view, but only
+    // while the recording is playing and only when it has scrolled out of
+    // sight, so reading somewhere else is never yanked away.
+    useEffect(() => {
+        if (!followActiveSegment || !activeSegmentId) return;
+        const index = displaySegments.findIndex((segment) => segment.id === activeSegmentId);
+        if (index < 0) return;
+
+        const container = scrollRef.current;
+        const element = container?.querySelector<HTMLElement>(
+            `[id="segment-${CSS.escape(activeSegmentId)}"]`,
+        );
+        if (container && element) {
+            const line = element.getBoundingClientRect();
+            const view = container.getBoundingClientRect();
+            if (line.top >= view.top && line.bottom <= view.bottom) return;
+        }
+
+        if (useVirtualization) {
+            virtualizer.scrollToIndex(index, { align: 'center' });
+        } else {
+            element?.scrollIntoView({ block: 'center', behavior: 'smooth' });
+        }
+        // `virtualizer` is stable for the life of the list; re-running on it
+        // would scroll on every measurement it takes.
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [activeSegmentId, followActiveSegment, displaySegments, useVirtualization]);
 
     return (
         <div
@@ -497,6 +566,8 @@ export const VirtualizedTranscriptView: React.FC<VirtualizedTranscriptViewProps>
                                         speaker={segment.speaker}
                                         userName={userName}
                                         onRenameSpeaker={onRenameSpeaker}
+                                        isActive={segment.id === activeSegmentId}
+                                        onSeekTo={onSeekTo}
                                     />
                                 </div>
                             );
@@ -559,6 +630,8 @@ export const VirtualizedTranscriptView: React.FC<VirtualizedTranscriptViewProps>
                                         speaker={segment.speaker}
                                         userName={userName}
                                         onRenameSpeaker={onRenameSpeaker}
+                                        isActive={segment.id === activeSegmentId}
+                                        onSeekTo={onSeekTo}
                                     />
                                 </motion.div>
                             );

@@ -14,13 +14,17 @@
  *   - otherwise  → converted inline from `transcripts` below
  */
 
-import { useMemo, useState } from 'react';
+import { useCallback, useMemo, useRef, useState } from 'react';
 import { useLocale, useTranslations } from 'next-intl';
 import { Transcript, TranscriptSegmentData } from '@/types';
 import { Calendar, Clock } from 'lucide-react';
 import { SpeakerRenameDialog } from './SpeakerRenameDialog';
-import { VirtualizedTranscriptView } from '@/components/VirtualizedTranscriptView';
+import {
+  VirtualizedTranscriptView,
+  mergeAdjacentSameSpeaker,
+} from '@/components/VirtualizedTranscriptView';
 import { TranscriptButtonGroup } from './TranscriptButtonGroup';
+import { RecordingPlayer, RecordingPlayerHandle } from './RecordingPlayer';
 
 interface TranscriptPanelProps {
   transcripts: Transcript[];
@@ -83,6 +87,12 @@ export function TranscriptPanel({
   const t = useTranslations('meetingDetails');
   const locale = useLocale();
   const [renameTarget, setRenameTarget] = useState<string | null>(null);
+  // Which line the recording is at, and whether it is moving. Only these two
+  // come back from the player; the playhead itself stays inside it.
+  const [activeSegmentId, setActiveSegmentId] = useState<string | null>(null);
+  const [isPlaying, setIsPlaying] = useState(false);
+  const playerRef = useRef<RecordingPlayerHandle>(null);
+  const seekTo = useCallback((seconds: number) => playerRef.current?.seek(seconds), []);
 
   const convertedSegments = useMemo(() => {
     if (usePagination && segments) return segments;
@@ -95,6 +105,13 @@ export function TranscriptPanel({
       speaker: t.speaker,
     }));
   }, [transcripts, usePagination, segments]);
+
+  // The player has to name the same lines the transcript draws, and the
+  // transcript draws one bubble per turn rather than per VAD fragment.
+  const displayedSegments = useMemo(
+    () => mergeAdjacentSameSpeaker(convertedSegments),
+    [convertedSegments],
+  );
 
   // Date + time range for the header. Start comes from the meeting timestamp;
   // the end is derived from the furthest transcript position we know about.
@@ -172,6 +189,9 @@ export function TranscriptPanel({
       <div className="flex-1 overflow-hidden px-4 pb-4">
         <VirtualizedTranscriptView
           onRenameSpeaker={meetingId ? setRenameTarget : undefined}
+          activeSegmentId={activeSegmentId}
+          onSeekTo={isRecording ? undefined : seekTo}
+          followActiveSegment={isPlaying}
           segments={convertedSegments}
           isRecording={isRecording}
           isPaused={false}
@@ -187,6 +207,18 @@ export function TranscriptPanel({
           onLoadMore={onLoadMore}
         />
       </div>
+
+      {/* Playing a recording only makes sense once it exists; the player takes
+          up no room when the meeting has no audio to play. */}
+      {!isRecording && (
+        <RecordingPlayer
+          ref={playerRef}
+          meetingFolderPath={meetingFolderPath}
+          segments={displayedSegments}
+          onActiveSegmentChange={setActiveSegmentId}
+          onPlayingChange={setIsPlaying}
+        />
+      )}
     </div>
   );
 }

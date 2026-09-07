@@ -36,6 +36,35 @@ use super::constants::AUDIO_EXTENSIONS;
 /// Tauri's `convertFileSrc(path, "recording")` rather than by hand.
 pub const SCHEME: &str = "recording";
 
+/// The file the player should open for a meeting, if its recording is still
+/// on disk. The frontend turns this into a URL with `convertFileSrc`.
+///
+/// Meetings recorded by the application have `audio.mp4`; imported ones keep
+/// whatever they were imported as, and a meeting whose folder was moved or
+/// emptied has nothing to play, which is `None` rather than an error.
+#[tauri::command]
+pub async fn meeting_playback_file<R: Runtime>(
+    app: AppHandle<R>,
+    meeting_folder: String,
+) -> Result<Option<String>, String> {
+    let folder = PathBuf::from(meeting_folder.trim());
+    if folder.as_os_str().is_empty() || !folder.is_dir() {
+        return Ok(None);
+    }
+    let folder = folder
+        .canonicalize()
+        .map_err(|error| format!("Could not resolve the meeting folder: {error}"))?;
+
+    let roots = super::recording_preferences::recording_roots(&app).await;
+    if !roots.iter().any(|root| folder.starts_with(root)) {
+        return Err("That folder is not a recording folder".to_string());
+    }
+
+    Ok(super::retranscription::find_audio_file(&folder)
+        .ok()
+        .map(|path| path.to_string_lossy().into_owned()))
+}
+
 /// Answer one request from the player.
 pub fn respond<R: Runtime>(app: &AppHandle<R>, request: &Request<Vec<u8>>) -> Response<Vec<u8>> {
     let Some(path) = requested_path(request.uri().path()) else {

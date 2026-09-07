@@ -727,6 +727,7 @@ pub fn run() {
             // Playback device detection (Bluetooth warning)
             audio::recording_commands::get_active_audio_output,
             // Audio recovery commands (for transcript recovery feature)
+            audio::recording_protocol::meeting_playback_file,
             audio::checkpoint_recovery::recover_audio_from_checkpoints,
             audio::checkpoint_recovery::cleanup_checkpoints,
             audio::checkpoint_recovery::has_audio_checkpoints,

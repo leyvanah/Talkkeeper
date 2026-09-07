@@ -179,6 +179,7 @@
     "recoverButton": "Восстановить",
     "silencePlaceholder": "[Тишина]",
     "renameSpeakerTitle": "Переименовать «{speaker}» — нажмите, чтобы указать, кто это",
+    "playFromHere": "Воспроизвести с этого места",
     "recordingPausedMessage": "Запись приостановлена",
     "listeningForSpeech": "Ожидание речи…",
     "clickResumeToContinue": "Нажмите «Продолжить», чтобы возобновить запись",
@@ -251,6 +252,10 @@
   "meetingDetails": {
     "untitledMeeting": "Встреча без названия",
     "transcriptTab": "Транскрипт",
+    "playerPlay": "Воспроизвести запись",
+    "playerPause": "Пауза",
+    "playerPosition": "Позиция в записи",
+    "playerError": "Запись не удалось воспроизвести",
     "speakerWhoIs": "Кто такой {speaker}?",
     "speakerRenameHint": "Изменит каждую реплику <name></name> в этой встрече. Очистите поле и сохраните, чтобы убрать назначенное имя.",
     "speakerNamePlaceholder": "например, Дима",
