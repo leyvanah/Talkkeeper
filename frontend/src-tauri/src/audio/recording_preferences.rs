@@ -10,14 +10,17 @@
 //! | macOS   | `~/Movies/meetily-recordings`                      |
 //! | Linux   | `~/Videos/meetily-recordings` (or Documents)       |
 //!
-//! Layout is `<folder>/<sanitized meeting name>/audio.mp4`, alongside
-//! `metadata.json` and `transcripts.json`.
+//! Layout is `<folder>/rec-<32 hex>/audio.mp4`, alongside `mic.mp4`,
+//! `system.mp4`, the 16 kHz working tracks in `.work/`, and `metadata.json`.
 //!
-//! Two things regularly catch people out:
+//! Three things regularly catch people out:
 //!   1. The container is **`.mp4`**, not `.wav` — anything reading recordings
 //!      back (e.g. diarization) must decode it first.
 //!   2. The folder is **not** the app data root, so searching only there finds
 //!      nothing. See `diarization::find_meeting_audio` for the correct lookup.
+//!   3. The folder name says **nothing** about the meeting, on purpose: a
+//!      meeting named after a person would otherwise put that name on disk.
+//!      The database holds the path; there is no way back from the folder.
 
 use log::{info, warn};
 use once_cell::sync::Lazy;
@@ -552,7 +555,7 @@ pub async fn discard_recording_folder<R: Runtime>(
     if path_canon.is_dir() {
         std::fs::remove_dir_all(&path_canon)
             .map_err(|e| format!("Failed to discard folder: {e}"))?;
-        info!("Discarded short recording folder: {}", path_canon.display());
+        info!("Discarded recording folder: {}", path_canon.display());
     } else if path_canon.is_file() {
         std::fs::remove_file(&path_canon).map_err(|e| format!("Failed to discard file: {e}"))?;
     }
