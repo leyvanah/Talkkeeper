@@ -322,6 +322,7 @@
     "retranscribeVocabularyClearing": "Очистка…",
     "retranscribeVocabularyCleared": "Словарь встречи очищен",
     "retranscribeComplete": "{count, plural, one {Перетранскрибирование завершено: создан # сегмент.} few {Перетранскрибирование завершено: создано # сегмента.} many {Перетранскрибирование завершено: создано # сегментов.} other {Перетранскрибирование завершено: создано # сегмента.}}",
+    "retranscribeCancel": "Отменить",
     "retranscribeCancelled": "Перетранскрибирование отменено",
     "retranscribeStalled": "Перетранскрибирование перестало продвигаться и было отменено.",
     "retranscribeFailed": "Перетранскрибирование не удалось",

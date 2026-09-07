@@ -9,13 +9,17 @@
  * app while an hour of audio is being re-read.
  */
 
+import { useState } from 'react';
 import { useTranslations } from 'next-intl';
-import { Loader2, Sparkles } from 'lucide-react';
+import { Loader2, Sparkles, X } from 'lucide-react';
+import { toast } from 'sonner';
 import { useRetranscription } from '@/contexts/RetranscriptionContext';
 
 export function RetranscriptionIndicator() {
   const t = useTranslations('app');
-  const { job, needsAmbientIndicator } = useRetranscription();
+  const td = useTranslations('meetingDetails');
+  const { job, needsAmbientIndicator, cancel } = useRetranscription();
+  const [stopping, setStopping] = useState(false);
 
   if (!job || !needsAmbientIndicator) return null;
 
@@ -37,13 +41,34 @@ export function RetranscriptionIndicator() {
             <p className="text-sm font-semibold text-[var(--af-text)]">
               {t('postCallImprovingTranscript')}
             </p>
-            <span className="shrink-0 text-xs tabular-nums text-[var(--af-text-3)]">
-              {visibleProgress}%
-            </span>
+            <div className="flex shrink-0 items-center gap-2">
+              <span className="text-xs tabular-nums text-[var(--af-text-3)]">
+                {visibleProgress}%
+              </span>
+              {/* The work runs with no window of its own, so this is the only
+                  place it can be stopped from. */}
+              <button
+                type="button"
+                aria-label={td('retranscribeCancel')}
+                title={td('retranscribeCancel')}
+                disabled={stopping}
+                onClick={() => {
+                  setStopping(true);
+                  void cancel()
+                    .then(() => toast.info(td('retranscribeCancelled')))
+                    .finally(() => setStopping(false));
+                }}
+                className="rounded-md p-1 text-[var(--af-text-3)] transition-colors hover:bg-[var(--af-panel-2)] hover:text-[var(--af-text)] disabled:opacity-50"
+              >
+                <X size={14} />
+              </button>
+            </div>
           </div>
           <div className="mt-1 flex items-center gap-2 text-xs text-[var(--af-text-2)]">
             <Loader2 size={13} className="shrink-0 animate-spin text-blue-400" />
-            <span className="truncate">{job.message}</span>
+            {/* A job picked up from the backend has said nothing yet, and a
+                long recording is decoded in silence before it does. */}
+            <span className="truncate">{job.message || t('postCallPreparing')}</span>
           </div>
           <div className="mt-3 h-1.5 overflow-hidden rounded-full bg-[var(--af-panel-2)]">
             <div

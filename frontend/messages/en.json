@@ -322,6 +322,7 @@
     "retranscribeVocabularyClearing": "Clearing…",
     "retranscribeVocabularyCleared": "Meeting vocabulary cleared",
     "retranscribeComplete": "{count, plural, one {Retranscription complete! # segment created.} other {Retranscription complete! # segments created.}}",
+    "retranscribeCancel": "Cancel",
     "retranscribeCancelled": "Retranscription cancelled",
     "retranscribeStalled": "Retranscription stopped making progress and was cancelled.",
     "retranscribeFailed": "Retranscription failed",

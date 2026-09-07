@@ -200,6 +200,27 @@ export function RetranscriptionProvider({ children }: { children: React.ReactNod
 
   useEffect(() => clearStallTimer, [clearStallTimer]);
 
+  // A window can open, or be reloaded, while work is already under way - and
+  // the first minutes of a long recording are decoded in silence, with no
+  // progress to announce it. Without asking, the screen would show nothing
+  // running and offer no way to stop it.
+  useEffect(() => {
+    let cancelled = false;
+    void invoke<{ in_progress: boolean; meeting_id: string | null }>(
+      'retranscription_status_command',
+    )
+      .then((status) => {
+        if (cancelled || !status.in_progress || !status.meeting_id) return;
+        setJob((current) => current ?? {
+          meetingId: status.meeting_id as string,
+          progress: 0,
+          message: '',
+        });
+      })
+      .catch(() => undefined);
+    return () => { cancelled = true; };
+  }, []);
+
   const start = useCallback(async (params: RetranscriptionStartParams) => {
     const {
       meetingId,
