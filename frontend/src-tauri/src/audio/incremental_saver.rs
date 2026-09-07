@@ -301,6 +301,18 @@ impl IncrementalAudioSaver {
     }
 }
 
+/// Whether a recording left tracks that were never given their final name.
+fn has_unfinished_tracks(folder: &std::path::Path) -> bool {
+    let Ok(entries) = std::fs::read_dir(folder) else {
+        return false;
+    };
+    entries.flatten().any(|entry| {
+        let path = entry.path();
+        path.extension().and_then(|ext| ext.to_str()) == Some(super::streaming_encoder::PARTIAL_EXT)
+            && std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0) > 0
+    })
+}
+
 /// Audio recovery status for transcript recovery feature
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AudioRecoveryStatus {
@@ -368,12 +380,33 @@ pub async fn recover_audio_from_checkpoints(
     let checkpoints_root = folder_path.join(".checkpoints");
 
     // Getting here means the recording never closed, so its working tracks are
-    // half-written and unreadable. Recovery rebuilds the delivery tracks, which
+    // half-written and unreadable. Recovery restores the delivery tracks, which
     // is what the later passes will fall back to.
     super::working_track::discard_partial_tracks(&folder_path);
 
-    // New format stores each track in its own subfolder. Recover mixed playback
-    // exactly as legacy recovery did; mic/system remain optional diagnostics.
+    // A recording made by this build is already encoded: it was written as it
+    // went and only ever lacked its final name.
+    let streamed = super::streaming_encoder::recover_partial_tracks(&folder_path);
+    if !streamed.is_empty() {
+        let mixed = folder_path.join("audio.mp4");
+        let recovered_mixed = streamed.iter().any(|path| *path == mixed);
+        let seconds = recovered_mixed
+            .then(|| super::decoder::decode_audio_file(&mixed).ok())
+            .flatten()
+            .map(|audio| audio.duration_seconds)
+            .unwrap_or(0.0);
+        return Ok(AudioRecoveryStatus {
+            status: if recovered_mixed { "success" } else { "partial" }.to_string(),
+            chunk_count: streamed.len() as u32,
+            estimated_duration_seconds: seconds,
+            audio_file_path: recovered_mixed.then(|| mixed.to_string_lossy().into_owned()),
+            message: format!("Recovered {} interrupted track(s)", streamed.len()),
+        });
+    }
+
+    // Older recordings were written in pieces, each track in its own subfolder.
+    // Recover mixed playback exactly as legacy recovery did; mic/system remain
+    // optional diagnostics.
     let checkpoints_dir = if checkpoints_root.join("audio").is_dir() {
         checkpoints_root.join("audio")
     } else {
@@ -483,6 +516,13 @@ pub async fn cleanup_checkpoints(meeting_folder: String) -> Result<(), String> {
 #[tauri::command]
 pub async fn has_audio_checkpoints(meeting_folder: String) -> Result<bool, String> {
     let folder_path = PathBuf::from(&meeting_folder);
+
+    // A recording made by this build leaves its tracks under a temporary name
+    // instead of checkpoint pieces; either way there is audio to recover.
+    if has_unfinished_tracks(&folder_path) {
+        return Ok(true);
+    }
+
     let checkpoints_root = folder_path.join(".checkpoints");
     let checkpoints_dir = if checkpoints_root.join("audio").is_dir() {
         checkpoints_root.join("audio")

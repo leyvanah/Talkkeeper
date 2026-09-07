@@ -365,11 +365,6 @@ impl RecordingManager {
         Ok(())
     }
 
-    /// Get recording stats from the saver
-    pub fn get_recording_stats(&self) -> (usize, u32) {
-        self.recording_saver.get_stats()
-    }
-
     /// Check if currently recording
     pub fn is_recording(&self) -> bool {
         self.state.is_recording()

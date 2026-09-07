@@ -1,5 +1,4 @@
 use std::sync::{Arc, Mutex};
-use tokio::sync::Mutex as AsyncMutex;
 use anyhow::Result;
 use log::{info, warn, error};
 use tauri::{AppHandle, Runtime, Emitter};
@@ -9,7 +8,7 @@ use std::path::PathBuf;
 
 use super::recording_state::AudioChunk;
 use super::audio_processing::create_meeting_folder;
-use super::incremental_saver::IncrementalAudioSaver;
+use super::streaming_encoder::{self, StreamingEncoder};
 
 /// Structured transcript segment for JSON export
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -57,39 +56,168 @@ pub struct DeviceInfo {
     pub system_audio: Option<String>,
 }
 
-/// New recording saver using incremental saving strategy.
-/// Writes three tracks when auto-save is on:
+/// Where each track goes, and what the saver reports when it is done.
+struct FinishedTracks {
+    mixed: Result<PathBuf, String>,
+    mic: Option<PathBuf>,
+    system: Option<PathBuf>,
+}
+
+/// The rate everything in the recording pipeline runs at.
+const RECORDING_SAMPLE_RATE: u32 = 48000;
+
+#[derive(Clone, Copy)]
+enum Track {
+    Mixed,
+    Mic,
+    System,
+}
+
+impl Track {
+    /// Basename of the file, and the label used when something goes wrong.
+    fn name(self) -> &'static str {
+        match self {
+            Track::Mixed => "audio",
+            Track::Mic => "mic",
+            Track::System => "system",
+        }
+    }
+}
+
+/// The three tracks of one recording, each encoded as it arrives.
+struct RecordingTracks {
+    folder: PathBuf,
+    mixed: Option<StreamingEncoder>,
+    mic: Option<StreamingEncoder>,
+    system: Option<StreamingEncoder>,
+}
+
+impl RecordingTracks {
+    fn start(folder: PathBuf) -> Self {
+        let open = |track: Track| {
+            let path = folder.join(format!("{}.mp4", track.name()));
+            match StreamingEncoder::start(
+                track.name(),
+                path,
+                RECORDING_SAMPLE_RATE,
+                1,
+                streaming_encoder::MP4_AAC,
+            ) {
+                Ok(encoder) => Some(encoder),
+                Err(error) => {
+                    error!("Could not start the {} track: {error}", track.name());
+                    None
+                }
+            }
+        };
+        Self {
+            mixed: open(Track::Mixed),
+            mic: open(Track::Mic),
+            system: open(Track::System),
+            folder,
+        }
+    }
+
+    fn slot(&mut self, track: Track) -> &mut Option<StreamingEncoder> {
+        match track {
+            Track::Mixed => &mut self.mixed,
+            Track::Mic => &mut self.mic,
+            Track::System => &mut self.system,
+        }
+    }
+
+    fn path_of(&self, track: Track) -> PathBuf {
+        self.folder.join(format!("{}.mp4", track.name()))
+    }
+
+    fn write(&mut self, track: Track, samples: &[f32]) {
+        let path = self.path_of(track);
+        let slot = self.slot(track);
+        let Some(encoder) = slot.as_mut() else {
+            return;
+        };
+        let Err(error) = encoder.write(samples) else {
+            return;
+        };
+        // The encoder is gone, but what it already wrote is a recording of
+        // everything up to this moment - which is worth far more than a clean
+        // failure. Publish it and carry on without this track.
+        let seconds = encoder.seconds_written(1);
+        error!(
+            "Stopped recording the {} track after {seconds:.0}s: {error}",
+            track.name()
+        );
+        if let Some(encoder) = slot.take() {
+            drop(encoder.finish());
+        }
+        match streaming_encoder::publish_partial(&path) {
+            Ok(path) => warn!("Kept what was recorded: {}", path.display()),
+            Err(error) => error!("Nothing could be kept of that track: {error}"),
+        }
+    }
+
+    /// Close every track. The mixed one is what the meeting is played from, so
+    /// its failure is the recording failing; the source tracks are optional.
+    fn finish(mut self) -> FinishedTracks {
+        let close = |encoder: Option<StreamingEncoder>, track: Track, path: PathBuf| {
+            let encoder = encoder?;
+            let seconds = encoder.seconds_written(1);
+            match encoder.finish() {
+                Ok(path) => {
+                    info!("✅ Recorded {} ({seconds:.1}s): {}", track.name(), path.display());
+                    Some(path)
+                }
+                Err(error) => {
+                    error!("The {} track did not close cleanly: {error}", track.name());
+                    streaming_encoder::publish_partial(&path).ok()
+                }
+            }
+        };
+        let mixed_path = self.path_of(Track::Mixed);
+        let mic_path = self.path_of(Track::Mic);
+        let system_path = self.path_of(Track::System);
+        FinishedTracks {
+            mixed: close(self.mixed.take(), Track::Mixed, mixed_path)
+                .ok_or_else(|| "The recording could not be written".to_string()),
+            mic: close(self.mic.take(), Track::Mic, mic_path),
+            system: close(self.system.take(), Track::System, system_path),
+        }
+    }
+}
+
+/// Writes three tracks while the recording runs, when auto-save is on:
 ///   - `audio.mp4`  mixed playback
 ///   - `mic.mp4`    local user (You)
 ///   - `system.mp4` remote / computer audio
+///
+/// Each is encoded as it arrives (see [`super::streaming_encoder`]), on a
+/// thread of its own so that no encoding happens on the async runtime that
+/// also serves the window. Stopping therefore costs the time to close three
+/// pipes, not the time to encode the recording again.
 pub struct RecordingSaver {
-    mixed_saver: Option<Arc<AsyncMutex<IncrementalAudioSaver>>>,
-    mic_saver: Option<Arc<AsyncMutex<IncrementalAudioSaver>>>,
-    system_saver: Option<Arc<AsyncMutex<IncrementalAudioSaver>>>,
+    /// True while the tracks are being written to disk at all.
+    saving_audio: bool,
+    /// Resolves when the writing thread has closed and published the tracks.
+    finished_tracks: Option<tokio::sync::oneshot::Receiver<FinishedTracks>>,
     recordings_folder: Option<PathBuf>,
     meeting_folder: Option<PathBuf>,
     meeting_name: Option<String>,
     metadata: Option<MeetingMetadata>,
     transcript_segments: Arc<Mutex<Vec<TranscriptSegment>>>,
-    chunk_receiver: Option<mpsc::UnboundedReceiver<AudioChunk>>,
     is_saving: Arc<Mutex<bool>>,
-    accumulation_handle: Option<tokio::task::JoinHandle<()>>,
 }
 
 impl RecordingSaver {
     pub fn new() -> Self {
         Self {
-            mixed_saver: None,
-            mic_saver: None,
-            system_saver: None,
+            saving_audio: false,
+            finished_tracks: None,
             recordings_folder: None,
             meeting_folder: None,
             meeting_name: None,
             metadata: None,
             transcript_segments: Arc::new(Mutex::new(Vec::new())),
-            chunk_receiver: None,
             is_saving: Arc::new(Mutex::new(false)),
-            accumulation_handle: None,
         }
     }
 
@@ -201,42 +329,48 @@ impl RecordingSaver {
         }
 
         // Create the channel only after the destination is ready.
-        let (sender, receiver) = mpsc::unbounded_channel::<AudioChunk>();
-        self.chunk_receiver = Some(receiver);
+        let (sender, mut receiver) = mpsc::unbounded_channel::<AudioChunk>();
+        let (finished_sender, finished_receiver) = tokio::sync::oneshot::channel();
+        self.finished_tracks = Some(finished_receiver);
+        self.saving_audio = auto_save;
 
-        // Start accumulation task
-        let mixed_saver = self.mixed_saver.clone();
-        let mic_saver = self.mic_saver.clone();
-        let system_saver = self.system_saver.clone();
-        let save_audio = auto_save;
-
-        if let Some(mut receiver) = self.chunk_receiver.take() {
-            self.accumulation_handle = Some(tokio::spawn(async move {
+        // The encoders block: they write into a pipe and wait for FFmpeg to
+        // take it. That belongs on a thread of its own, not on the runtime
+        // that also serves the window, so this loop is a plain thread reading
+        // the channel rather than a task.
+        let folder = self.meeting_folder.clone();
+        std::thread::Builder::new()
+            .name("recording-tracks".to_string())
+            .spawn(move || {
                 use super::recording_state::DeviceType;
-                info!("Recording saver accumulation task started (save_audio: {})", save_audio);
+                info!("Track writer started (save_audio: {auto_save})");
 
-                while let Some(chunk) = receiver.recv().await {
-                    if !save_audio {
-                        continue;
-                    }
+                let mut tracks = auto_save
+                    .then(|| folder.map(RecordingTracks::start))
+                    .flatten();
 
-                    let target = match chunk.device_type {
-                        DeviceType::Mixed => mixed_saver.as_ref(),
-                        DeviceType::Microphone => mic_saver.as_ref(),
-                        DeviceType::System => system_saver.as_ref(),
-                    };
-
-                    if let Some(saver_arc) = target {
-                        let mut saver_guard = saver_arc.lock().await;
-                        if let Err(e) = saver_guard.add_chunk(chunk) {
-                            error!("Failed to add chunk to track saver: {}", e);
+                while let Some(chunk) = receiver.blocking_recv() {
+                    if let Some(tracks) = tracks.as_mut() {
+                        match chunk.device_type {
+                            DeviceType::Mixed => tracks.write(Track::Mixed, &chunk.data),
+                            DeviceType::Microphone => tracks.write(Track::Mic, &chunk.data),
+                            DeviceType::System => tracks.write(Track::System, &chunk.data),
                         }
                     }
                 }
 
-                info!("Recording saver accumulation task ended");
-            }));
-        }
+                let finished = match tracks {
+                    Some(tracks) => tracks.finish(),
+                    None => FinishedTracks {
+                        mixed: Err("Audio saving was not enabled".to_string()),
+                        mic: None,
+                        system: None,
+                    },
+                };
+                info!("Track writer ended");
+                let _ = finished_sender.send(finished);
+            })
+            .map_err(|e| anyhow::anyhow!("Failed to start the track writer: {e}"))?;
 
         // Set saving flag
         if let Ok(mut is_saving) = self.is_saving.lock() {
@@ -258,22 +392,14 @@ impl RecordingSaver {
             .unwrap_or_else(super::recording_preferences::get_default_recordings_folder);
 
         // Create meeting folder structure (with or without .checkpoints/ subdirectory)
-        let meeting_folder = create_meeting_folder(&base_folder, meeting_name, create_checkpoints)?;
+        let meeting_folder = create_meeting_folder(&base_folder, meeting_name, false)?;
 
-        // Three tracks: mixed playback + separate mic/system for offline diarization
+        // The encoders themselves are opened by the writing thread, which owns
+        // them; here we only know whether there will be any.
         if create_checkpoints {
-            let mixed = IncrementalAudioSaver::new_track(meeting_folder.clone(), 48000, "audio")?;
-            let mic = IncrementalAudioSaver::new_track(meeting_folder.clone(), 48000, "mic")?;
-            let system = IncrementalAudioSaver::new_track(meeting_folder.clone(), 48000, "system")?;
-            self.mixed_saver = Some(Arc::new(AsyncMutex::new(mixed)));
-            self.mic_saver = Some(Arc::new(AsyncMutex::new(mic)));
-            self.system_saver = Some(Arc::new(AsyncMutex::new(system)));
-            info!(
-                "✅ Dual-track audio savers initialized (audio/mic/system) for: {}",
-                meeting_name
-            );
+            info!("✅ Meeting folder ready for three tracks (audio/mic/system): {meeting_name}");
         } else {
-            info!("⚠️  Skipped incremental audio saver (auto-save disabled)");
+            info!("⚠️  Recording without saving audio (auto-save disabled)");
         }
 
         // Create initial metadata
@@ -372,19 +498,7 @@ impl RecordingSaver {
         Ok(())
     }
 
-    pub fn get_stats(&self) -> (usize, u32) {
-        if let Some(ref saver) = self.mixed_saver {
-            if let Ok(guard) = saver.try_lock() {
-                (guard.get_checkpoint_count() as usize, 48000)
-            } else {
-                (0, 48000)
-            }
-        } else {
-            (0, 48000)
-        }
-    }
-
-    /// Stop and save using incremental saving approach
+    /// Close the tracks and write the meeting out.
     ///
     /// # Arguments
     /// * `app` - Tauri app handle for emitting events
@@ -396,17 +510,11 @@ impl RecordingSaver {
     ) -> Result<Option<String>, String> {
         info!("Stopping recording saver");
 
-        // The pipeline has already stopped and dropped its sender. Drain every
-        // queued track chunk before taking the saver locks for finalization.
         if let Ok(mut is_saving) = self.is_saving.lock() {
             *is_saving = false;
         }
-        if let Some(handle) = self.accumulation_handle.take() {
-            handle.await.map_err(|e| format!("Recording saver task failed: {e}"))?;
-        }
 
-        // Check if incremental saver exists (indicates auto_save was enabled)
-        let should_save_audio = self.mixed_saver.is_some();
+        let should_save_audio = self.saving_audio;
 
         if !should_save_audio {
             info!("⚠️  No audio saver initialized (auto-save was disabled) - skipping audio finalization");
@@ -418,49 +526,18 @@ impl RecordingSaver {
             return Ok(None);
         }
 
-        // Finalize all tracks. Mixed is required; mic/system are best-effort
-        // (one side may be silent the whole meeting).
-        async fn finalize_track(
-            saver: &Option<Arc<AsyncMutex<IncrementalAudioSaver>>>,
-            label: &str,
-            required: bool,
-        ) -> Result<Option<PathBuf>, String> {
-            let Some(saver_arc) = saver else {
-                return if required {
-                    Err(format!("No {label} saver initialized"))
-                } else {
-                    Ok(None)
-                };
-            };
-            let mut guard = saver_arc.lock().await;
-            match guard.finalize().await {
-                Ok(path) => {
-                    info!("✅ Finalized {label}: {}", path.display());
-                    Ok(Some(path))
-                }
-                Err(e) => {
-                    if required {
-                        error!("❌ Failed to finalize {label}: {e}");
-                        Err(format!("Failed to finalize {label}: {e}"))
-                    } else {
-                        warn!("⚠️ Optional track {label} not finalized: {e}");
-                        Ok(None)
-                    }
-                }
-            }
-        }
-
-        // The three tracks are independent encodes of the same length, so run
-        // them together: the owner waits for one, not for three in a row.
-        let (final_audio_path, mic_audio_path, system_audio_path) = tokio::join!(
-            finalize_track(&self.mixed_saver, "audio (mixed)", true),
-            finalize_track(&self.mic_saver, "mic", false),
-            finalize_track(&self.system_saver, "system", false),
-        );
-        let final_audio_path = final_audio_path?
-            .ok_or_else(|| "Mixed audio path missing".to_string())?;
-        let mic_audio_path = mic_audio_path?;
-        let system_audio_path = system_audio_path?;
+        // The pipeline has stopped and dropped its sender, so the writing
+        // thread is closing the encoders. All that is left is the tail of each
+        // one: everything before it was encoded while the meeting was running.
+        let finished = match self.finished_tracks.take() {
+            Some(finished) => finished
+                .await
+                .map_err(|_| "The track writer stopped without reporting".to_string())?,
+            None => return Err("No track writer was started".to_string()),
+        };
+        let final_audio_path = finished.mixed?;
+        let mic_audio_path = finished.mic;
+        let system_audio_path = finished.system;
 
         // Save final transcripts.json with validation
         if let Some(folder) = &self.meeting_folder {
