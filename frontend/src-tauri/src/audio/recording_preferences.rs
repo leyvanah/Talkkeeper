@@ -485,6 +485,30 @@ pub async fn select_recording_folder<R: Runtime>(
     .map_err(|error| format!("Recording folder dialog failed: {error}"))?
 }
 
+/// Every folder a recording of this application may live in, canonicalized.
+///
+/// Anything that reaches into recordings from outside — deleting a discarded
+/// take, serving a track to the player — decides what it may touch by this
+/// list, so there is one answer to "is that ours" rather than three.
+pub async fn recording_roots<R: Runtime>(app: &AppHandle<R>) -> Vec<PathBuf> {
+    let configured = load_recording_preferences(app)
+        .await
+        .map(|preferences| preferences.save_folder)
+        .unwrap_or_else(|error| {
+            warn!("Falling back to the default recordings folder: {error}");
+            get_default_recordings_folder()
+        });
+
+    [
+        configured,
+        get_default_recordings_folder(),
+        crate::paths::install_data_root(),
+    ]
+    .into_iter()
+    .map(|root| root.canonicalize().unwrap_or(root))
+    .collect()
+}
+
 /// Delete a just-written meeting folder (used when a take is discarded as too short).
 /// Only removes paths under the configured recordings root for safety.
 #[tauri::command]
@@ -502,18 +526,7 @@ pub async fn discard_recording_folder<R: Runtime>(
 
     let path_canon = path.canonicalize().map_err(|e| e.to_string())?;
 
-    let preferences = load_recording_preferences(&app)
-        .await
-        .map_err(|e| format!("Failed to load recording preferences: {e}"))?;
-    let roots = [
-        preferences.save_folder,
-        get_default_recordings_folder(),
-        crate::paths::install_data_root(),
-    ];
-    let roots_canon: Vec<PathBuf> = roots
-        .into_iter()
-        .map(|root| root.canonicalize().unwrap_or(root))
-        .collect();
+    let roots_canon = recording_roots(&app).await;
     // Reject equality in a separate pass. A custom root can be nested beneath
     // the default root and must not pass merely because it is that root's child.
     let is_root = roots_canon.iter().any(|root| path_canon == *root);

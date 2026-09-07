@@ -253,14 +253,6 @@ fn get_transcription_status() -> TranscriptionStatus {
 }
 
 #[tauri::command]
-fn read_audio_file(file_path: String) -> Result<Vec<u8>, String> {
-    match std::fs::read(&file_path) {
-        Ok(data) => Ok(data),
-        Err(e) => Err(format!("Failed to read audio file: {}", e)),
-    }
-}
-
-#[tauri::command]
 async fn save_transcript(file_path: String, content: String) -> Result<(), String> {
     log_info!("Saving transcript to: {}", file_path);
 
@@ -445,6 +437,18 @@ pub fn run() {
     }
 
     builder
+        // Recordings are served to the player over their own URL scheme rather
+        // than handed across the IPC boundary as numbers. See
+        // `audio::recording_protocol` for what it will and will not serve.
+        .register_asynchronous_uri_scheme_protocol(
+            audio::recording_protocol::SCHEME,
+            |context, request, responder| {
+                let app = context.app_handle().clone();
+                std::thread::spawn(move || {
+                    responder.respond(audio::recording_protocol::respond(&app, &request));
+                });
+            },
+        )
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_store::Builder::default().build())
         .plugin(tauri_plugin_dialog::init())
@@ -612,7 +616,6 @@ pub fn run() {
             stop_recording,
             is_recording,
             get_transcription_status,
-            read_audio_file,
             save_transcript,
             analytics::commands::init_analytics,
             analytics::commands::disable_analytics,

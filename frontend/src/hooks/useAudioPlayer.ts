@@ -1,275 +1,154 @@
-import { useState, useEffect, useRef } from 'react';
-import { invoke } from '@tauri-apps/api/core';
+import { useCallback, useEffect, useRef, useState } from 'react';
+import { convertFileSrc } from '@tauri-apps/api/core';
+
+/**
+ * Plays a stored recording.
+ *
+ * The file is fetched over the application's own URL scheme (registered in
+ * `audio/recording_protocol.rs`) rather than read into the page: the webview
+ * asks for the parts it is playing and nothing more. Before, the whole file
+ * crossed the IPC boundary as a JSON array of numbers and was decoded into
+ * memory in full — for an hour of audio, about 150 MB of text and a 700 MB
+ * buffer, before the first sound.
+ *
+ * `currentTime` is updated per animation frame while playing rather than from
+ * `timeupdate`, which fires about four times a second: too coarse to follow a
+ * transcript with.
+ */
+
+/** Must match `recording_protocol::SCHEME`. */
+const RECORDING_SCHEME = 'recording';
 
 export const useAudioPlayer = (audioPath: string | null) => {
   const [isPlaying, setIsPlaying] = useState(false);
   const [currentTime, setCurrentTime] = useState(0);
   const [duration, setDuration] = useState(0);
   const [error, setError] = useState<string | null>(null);
-  const audioRef = useRef<AudioContext | null>(null);
-  const sourceRef = useRef<AudioBufferSourceNode | null>(null);
-  const startTimeRef = useRef<number>(0);
-  const audioBufferRef = useRef<AudioBuffer | null>(null);
-  const rafRef = useRef<number>();
-  const seekTimeRef = useRef<number>(0);
+  const elementRef = useRef<HTMLAudioElement | null>(null);
+  const frameRef = useRef<number | null>(null);
 
-  const initAudioContext = async () => {
-    try {
-      if (!audioRef.current) {
-        console.log('Creating new AudioContext');
-        const AudioContextClass = window.AudioContext || (window as any).webkitAudioContext;
-        audioRef.current = new AudioContextClass();
-        console.log('AudioContext created:', {
-          state: audioRef.current.state,
-          sampleRate: audioRef.current.sampleRate,
-        });
-      }
-
-      if (audioRef.current.state === 'suspended') {
-        console.log('Resuming suspended AudioContext');
-        await audioRef.current.resume();
-        console.log('AudioContext resumed:', audioRef.current.state);
-      }
-      
-      setError(null);
-      return true;
-    } catch (error) {
-      console.error('Error initializing AudioContext:', error);
-      setError('Failed to initialize audio');
-      return false;
+  const stopFollowing = useCallback(() => {
+    if (frameRef.current !== null) {
+      cancelAnimationFrame(frameRef.current);
+      frameRef.current = null;
     }
-  };
-
-  // Cleanup function
-  useEffect(() => {
-    return () => {
-      console.log('Cleaning up audio resources');
-      if (rafRef.current) {
-        cancelAnimationFrame(rafRef.current);
-      }
-      if (sourceRef.current) {
-        sourceRef.current.stop();
-      }
-      if (audioRef.current) {
-        audioRef.current.close();
-      }
-    };
   }, []);
 
-  const loadAudio = async () => {
+  const follow = useCallback(() => {
+    stopFollowing();
+    const step = () => {
+      const element = elementRef.current;
+      if (!element) return;
+      setCurrentTime(element.currentTime);
+      frameRef.current = requestAnimationFrame(step);
+    };
+    frameRef.current = requestAnimationFrame(step);
+  }, [stopFollowing]);
+
+  useEffect(() => {
+    setIsPlaying(false);
+    setCurrentTime(0);
+    setDuration(0);
+    setError(null);
+
     if (!audioPath) {
-      console.log('No audio path provided');
+      elementRef.current = null;
       return;
     }
 
-    try {
-      // Initialize context first
-      const initialized = await initAudioContext();
-      if (!initialized || !audioRef.current) {
-        console.error('Failed to initialize audio context');
-        return;
-      }
+    const element = new Audio(convertFileSrc(audioPath, RECORDING_SCHEME));
+    // Metadata is enough to draw the timeline; the audio itself follows the
+    // playhead, so opening a long meeting costs one small request.
+    element.preload = 'metadata';
+    elementRef.current = element;
 
-      console.log('Loading audio from:', audioPath);
-      
-      // Read the file using Tauri command
-      const result = await invoke<number[]>('read_audio_file', { 
-        filePath: audioPath 
-      });
-      
-      if (!result || result.length === 0) {
-        throw new Error('Empty audio data received');
-      }
-      
-      console.log('Audio file read, size:', result.length, 'bytes');
-      
-      // Create a copy of the audio data
-      const audioData = new Uint8Array(result).buffer;
-      
-      console.log('Created audio buffer, size:', audioData.byteLength, 'bytes');
-      
-      // Decode the audio data
-      const audioBuffer = await new Promise<AudioBuffer>((resolve, reject) => {
-        audioRef.current!.decodeAudioData(
-          audioData,
-          buffer => {
-            console.log('Audio decoded successfully:', {
-              duration: buffer.duration,
-              sampleRate: buffer.sampleRate,
-              numberOfChannels: buffer.numberOfChannels,
-              length: buffer.length
-            });
-            resolve(buffer);
-          },
-          error => {
-            console.error('Audio decoding failed:', error);
-            reject(new Error('Failed to decode audio data: ' + error));
-          }
-        );
-      });
-      
-      audioBufferRef.current = audioBuffer;
-      setDuration(audioBuffer.duration);
-      setCurrentTime(0);
-      setError(null);
-      console.log('Audio loaded and ready to play');
-    } catch (error) {
-      console.error('Error loading audio:', error);
-      if (error instanceof Error) {
-        console.error('Error details:', {
-          message: error.message,
-          name: error.name,
-          stack: error.stack,
-        });
-      }
-      setError('Failed to load audio file');
-    }
-  };
-
-  // Load audio when path changes
-  useEffect(() => {
-    console.log('Audio path changed:', audioPath);
-    if (audioPath) {
-      loadAudio();
-    }
-  }, [audioPath]);
-
-  const stopPlayback = () => {
-    console.log('Stopping playback');
-    if (rafRef.current) {
-      cancelAnimationFrame(rafRef.current);
-      rafRef.current = undefined;
-    }
-    if (sourceRef.current) {
-      try {
-        sourceRef.current.stop();
-        sourceRef.current.disconnect();
-      } catch (e) {
-        console.log('Error stopping source:', e);
-      }
-      sourceRef.current = null;
-    }
-    setIsPlaying(false);
-  };
-
-  const play = async () => {
-    console.log('Play requested');
-    
-    try {
-      // Initialize context if needed
-      const initialized = await initAudioContext();
-      if (!initialized) {
-        throw new Error('Audio context initialization failed');
-      }
-      if (!audioRef.current) {
-        throw new Error('Audio context is null after initialization');
-      }
-      if (!audioBufferRef.current) {
-        throw new Error('No audio buffer loaded - try loading the audio file first');
-      }
-      if (audioRef.current.state !== 'running') {
-        throw new Error(`Audio context is in invalid state: ${audioRef.current.state}`);
-      }
-
-      // Stop any existing playback
-      stopPlayback();
-
-      // Create and setup new source
-      console.log('Creating new audio source');
-      sourceRef.current = audioRef.current.createBufferSource();
-      sourceRef.current.buffer = audioBufferRef.current;
-      
-      console.log('Audio buffer details:', {
-        duration: audioBufferRef.current.duration,
-        sampleRate: audioBufferRef.current.sampleRate,
-        numberOfChannels: audioBufferRef.current.numberOfChannels,
-        length: audioBufferRef.current.length
-      });
-      
-      sourceRef.current.connect(audioRef.current.destination);
-      
-      // Setup ended callback
-      sourceRef.current.onended = () => {
-        console.log('Playback ended naturally');
-        stopPlayback();
-        setCurrentTime(0);
-      };
-      
-      // Start playback from the seek time
-      const startTime = seekTimeRef.current;
-      startTimeRef.current = audioRef.current.currentTime - startTime;
-      console.log('Starting playback', {
-        startTime,
-        contextTime: audioRef.current.currentTime,
-        seekTime: seekTimeRef.current
-      });
-      
-      sourceRef.current.start(0, startTime);
+    const onLoaded = () => setDuration(Number.isFinite(element.duration) ? element.duration : 0);
+    const onPlay = () => {
       setIsPlaying(true);
+      follow();
+    };
+    const onPause = () => {
+      setIsPlaying(false);
+      stopFollowing();
+      setCurrentTime(element.currentTime);
+    };
+    const onEnded = () => {
+      setIsPlaying(false);
+      stopFollowing();
+      setCurrentTime(0);
+    };
+    const onError = () => {
+      stopFollowing();
+      setIsPlaying(false);
+      setError(describe(element.error));
+    };
+    const onSeeked = () => setCurrentTime(element.currentTime);
+
+    element.addEventListener('loadedmetadata', onLoaded);
+    element.addEventListener('play', onPlay);
+    element.addEventListener('pause', onPause);
+    element.addEventListener('ended', onEnded);
+    element.addEventListener('error', onError);
+    element.addEventListener('seeked', onSeeked);
+
+    return () => {
+      stopFollowing();
+      element.pause();
+      element.removeEventListener('loadedmetadata', onLoaded);
+      element.removeEventListener('play', onPlay);
+      element.removeEventListener('pause', onPause);
+      element.removeEventListener('ended', onEnded);
+      element.removeEventListener('error', onError);
+      element.removeEventListener('seeked', onSeeked);
+      // Let the webview drop the connection rather than keep reading a file
+      // the page has moved on from.
+      element.removeAttribute('src');
+      element.load();
+      if (elementRef.current === element) {
+        elementRef.current = null;
+      }
+    };
+  }, [audioPath, follow, stopFollowing]);
+
+  const play = useCallback(async () => {
+    const element = elementRef.current;
+    if (!element) return;
+    try {
+      await element.play();
       setError(null);
-
-      // Setup time update
-      const updateTime = () => {
-        if (!audioRef.current || !sourceRef.current) {
-          console.log('Update cancelled - context or source is null');
-          return;
-        }
-        
-        const newTime = audioRef.current.currentTime - startTimeRef.current;
-        
-        if (newTime >= duration) {
-          console.log('Playback finished');
-          stopPlayback();
-          setCurrentTime(0);
-          seekTimeRef.current = 0;
-        } else {
-          setCurrentTime(newTime);
-          seekTimeRef.current = newTime;
-          rafRef.current = requestAnimationFrame(updateTime);
-        }
-      };
-      
-      rafRef.current = requestAnimationFrame(updateTime);
-    } catch (error) {
-      console.error('Error during playback:', error);
-      setError('Failed to play audio');
-      stopPlayback();
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : 'Could not play the recording');
     }
-  };
+  }, []);
 
-  const seek = async (time: number) => {
-    console.log('Seek requested:', time);
-    if (time < 0) time = 0;
-    if (time > duration) time = duration;
-    
-    const wasPlaying = isPlaying;
-    
-    // Stop current playback
-    stopPlayback();
-    
-    // Update both current time and seek time reference
-    seekTimeRef.current = time;
-    setCurrentTime(time);
-    
-    // If it was playing before, restart playback at new position
-    if (wasPlaying) {
-      console.log('Restarting playback at:', time);
-      await play();
-    }
-  };
+  const pause = useCallback(() => {
+    elementRef.current?.pause();
+  }, []);
 
-  const pause = () => {
-    console.log('Pause requested');
-    stopPlayback();
-  };
+  const seek = useCallback((time: number) => {
+    const element = elementRef.current;
+    if (!element) return;
+    const limit = Number.isFinite(element.duration) ? element.duration : time;
+    const target = Math.min(Math.max(time, 0), limit);
+    element.currentTime = target;
+    setCurrentTime(target);
+  }, []);
 
-  return {
-    isPlaying,
-    currentTime,
-    duration,
-    error,
-    play,
-    pause,
-    seek
-  };
+  return { isPlaying, currentTime, duration, error, play, pause, seek };
 };
+
+/** What went wrong, in terms a caller can show or log. */
+function describe(mediaError: MediaError | null): string {
+  switch (mediaError?.code) {
+    case MediaError.MEDIA_ERR_ABORTED:
+      return 'Playback was stopped';
+    case MediaError.MEDIA_ERR_NETWORK:
+      return 'The recording could not be read';
+    case MediaError.MEDIA_ERR_DECODE:
+      return 'The recording could not be decoded';
+    case MediaError.MEDIA_ERR_SRC_NOT_SUPPORTED:
+      return 'The recording is missing or of an unsupported format';
+    default:
+      return 'The recording could not be played';
+  }
+}

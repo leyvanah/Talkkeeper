@@ -26,6 +26,7 @@ pub mod stream;
 pub mod recording_manager;
 pub mod recording_commands;
 pub mod recording_preferences;
+pub mod recording_protocol;
 pub mod recording_saver;
 pub mod checkpoint_recovery;  // Recovering a recording that was interrupted
 pub mod level_monitor;
