@@ -8,6 +8,7 @@ use rubato::{
 };
 use std::collections::VecDeque;
 use std::path::PathBuf;
+use uuid::Uuid;
 use nnnoiseless::DenoiseState;
 
 use super::encode::encode_single_audio; // Correct path to encode module
@@ -25,25 +26,29 @@ pub fn sanitize_filename(name: &str) -> String {
         .to_string()
 }
 
-/// Create a meeting folder with timestamp and return the path
-/// Creates structure: base_path/MeetingName_YYYY-MM-DD_HH-MM-SS-mmm/
+/// Create a folder for one recording and return the path.
+///
+/// The folder is named by an identifier that says nothing: `rec-<32 hex>`.
+///
+/// It used to be named after the meeting — and a meeting gets renamed. Call
+/// one after the person it was with, as anyone would, and their name is in a
+/// path on disk, where encrypting the contents does not reach it: it is in the
+/// directory listing, in backups, in the recent-files list, in the title of
+/// any window that opens the folder. The name belongs in the database, which
+/// is what will be protected; here it has no business.
+///
+/// Nothing on disk points back at the meeting either — the database holds the
+/// path, not the other way round — so a folder found on its own says only that
+/// a recording was made.
 ///
 /// # Arguments
 /// * `base_path` - Base directory for meetings
-/// * `meeting_name` - Name of the meeting
-pub fn create_meeting_folder(base_path: &PathBuf, meeting_name: &str) -> Result<PathBuf> {
+pub fn create_meeting_folder(base_path: &PathBuf) -> Result<PathBuf> {
     std::fs::create_dir_all(base_path)?;
-    let timestamp = Utc::now().format("%Y-%m-%d_%H-%M-%S-%3f").to_string();
-    let sanitized_name = sanitize_filename(meeting_name);
-    let folder_stem = format!("{}_{}", sanitized_name, timestamp);
-    let meeting_folder = (0..1000)
-        .find_map(|suffix| {
-            let folder_name = if suffix == 0 {
-                folder_stem.clone()
-            } else {
-                format!("{}_{}", folder_stem, suffix)
-            };
-            let candidate = base_path.join(folder_name);
+    let meeting_folder = (0..100)
+        .find_map(|_| {
+            let name = format!("rec-{}", Uuid::new_v4().simple());
+            let candidate = base_path.join(name);
             match std::fs::create_dir(&candidate) {
                 Ok(()) => Some(Ok(candidate)),
                 Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => None,
@@ -53,7 +58,7 @@ pub fn create_meeting_folder(base_path: &PathBuf, meeting_name: &str) -> Result<
         .transpose()?
         .ok_or_else(|| anyhow::anyhow!("Could not create a unique meeting folder"))?;
 
-    log::info!("Created meeting folder: {}", meeting_folder.display());
+    log::info!("Created recording folder: {}", meeting_folder.display());
     Ok(meeting_folder)
 }
 
@@ -493,12 +498,25 @@ mod loudness_normalizer_tests {
     #[test]
     fn meeting_folders_never_reuse_an_existing_directory() {
         let root = tempfile::tempdir().unwrap();
-        let first = create_meeting_folder(&root.path().to_path_buf(), "Standup").unwrap();
-        let second = create_meeting_folder(&root.path().to_path_buf(), "Standup").unwrap();
+        let first = create_meeting_folder(&root.path().to_path_buf()).unwrap();
+        let second = create_meeting_folder(&root.path().to_path_buf()).unwrap();
 
         assert_ne!(first, second);
         assert!(first.is_dir());
         assert!(second.is_dir());
+    }
+
+    /// The name of a folder is seen by everything that lists a directory, and
+    /// none of it should learn who was recorded.
+    #[test]
+    fn a_folder_name_says_nothing_about_the_meeting() {
+        let root = tempfile::tempdir().unwrap();
+        let folder = create_meeting_folder(&root.path().to_path_buf()).unwrap();
+        let name = folder.file_name().unwrap().to_string_lossy().into_owned();
+
+        let identifier = name.strip_prefix("rec-").expect("an opaque identifier");
+        assert_eq!(identifier.len(), 32);
+        assert!(identifier.chars().all(|c| c.is_ascii_hexdigit()));
     }
 
     #[test]

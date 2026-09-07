@@ -362,7 +362,7 @@ async fn run_import<R: Runtime>(
 
     // Create meeting folder
     let base_folder = get_default_recordings_folder();
-    let meeting_folder = create_meeting_folder(&base_folder, &title)?;
+    let meeting_folder = create_meeting_folder(&base_folder)?;
 
     // Copy audio file to meeting folder
     emit_progress(&app, "copying", 10, "Copying audio file...");
@@ -713,7 +713,6 @@ async fn run_import<R: Runtime>(
     if let Err(e) = write_import_metadata(
         &meeting_folder,
         &meeting_id,
-        &title,
         duration_seconds,
         &dest_filename,
         "import",
@@ -1009,7 +1008,6 @@ async fn get_configured_model<R: Runtime>(app: &AppHandle<R>, provider_type: &st
 fn write_import_metadata(
     folder: &Path,
     meeting_id: &str,
-    title: &str,
     duration_seconds: f64,
     audio_filename: &str,
     source: &str,
@@ -1022,7 +1020,6 @@ fn write_import_metadata(
     let json = serde_json::json!({
         "version": "1.0",
         "meeting_id": meeting_id,
-        "meeting_name": title,
         "created_at": recording_started_at.to_rfc3339(),
         "completed_at": now,
         "duration_seconds": duration_seconds,
@@ -1322,7 +1319,6 @@ mod tests {
         let result = write_import_metadata(
             dir.path(),
             "meeting-123",
-            "Test Meeting",
             1800.0,
             "audio.mp4",
             "import",
@@ -1337,7 +1333,9 @@ mod tests {
         let parsed: serde_json::Value = serde_json::from_str(&content).unwrap();
         assert_eq!(parsed["version"], "1.0");
         assert_eq!(parsed["meeting_id"], "meeting-123");
-        assert_eq!(parsed["meeting_name"], "Test Meeting");
+        // What the meeting is called is a fact about the person recorded, and
+        // it stays in the database rather than in a file beside the audio.
+        assert!(parsed.get("meeting_name").is_none());
         assert_eq!(parsed["duration_seconds"], 1800.0);
         assert_eq!(parsed["audio_file"], "audio.mp4");
         assert_eq!(parsed["status"], "completed");

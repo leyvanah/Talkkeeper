@@ -33,7 +33,6 @@ pub struct TranscriptSegment {
 pub struct MeetingMetadata {
     pub version: String,
     pub meeting_id: Option<String>,
-    pub meeting_name: Option<String>,
     pub created_at: String,
     pub completed_at: Option<String>,
     pub duration_seconds: Option<f64>,
@@ -390,7 +389,7 @@ impl RecordingSaver {
             .unwrap_or_else(super::recording_preferences::get_default_recordings_folder);
 
         // Create meeting folder structure (with or without .checkpoints/ subdirectory)
-        let meeting_folder = create_meeting_folder(&base_folder, meeting_name)?;
+        let meeting_folder = create_meeting_folder(&base_folder)?;
 
         // The encoders themselves are opened by the writing thread, which owns
         // them; here we only know whether there will be any.
@@ -404,7 +403,6 @@ impl RecordingSaver {
         let metadata = MeetingMetadata {
             version: "1.0".to_string(),
             meeting_id: None,  // Will be set by backend
-            meeting_name: Some(meeting_name.to_string()),
             created_at: chrono::Utc::now().to_rfc3339(),
             completed_at: None,
             duration_seconds: None,
