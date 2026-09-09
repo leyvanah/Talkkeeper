@@ -4,9 +4,14 @@
  * Primary left navigation sidebar.
  *
  * Layout (top → bottom): brand ("Meetily · Actually Free", see Logo.tsx),
- * a global-search trigger (Ctrl/Cmd+K), a teal "New Recording" action, a "RECENT MEETINGS"
- * list (dot + title + date-subtitle from `created_at`, with a "View all
- * library" toggle capped by RECENT_LIMIT), and a Settings-only footer.
+ * a global-search trigger (Ctrl/Cmd+K), a teal "New Recording" action, the
+ * library tree, and a Settings-only footer.
+ *
+ * The tree has one collapsible folder per client, newest-seen first, followed
+ * by a folder holding everything not filed under anyone — which is where fresh
+ * recordings land. Only the unassigned folder is capped by RECENT_LIMIT: it is
+ * the one that grows without bound, while a client folder is a whole history
+ * worth seeing at once. Expanded folders are remembered across restarts.
  *
  * Supports shift/ctrl multi-select + bulk delete of meetings.
  *
@@ -20,11 +25,11 @@
  */
 
 import React, { useState, useMemo, useEffect } from 'react';
-import { ChevronDown, ChevronRight, FileText, AudioLines, ArrowRight, Settings, ChevronLeftCircle, ChevronRightCircle, Calendar, Trash2, Mic, Square, Plus, Search, Pencil, NotebookPen, Upload } from 'lucide-react';
+import { ChevronDown, ChevronRight, FileText, AudioLines, ArrowRight, Settings, ChevronLeftCircle, ChevronRightCircle, Trash2, Mic, Square, Plus, Search, Pencil, NotebookPen, Upload, User, Users, FolderInput, Inbox } from 'lucide-react';
 import { useTranslations } from 'next-intl';
 import { useRouter, usePathname } from 'next/navigation';
-import { useSidebar } from './SidebarProvider';
-import type { CurrentMeeting } from '@/components/Sidebar/SidebarProvider';
+import { useSidebar, UNASSIGNED_FOLDER_ID, clientFolderId } from './SidebarProvider';
+import type { CurrentMeeting, SidebarItem } from '@/components/Sidebar/SidebarProvider';
 import { ConfirmationModal } from '../ConfirmationModel/confirmation-modal';
 import { ModelConfig } from '@/components/ModelSettingsModal';
 import { TranscriptModelProps } from '@/components/TranscriptSettings';
@@ -48,13 +53,18 @@ import { MessageToast } from '../MessageToast';
 import Logo from '../Logo';
 import { ComplianceNotification } from '../ComplianceNotification';
 
-interface SidebarItem {
-  id: string;
-  title: string;
-  type: 'folder' | 'file';
-  children?: SidebarItem[];
-  createdAt?: string;
-  durationSeconds?: number;
+/** Which folders were left open, so the tree looks the same after a restart. */
+const EXPANDED_FOLDERS_KEY = 'meetily_expanded_folders';
+
+function readExpandedFolders(): Set<string> | null {
+  try {
+    const stored = localStorage.getItem(EXPANDED_FOLDERS_KEY);
+    if (!stored) return null;
+    const parsed = JSON.parse(stored);
+    return Array.isArray(parsed) ? new Set(parsed.filter((id: unknown) => typeof id === 'string')) : null;
+  } catch {
+    return null;
+  }
 }
 
 function formatDurationShort(secs?: number): string {
@@ -107,14 +117,20 @@ const Sidebar: React.FC = () => {
     handleRecordingToggle,
     meetings,
     setMeetings,
-    serverAddress
+    serverAddress,
+    clients,
+    refetchClients,
+    refetchMeetings,
+    assignMeetingToClient,
   } = useSidebar();
 
   // Get recording state from RecordingStateContext (single source of truth)
   const { isRecording } = useRecordingState();
   const { openImportDialog } = useImportDialog();
   const { betaFeatures } = useConfig();
-  const [expandedFolders, setExpandedFolders] = useState<Set<string>>(new Set(['meetings']));
+  // Unassigned is open on a fresh profile: on an empty archive it is the only
+  // folder with anything in it, and an all-collapsed tree reads as "no data".
+  const [expandedFolders, setExpandedFolders] = useState<Set<string>>(new Set([UNASSIGNED_FOLDER_ID]));
   const [showModelSettings, setShowModelSettings] = useState(false);
   const [modelConfig, setModelConfig] = useState<ModelConfig>({
     provider: 'ollama',
@@ -137,14 +153,12 @@ const Sidebar: React.FC = () => {
   });
   const [editingTitle, setEditingTitle] = useState<string>('');
 
-  // Ensure 'meetings' folder is always expanded
+  // Restore the open folders once, after mount: localStorage is not there
+  // during the static export's prerender.
   useEffect(() => {
-    if (!expandedFolders.has('meetings')) {
-      const newExpanded = new Set(expandedFolders);
-      newExpanded.add('meetings');
-      setExpandedFolders(newExpanded);
-    }
-  }, [expandedFolders]);
+    const stored = readExpandedFolders();
+    if (stored) setExpandedFolders(stored);
+  }, []);
 
   // useEffect(() => {
   //   if (settingsSaveSuccess !== null) {
@@ -163,9 +177,26 @@ const Sidebar: React.FC = () => {
   const [lastSelectedId, setLastSelectedId] = useState<string | null>(null);
   const [bulkDeleteOpen, setBulkDeleteOpen] = useState(false);
 
-  // "RECENT MEETINGS" shows the newest few with a "View all library" toggle.
+  // The unassigned folder shows the newest few with a "View all" toggle.
   const RECENT_LIMIT = 8;
   const [showAllMeetings, setShowAllMeetings] = useState(false);
+
+  // Client folders: create, rename, delete, and filing a recording under one.
+  const [clientDialog, setClientDialog] = useState<{ mode: 'create' | 'rename'; clientId: string | null; name: string } | null>(null);
+  const [clientDeleteState, setClientDeleteState] = useState<{ id: string; name: string; meetingCount: number } | null>(null);
+  const [assignDialogMeetingId, setAssignDialogMeetingId] = useState<string | null>(null);
+  const [assignSearch, setAssignSearch] = useState('');
+
+  const clientsById = useMemo(
+    () => new Map(clients.map(client => [client.id, client])),
+    [clients]
+  );
+
+  const normalizedNewName = clientDialog?.name.trim().replace(/\s+/g, ' ').toLowerCase() ?? '';
+  const duplicateClientName = normalizedNewName.length > 0 && clients.some(client =>
+    client.id !== clientDialog?.clientId &&
+    client.displayName.trim().replace(/\s+/g, ' ').toLowerCase() === normalizedNewName
+  );
 
   useEffect(() => {
     // Note: Don't set hardcoded defaults - let DB be the source of truth
@@ -316,6 +347,8 @@ const Sidebar: React.FC = () => {
       console.log('Meeting deleted successfully');
       const updatedMeetings = meetings.filter((m: CurrentMeeting) => m.id !== itemId);
       setMeetings(updatedMeetings);
+      // The client folder's count and "last seen" moved with it.
+      await refetchClients();
 
       // Track meeting deletion
       Analytics.trackMeetingDeleted(itemId);
@@ -349,17 +382,20 @@ const Sidebar: React.FC = () => {
   // shift-click can select the contiguous range between two clicks.
   const orderedMeetingIds = useMemo(() => {
     const ids: string[] = [];
-    for (const folder of sidebarItems) {
-      if (folder.type === 'folder' && folder.children) {
-        for (const child of folder.children) {
-          if (child.type === 'file' && child.id.includes('-') && !child.id.startsWith('intro-call')) {
-            ids.push(child.id);
-          }
+    const walk = (items: SidebarItem[]) => {
+      for (const item of items) {
+        if (item.type === 'folder') {
+          // A collapsed folder is not on screen, so a shift-click range must
+          // not silently reach through it.
+          if (item.children && expandedFolders.has(item.id)) walk(item.children);
+        } else if (item.id.includes('-') && !item.id.startsWith('intro-call')) {
+          ids.push(item.id);
         }
       }
-    }
+    };
+    walk(sidebarItems);
     return ids;
-  }, [sidebarItems]);
+  }, [sidebarItems, expandedFolders]);
 
   const clearSelection = () => {
     setSelectedIds(new Set());
@@ -399,6 +435,7 @@ const Sidebar: React.FC = () => {
       }
     }
     setMeetings(meetings.filter((m: CurrentMeeting) => !selectedIds.has(m.id)));
+    await refetchClients();
     if (currentMeeting && selectedIds.has(currentMeeting.id)) {
       setCurrentMeeting({ id: 'intro-call', title: '+ ' + t('newCall') });
       router.push('/');
@@ -476,7 +513,6 @@ const Sidebar: React.FC = () => {
   };
 
   const toggleFolder = (folderId: string) => {
-    // Normal toggle behavior for all folders
     const newExpanded = new Set(expandedFolders);
     if (newExpanded.has(folderId)) {
       newExpanded.delete(folderId);
@@ -484,6 +520,83 @@ const Sidebar: React.FC = () => {
       newExpanded.add(folderId);
     }
     setExpandedFolders(newExpanded);
+    try {
+      localStorage.setItem(EXPANDED_FOLDERS_KEY, JSON.stringify(Array.from(newExpanded)));
+    } catch {
+      /* remembering which folders were open is a convenience, not a requirement */
+    }
+  };
+
+  /** Opens a folder, leaving it open if it already was. */
+  const toggleFolderOpen = (folderId: string) => {
+    if (!expandedFolders.has(folderId)) toggleFolder(folderId);
+  };
+
+  const handleClientDialogConfirm = async () => {
+    if (!clientDialog) return;
+    const name = clientDialog.name.trim();
+    if (!name) {
+      toast.error(t('clientNameEmptyError'));
+      return;
+    }
+
+    try {
+      if (clientDialog.mode === 'create') {
+        const created = await invoke<{ id: string }>('api_create_client', { displayName: name });
+        await refetchClients();
+        // A brand-new folder is empty; opening it shows that it exists and is
+        // waiting, instead of looking like nothing happened.
+        toggleFolder(clientFolderId(created.id));
+        toast.success(t('clientCreatedSuccess', { name }));
+      } else if (clientDialog.clientId) {
+        await invoke('api_rename_client', { clientId: clientDialog.clientId, displayName: name });
+        await refetchClients();
+        toast.success(t('clientRenamedSuccess'));
+      }
+      setClientDialog(null);
+    } catch (error) {
+      console.error('Failed to save client:', error);
+      toast.error(t('clientSaveFailed'), {
+        description: error instanceof Error ? error.message : String(error),
+      });
+    }
+  };
+
+  const handleClientDelete = async () => {
+    if (!clientDeleteState) return;
+    try {
+      await invoke('api_delete_client', { clientId: clientDeleteState.id });
+      await Promise.all([refetchClients(), refetchMeetings()]);
+      toast.success(t('clientDeletedSuccess'), {
+        description: clientDeleteState.meetingCount > 0
+          ? t('clientDeletedMeetingsKept', { count: clientDeleteState.meetingCount })
+          : undefined,
+      });
+    } catch (error) {
+      console.error('Failed to delete client:', error);
+      toast.error(t('clientDeleteFailed'), {
+        description: error instanceof Error ? error.message : String(error),
+      });
+    }
+    setClientDeleteState(null);
+  };
+
+  const handleAssignMeeting = async (clientId: string | null) => {
+    if (!assignDialogMeetingId) return;
+    try {
+      await assignMeetingToClient(assignDialogMeetingId, clientId);
+      if (clientId) toggleFolderOpen(clientFolderId(clientId));
+      toast.success(clientId
+        ? t('meetingMovedToClient', { name: clientsById.get(clientId)?.displayName ?? '' })
+        : t('meetingUnassigned'));
+    } catch (error) {
+      console.error('Failed to change the meeting client:', error);
+      toast.error(t('meetingMoveFailed'), {
+        description: error instanceof Error ? error.message : String(error),
+      });
+    }
+    setAssignDialogMeetingId(null);
+    setAssignSearch('');
   };
 
   // Expose setShowModelSettings to window for Rust tray to call
@@ -551,7 +664,6 @@ const Sidebar: React.FC = () => {
                 <button
                   onClick={() => {
                     if (isCollapsed) toggleCollapse();
-                    toggleFolder('meetings');
                   }}
                   className={`p-2 rounded-lg transition-colors duration-150 ${isMeetingPage ? 'bg-gray-100' : 'hover:bg-gray-100'
                     }`}
@@ -606,8 +718,9 @@ const Sidebar: React.FC = () => {
 
   const renderItem = (item: SidebarItem, depth = 0) => {
     const isExpanded = expandedFolders.has(item.id);
-    // Keep meeting rows tight to the left so more of the title is visible.
-    const paddingLeft = item.type === 'file' ? `${Math.max(6, depth * 4 + 2)}px` : `${depth * 12 + 12}px`;
+    // Meetings sit one step inside their folder; both stay tight to the left so
+    // that as much of the title as possible survives the 256px sidebar.
+    const paddingLeft = item.type === 'file' ? `${depth * 10 + 6}px` : `${depth * 10 + 4}px`;
     const isActive = item.type === 'file' && currentMeeting?.id === item.id;
     const isMeetingItem = item.id.includes('-') && !item.id.startsWith('intro-call');
     const isSelected = selectedIds.has(item.id);
@@ -617,14 +730,14 @@ const Sidebar: React.FC = () => {
     return (
       <div key={item.id}>
         <div
-          className={`flex items-center transition-all duration-150 group select-none ${item.type === 'folder' && depth === 0
-            ? 'p-3 text-lg font-semibold h-10 mx-3 mt-3 rounded-lg'
+          className={`flex items-center transition-all duration-150 group select-none cursor-pointer ${item.type === 'folder'
+            ? 'px-2 py-1.5 my-0.5 rounded-lg text-sm font-medium hover:bg-[var(--af-hover)]'
             : `px-2.5 py-2 my-0.5 rounded-lg text-sm ${isSelected ? 'bg-[var(--af-panel-2)] text-[var(--af-text)] ring-1 ring-[var(--af-accent)]/50' :
               isActive ? 'bg-[var(--af-panel-2)] text-[var(--af-text)] font-medium' :
                 'hover:bg-[var(--af-hover)]'
-            } cursor-pointer`
+            }`
             }`}
-          style={item.type === 'folder' && depth === 0 ? {} : { paddingLeft }}
+          style={{ paddingLeft }}
           onClick={(e) => {
             if (item.type === 'folder') {
               toggleFolder(item.id);
@@ -645,21 +758,47 @@ const Sidebar: React.FC = () => {
           }}
         >
           {item.type === 'folder' ? (
-            <>
-              {item.id === 'meetings' ? (
-                <Calendar className="w-4 h-4 mr-2" />
-              ) : item.id === 'notes' ? (
-                <Calendar className="w-4 h-4 mr-2" />
-              ) : null}
-              <span className={depth === 0 ? "" : "font-medium"}>{item.title}</span>
-              <div className="ml-auto">
-                {isExpanded ? (
-                  <ChevronDown className="w-4 h-4 text-gray-500" />
-                ) : (
-                  <ChevronRight className="w-4 h-4 text-gray-500" />
-                )}
-              </div>
-            </>
+            <div className="relative flex w-full min-w-0 items-center gap-1.5">
+              <span className="shrink-0 text-[var(--af-text-3)]">
+                {isExpanded ? <ChevronDown className="h-3.5 w-3.5" /> : <ChevronRight className="h-3.5 w-3.5" />}
+              </span>
+              <span className="shrink-0 text-[var(--af-text-3)]">
+                {item.id === UNASSIGNED_FOLDER_ID ? <Inbox className="h-3.5 w-3.5" /> : <User className="h-3.5 w-3.5" />}
+              </span>
+              <span className="min-w-0 flex-1 truncate" title={item.title}>{item.title}</span>
+              <span className="shrink-0 tabular-nums text-[11px] text-[var(--af-text-3)] group-hover:opacity-0">
+                {item.meetingCount ?? 0}
+              </span>
+
+              {item.clientId && (
+                <div className="absolute right-0 top-1/2 flex -translate-y-1/2 items-center gap-0.5 rounded-md bg-[var(--af-panel)] p-0.5 opacity-0 shadow-sm transition-opacity duration-150 group-hover:opacity-100 group-focus-within:opacity-100">
+                  <button
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      setClientDialog({ mode: 'rename', clientId: item.clientId!, name: item.title });
+                    }}
+                    className="rounded-md p-1 text-[var(--af-text-3)] hover:bg-[var(--af-hover)] hover:text-[var(--af-accent)]"
+                    aria-label={t('renameClientAria')}
+                  >
+                    <Pencil className="h-3.5 w-3.5" />
+                  </button>
+                  <button
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      setClientDeleteState({
+                        id: item.clientId!,
+                        name: item.title,
+                        meetingCount: item.meetingCount ?? 0,
+                      });
+                    }}
+                    className="rounded-md p-1 text-[var(--af-text-3)] hover:bg-red-500/10 hover:text-red-500"
+                    aria-label={t('deleteClientAria')}
+                  >
+                    <Trash2 className="h-3.5 w-3.5" />
+                  </button>
+                </div>
+              )}
+            </div>
           ) : (
             (() => {
               const meetingDate = isMeetingItem ? parseMeetingDate(item) : null;
@@ -697,6 +836,17 @@ const Sidebar: React.FC = () => {
                       <button
                         onClick={(e) => {
                           e.stopPropagation();
+                          setAssignSearch('');
+                          setAssignDialogMeetingId(item.id);
+                        }}
+                        className="rounded-md p-1 text-[var(--af-text-3)] hover:bg-[var(--af-hover)] hover:text-[var(--af-accent)]"
+                        aria-label={t('moveToClientAria')}
+                      >
+                        <FolderInput className="h-3.5 w-3.5" />
+                      </button>
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation();
                           handleEditStart(item.id, item.title);
                         }}
                         className="rounded-md p-1 text-[var(--af-text-3)] hover:bg-[var(--af-hover)] hover:text-[var(--af-accent)]"
@@ -721,11 +871,36 @@ const Sidebar: React.FC = () => {
             })()
           )}
         </div>
-        {item.type === 'folder' && isExpanded && item.children && (
-          <div className="ml-1">
-            {item.children.map(child => renderItem(child, depth + 1))}
-          </div>
-        )}
+        {item.type === 'folder' && isExpanded && item.children && (() => {
+          // Only the unassigned folder is capped: it is the one that keeps
+          // growing. A client folder is a history, and cutting it off at eight
+          // would hide exactly the older sessions worth looking back at.
+          const capped = item.id === UNASSIGNED_FOLDER_ID && !showAllMeetings;
+          const shown = capped ? item.children.slice(0, RECENT_LIMIT) : item.children;
+          const hasMore = item.id === UNASSIGNED_FOLDER_ID && item.children.length > RECENT_LIMIT;
+          return (
+            <div>
+              {shown.map(child => renderItem(child, depth + 1))}
+              {item.children.length === 0 && (
+                <div
+                  className="px-2 py-1.5 text-[11px] italic text-[var(--af-text-3)]"
+                  style={{ paddingLeft: `${(depth + 1) * 10 + 6}px` }}
+                >
+                  {item.id === UNASSIGNED_FOLDER_ID ? t('noUnassignedMeetings') : t('clientHasNoMeetings')}
+                </div>
+              )}
+              {hasMore && (
+                <button
+                  onClick={() => setShowAllMeetings(value => !value)}
+                  className="mt-1 mb-2 flex w-full items-center justify-center gap-2 rounded-lg border border-[var(--af-border-strong)] px-3 py-1.5 text-xs font-medium text-[var(--af-text-2)] transition-colors hover:bg-[var(--af-hover)] hover:text-[var(--af-text)]"
+                >
+                  {showAllMeetings ? t('showRecentOnly') : t('viewAllLibrary')}
+                  <ArrowRight className="w-3.5 h-3.5" />
+                </button>
+              )}
+            </div>
+          );
+        })()}
       </div>
     );
   };
@@ -792,17 +967,19 @@ const Sidebar: React.FC = () => {
           {/* Content area */}
           <div className="flex-1 flex flex-col min-h-0">
             {renderCollapsedIcons()}
-            {/* Meetings folder header - fixed */}
+            {/* Library header: the section label plus "add a client" */}
             {!isCollapsed && (
-              <div className="flex-shrink-0">
-                {sidebarItems.filter(item => item.type === 'folder').map(item => (
-                  <div
-                    key={item.id}
-                    className="flex items-center px-4 pt-5 pb-2 text-xs font-semibold uppercase tracking-wider text-[var(--af-text-3)]"
-                  >
-                    <span>{item.title}</span>
-                  </div>
-                ))}
+              <div className="flex-shrink-0 flex items-center gap-2 px-4 pt-5 pb-2 text-xs font-semibold uppercase tracking-wider text-[var(--af-text-3)]">
+                <Users className="h-3.5 w-3.5" />
+                <span className="min-w-0 flex-1 truncate">{t('library')}</span>
+                <button
+                  onClick={() => setClientDialog({ mode: 'create', clientId: null, name: '' })}
+                  className="rounded-md p-1 text-[var(--af-text-3)] transition-colors hover:bg-[var(--af-hover)] hover:text-[var(--af-accent)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--af-accent)]"
+                  aria-label={t('newClientAria')}
+                  title={t('newClient')}
+                >
+                  <Plus className="h-3.5 w-3.5" />
+                </button>
               </div>
             )}
 
@@ -822,31 +999,10 @@ const Sidebar: React.FC = () => {
               </div>
             )}
 
-            {/* Scrollable meeting items */}
+            {/* Scrollable library tree */}
             {!isCollapsed && (
-              <div className="flex-1 overflow-y-auto custom-scrollbar min-h-0 px-1">
-                {sidebarItems
-                  .filter(item => item.type === 'folder' && expandedFolders.has(item.id) && item.children)
-                  .map(item => {
-                    const children = item.children!;
-                    const showAll = showAllMeetings;
-                    const shown = showAll ? children : children.slice(0, RECENT_LIMIT);
-                    const hasMore = children.length > RECENT_LIMIT;
-                    return (
-                      <div key={`${item.id}-children`} className="mx-1">
-                        {shown.map(child => renderItem(child, 1))}
-                        {item.id === 'meetings' && hasMore && (
-                          <button
-                            onClick={() => setShowAllMeetings(v => !v)}
-                            className="mt-3 mb-2 flex w-full items-center justify-center gap-2 rounded-lg border border-[var(--af-border-strong)] px-3 py-2 text-sm font-medium text-[var(--af-text-2)] transition-colors hover:bg-[var(--af-hover)] hover:text-[var(--af-text)]"
-                          >
-                            {showAllMeetings ? t('showRecentOnly') : t('viewAllLibrary')}
-                            <ArrowRight className="w-4 h-4" />
-                          </button>
-                        )}
-                      </div>
-                    );
-                  })}
+              <div className="flex-1 overflow-y-auto custom-scrollbar min-h-0 px-2">
+                {sidebarItems.map(item => renderItem(item, 0))}
               </div>
             )}
           </div>
@@ -890,6 +1046,130 @@ const Sidebar: React.FC = () => {
         onConfirm={handleBulkDelete}
         onCancel={() => setBulkDeleteOpen(false)}
       />
+
+      {/* Deleting a client never deletes recordings — say so on the button. */}
+      <ConfirmationModal
+        isOpen={clientDeleteState !== null}
+        text={clientDeleteState && clientDeleteState.meetingCount > 0
+          ? t('confirmDeleteClientWithMeetings', {
+            name: clientDeleteState.name,
+            count: clientDeleteState.meetingCount,
+          })
+          : t('confirmDeleteClient', { name: clientDeleteState?.name ?? '' })}
+        onConfirm={handleClientDelete}
+        onCancel={() => setClientDeleteState(null)}
+      />
+
+      {/* New client / rename client */}
+      <Dialog open={clientDialog !== null} onOpenChange={(open) => { if (!open) setClientDialog(null); }}>
+        <DialogContent className="sm:max-w-[425px]">
+          <VisuallyHidden>
+            <DialogTitle>{clientDialog?.mode === 'rename' ? t('renameClient') : t('newClient')}</DialogTitle>
+          </VisuallyHidden>
+          <div className="py-4">
+            <h3 className="text-lg font-semibold mb-4">
+              {clientDialog?.mode === 'rename' ? t('renameClient') : t('newClient')}
+            </h3>
+            <label htmlFor="client-name" className="mb-2 block text-sm font-medium text-[var(--af-text-2)]">
+              {t('clientNameLabel')}
+            </label>
+            <input
+              id="client-name"
+              type="text"
+              value={clientDialog?.name ?? ''}
+              onChange={(e) => setClientDialog(state => (state ? { ...state, name: e.target.value } : state))}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') handleClientDialogConfirm();
+                else if (e.key === 'Escape') setClientDialog(null);
+              }}
+              className="w-full rounded-md border border-[var(--af-border-strong)] bg-[var(--af-panel)] px-3 py-2 text-[var(--af-text)] focus:border-transparent focus:outline-none focus:ring-2 focus:ring-[var(--af-accent)]"
+              placeholder={t('clientNamePlaceholder')}
+              autoFocus
+            />
+            {/* Same name, different person, is legal — this warns, never blocks. */}
+            {duplicateClientName && (
+              <p className="mt-2 text-xs text-amber-500">{t('clientNameAlreadyUsed')}</p>
+            )}
+          </div>
+          <DialogFooter>
+            <button
+              onClick={() => setClientDialog(null)}
+              className="rounded-md bg-[var(--af-panel-2)] px-4 py-2 text-sm font-medium text-[var(--af-text-2)] transition-colors hover:bg-[var(--af-hover)]"
+            >
+              {tc('cancel')}
+            </button>
+            <button
+              onClick={handleClientDialogConfirm}
+              className="rounded-md bg-[var(--af-accent)] px-4 py-2 text-sm font-medium text-[var(--af-accent-contrast)] transition-[filter] hover:brightness-110"
+            >
+              {tc('save')}
+            </button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Filing one recording under a client */}
+      <Dialog
+        open={assignDialogMeetingId !== null}
+        onOpenChange={(open) => { if (!open) { setAssignDialogMeetingId(null); setAssignSearch(''); } }}
+      >
+        <DialogContent className="sm:max-w-[425px]">
+          <VisuallyHidden>
+            <DialogTitle>{t('moveToClient')}</DialogTitle>
+          </VisuallyHidden>
+          <div className="py-4">
+            <h3 className="mb-4 text-lg font-semibold">{t('moveToClient')}</h3>
+            {clients.length > 4 && (
+              <input
+                type="text"
+                value={assignSearch}
+                onChange={(e) => setAssignSearch(e.target.value)}
+                className="mb-2 w-full rounded-md border border-[var(--af-border-strong)] bg-[var(--af-panel)] px-3 py-2 text-sm text-[var(--af-text)] focus:border-transparent focus:outline-none focus:ring-2 focus:ring-[var(--af-accent)]"
+                placeholder={t('findClientPlaceholder')}
+                autoFocus
+              />
+            )}
+            <div className="max-h-64 space-y-1 overflow-y-auto custom-scrollbar">
+              {clients
+                .filter(client => client.displayName.toLowerCase().includes(assignSearch.trim().toLowerCase()))
+                .map(client => {
+                  const isCurrent = meetings.find(m => m.id === assignDialogMeetingId)?.client_id === client.id;
+                  return (
+                    <button
+                      key={client.id}
+                      onClick={() => handleAssignMeeting(client.id)}
+                      disabled={isCurrent}
+                      className={`flex w-full items-center gap-2 rounded-md px-3 py-2 text-left text-sm transition-colors ${isCurrent
+                        ? 'bg-[var(--af-panel-2)] text-[var(--af-text-3)]'
+                        : 'text-[var(--af-text)] hover:bg-[var(--af-hover)]'}`}
+                    >
+                      <User className="h-3.5 w-3.5 shrink-0 text-[var(--af-text-3)]" />
+                      <span className="min-w-0 flex-1 truncate">{client.displayName}</span>
+                      {isCurrent && <span className="shrink-0 text-[11px]">{t('currentClient')}</span>}
+                    </button>
+                  );
+                })}
+              <button
+                onClick={() => handleAssignMeeting(null)}
+                className="flex w-full items-center gap-2 rounded-md px-3 py-2 text-left text-sm text-[var(--af-text-2)] transition-colors hover:bg-[var(--af-hover)]"
+              >
+                <Inbox className="h-3.5 w-3.5 shrink-0 text-[var(--af-text-3)]" />
+                <span>{t('unassignedMeetings')}</span>
+              </button>
+            </div>
+            <button
+              onClick={() => {
+                setAssignDialogMeetingId(null);
+                setClientDialog({ mode: 'create', clientId: null, name: assignSearch.trim() });
+              }}
+              className="mt-3 flex w-full items-center justify-center gap-2 rounded-lg border border-[var(--af-border-strong)] px-3 py-2 text-sm font-medium text-[var(--af-text-2)] transition-colors hover:bg-[var(--af-hover)] hover:text-[var(--af-text)]"
+            >
+              <Plus className="h-4 w-4" />
+              {t('newClient')}
+            </button>
+          </div>
+        </DialogContent>
+      </Dialog>
 
       {/* Edit Meeting Title Modal */}
       <Dialog open={editModalState.isOpen} onOpenChange={(open) => {
