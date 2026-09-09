@@ -1,3 +1,4 @@
+pub mod client;
 pub mod meeting;
 pub mod person;
 pub mod setting;

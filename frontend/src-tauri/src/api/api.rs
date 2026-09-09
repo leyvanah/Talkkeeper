@@ -37,6 +37,9 @@ pub struct Meeting {
     /// Approx length of the meeting in seconds (from last transcript end time).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub duration_seconds: Option<f64>,
+    /// Client this meeting is filed under, or `None` while it is unassigned.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub client_id: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -396,6 +399,7 @@ pub async fn api_get_meetings<R: Runtime>(
                     title: m.title,
                     created_at: Some(created_at.to_rfc3339()),
                     duration_seconds,
+                    client_id: m.client_id,
                 });
             }
             result.sort_by(|a, b| b.created_at.cmp(&a.created_at));
@@ -1295,7 +1299,7 @@ pub async fn open_meeting_folder<R: Runtime>(
 
     // Get meeting with folder_path
     let meeting: Option<MeetingModel> = sqlx::query_as(
-        "SELECT id, title, created_at, updated_at, folder_path FROM meetings WHERE id = ?",
+        "SELECT id, title, created_at, updated_at, folder_path, client_id FROM meetings WHERE id = ?",
     )
     .bind(&meeting_id)
     .fetch_optional(pool)
