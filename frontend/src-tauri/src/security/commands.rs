@@ -24,6 +24,10 @@ pub struct SecurityState {
     /// The keystore as last read or written. `None` until startup reads it, and
     /// when no password has been set.
     keystore: Mutex<Option<Keystore>>,
+    /// Where that keystore is read from and written to. A field rather than a
+    /// constant so the lifecycle can be tested against a temporary directory
+    /// instead of the owner's real archive.
+    path: std::path::PathBuf,
     /// The key itself.
     pub session: KeySession,
 }
@@ -36,8 +40,14 @@ impl Default for SecurityState {
 
 impl SecurityState {
     pub fn new() -> Self {
+        Self::at(Keystore::path())
+    }
+
+    /// A state backed by a keystore at an explicit path.
+    pub fn at(path: std::path::PathBuf) -> Self {
         Self {
             keystore: Mutex::new(None),
+            path,
             session: KeySession::new(),
         }
     }
@@ -45,7 +55,7 @@ impl SecurityState {
     /// Reads the keystore from disk and tells the session whether a password
     /// exists. Called once at startup; a damaged file is reported, not ignored.
     pub fn load(&self) -> Result<(), SecurityError> {
-        let keystore = Keystore::load()?;
+        let keystore = Keystore::load_from(&self.path)?;
         self.session.set_configured(keystore.is_some());
         self.session.set_auto_lock_after(
             keystore
@@ -76,10 +86,38 @@ impl SecurityState {
         let keystore = guard.as_mut().ok_or(SecurityError::not_configured())?;
 
         let outcome = change(keystore);
-        if let Err(error) = keystore.save() {
+        if let Err(error) = keystore.save_to(&self.path) {
             log::error!("Could not write the keystore: {error}");
         }
         outcome.map_err(SecurityError::from)
+    }
+
+    /// Protects a fresh archive and leaves it open. Shared by the command and
+    /// its tests so both take the same path through the keystore.
+    fn create(
+        &self,
+        password: &str,
+        with_recovery: bool,
+    ) -> Result<Option<String>, SecurityError> {
+        if self.path.exists() {
+            return Err(SecurityError::new(
+                "alreadyConfigured",
+                "the archive is already protected by a password",
+            ));
+        }
+
+        let (keystore, code, dek) = Keystore::create(password, with_recovery)?;
+        keystore.save_to(&self.path)?;
+
+        self.session.unlock(dek);
+        self.session.set_auto_lock_after(
+            keystore
+                .auto_lock_minutes
+                .map(|minutes| Duration::from_secs(minutes * 60)),
+        );
+        *self.keystore_guard() = Some(keystore);
+
+        Ok(code.map(|code| code.to_string()))
     }
 }
 
@@ -193,32 +231,14 @@ pub fn security_setup(
     with_recovery: bool,
     state: State<'_, SecurityState>,
 ) -> Result<RecoveryCodeResponse, SecurityError> {
-    if Keystore::exists() {
-        return Err(SecurityError::new(
-            "alreadyConfigured",
-            "the archive is already protected by a password",
-        ));
-    }
-
-    let (keystore, code, dek) = Keystore::create(&password, with_recovery)?;
-    keystore.save()?;
-
-    state.session.unlock(dek);
-    state.session.set_auto_lock_after(
-        keystore
-            .auto_lock_minutes
-            .map(|minutes| Duration::from_secs(minutes * 60)),
-    );
-    *state.keystore_guard() = Some(keystore);
+    let recovery_code = state.create(&password, with_recovery)?;
 
     log::info!(
         "Archive protected with a password (recovery code kept: {})",
         with_recovery
     );
 
-    Ok(RecoveryCodeResponse {
-        recovery_code: code.map(|code| code.to_string()),
-    })
+    Ok(RecoveryCodeResponse { recovery_code })
 }
 
 /// Opens the archive with the password.
@@ -348,7 +368,7 @@ pub fn security_disable(
 ) -> Result<(), SecurityError> {
     state.with_keystore(|keystore| keystore.unlock_with_password(&password).map(|_| ()))?;
 
-    std::fs::remove_file(Keystore::path()).map_err(KeystoreError::Io)?;
+    std::fs::remove_file(&state.path).map_err(KeystoreError::Io)?;
     *state.keystore_guard() = None;
     state.session.set_configured(false);
     log::info!("Password protection removed");
@@ -450,8 +470,121 @@ mod tests {
 
     #[test]
     fn a_state_with_no_keystore_answers_that_nothing_is_configured() {
-        let state = SecurityState::new();
+        let directory = tempfile::tempdir().unwrap();
+        let state = SecurityState::at(directory.path().join("keystore.json"));
         let error = state.with_keystore(|_| Ok(())).unwrap_err();
         assert_eq!(error.code, "notConfigured");
+    }
+
+    /// A state over a keystore file in a directory that lives as long as the test.
+    fn temporary_state() -> (tempfile::TempDir, SecurityState) {
+        let directory = tempfile::tempdir().unwrap();
+        let state = SecurityState::at(directory.path().join("keystore.json"));
+        (directory, state)
+    }
+
+    #[test]
+    fn an_unprotected_archive_reports_itself_as_unconfigured() {
+        let (_directory, state) = temporary_state();
+        state.load().unwrap();
+        assert_eq!(state.session.state(), LockState::Unconfigured);
+    }
+
+    #[test]
+    fn setting_a_password_leaves_the_archive_open_with_the_key_in_memory() {
+        let (_directory, state) = temporary_state();
+        let code = state.create("correct horse", true).unwrap();
+
+        assert!(code.is_some());
+        assert_eq!(state.session.state(), LockState::Unlocked);
+        assert!(state.session.with_dek(|key| key.len()).unwrap() == 32);
+    }
+
+    #[test]
+    fn a_second_setup_is_refused_rather_than_orphaning_the_first_key() {
+        let (_directory, state) = temporary_state();
+        state.create("correct horse", false).unwrap();
+
+        let error = state.create("another one", false).unwrap_err();
+        assert_eq!(error.code, "alreadyConfigured");
+    }
+
+    #[test]
+    fn a_restart_finds_the_archive_locked_and_the_password_opens_it() {
+        let (directory, first_run) = temporary_state();
+        let path = directory.path().join("keystore.json");
+        first_run.create("correct horse", false).unwrap();
+
+        // A new process reads the same file and starts with no key.
+        let next_run = SecurityState::at(path);
+        next_run.load().unwrap();
+        assert_eq!(next_run.session.state(), LockState::Locked);
+        assert!(next_run.session.with_dek(|_| ()).is_err());
+
+        next_run
+            .with_keystore(|keystore| keystore.unlock_with_password("correct horse"))
+            .map(|dek| next_run.session.unlock(dek))
+            .unwrap();
+        assert_eq!(next_run.session.state(), LockState::Unlocked);
+    }
+
+    #[test]
+    fn failed_attempts_survive_closing_the_window() {
+        // Otherwise the throttle is worth nothing: restarting would reset it.
+        let (directory, first_run) = temporary_state();
+        let path = directory.path().join("keystore.json");
+        first_run.create("correct horse", false).unwrap();
+
+        for _ in 0..2 {
+            let _ = first_run.with_keystore(|keystore| keystore.unlock_with_password("wrong"));
+        }
+
+        let next_run = SecurityState::at(path);
+        next_run.load().unwrap();
+        assert_eq!(security_status_of(&next_run).failed_attempts, 2);
+    }
+
+    #[test]
+    fn locking_drops_the_key_but_leaves_the_archive_configured() {
+        let (_directory, state) = temporary_state();
+        state.create("correct horse", false).unwrap();
+
+        state.session.lock();
+        assert_eq!(state.session.state(), LockState::Locked);
+        assert!(state.session.with_dek(|_| ()).is_err());
+    }
+
+    #[test]
+    fn the_status_tells_the_window_whether_a_recovery_code_exists() {
+        let (_directory, with_code) = temporary_state();
+        with_code.create("correct horse", true).unwrap();
+        assert!(security_status_of(&with_code).has_recovery);
+
+        let (_other, without_code) = temporary_state();
+        without_code.create("correct horse", false).unwrap();
+        assert!(!security_status_of(&without_code).has_recovery);
+    }
+
+    #[test]
+    fn a_new_keystore_starts_with_the_default_idle_timeout() {
+        let (_directory, state) = temporary_state();
+        state.create("correct horse", false).unwrap();
+        assert_eq!(
+            security_status_of(&state).auto_lock_minutes,
+            DEFAULT_AUTO_LOCK_MINUTES
+        );
+    }
+
+    /// The body of `security_status`, without the Tauri `State` wrapper the test
+    /// has no way to build.
+    fn security_status_of(state: &SecurityState) -> SecurityStatus {
+        let guard = state.keystore_guard();
+        SecurityStatus {
+            state: state.session.state(),
+            has_recovery: guard.as_ref().is_some_and(Keystore::has_recovery),
+            wait_seconds: guard.as_ref().map_or(0, Keystore::wait_required),
+            auto_lock_minutes: guard.as_ref().and_then(|store| store.auto_lock_minutes),
+            failed_attempts: guard.as_ref().map_or(0, |store| store.failed_attempts),
+        }
     }
 }
