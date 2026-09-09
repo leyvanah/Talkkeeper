@@ -125,6 +125,15 @@ async fn start_recording<R: Runtime>(
         return Err("Recording already in progress".to_string());
     }
 
+    // A recording writes into the archive, so it needs the key. The tray and the
+    // meeting detector can both reach this without passing the lock screen; from
+    // B3 onwards a recording started here would have nothing to encrypt with.
+    if let Some(security) = app.try_state::<security::commands::SecurityState>() {
+        if security.session.state() == security::LockState::Locked {
+            return Err("The archive is locked".to_string());
+        }
+    }
+
     // Call the actual audio recording system with meeting name
     match audio::recording_commands::start_recording_with_devices_and_meeting(
         app.clone(),
