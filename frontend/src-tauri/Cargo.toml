@@ -140,6 +140,13 @@ regex = "1.11.0"
 ndarray = "0.16"
 zip = "2.2"           # Reading .npz (zip of .npy) diarization transforms
 sha2 = "0.10"         # SHA-256 verification for downloaded models
+
+# Keys and encryption (phase B). Pure Rust, no C toolchain:
+# a password becomes a key-encryption key, which wraps the random data key.
+argon2 = "0.5"        # argon2id: password -> key-encryption key
+aes-gcm = "0.10"      # AES-256-GCM: wraps the data key, later the data itself
+zeroize = "1.8"       # wipes key material out of memory on lock
+base64 = "0.22"       # keystore fields are text, so the file stays readable
 bytes = { version = "1.9.0", features = ["serde"] }
 
 esaxx-rs = "0.1.10"

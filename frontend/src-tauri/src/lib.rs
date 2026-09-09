@@ -54,6 +54,7 @@ pub mod minibar;
 pub mod gigaam_engine;
 pub mod parakeet_engine;
 pub mod paths;
+pub mod security;
 pub mod state;
 pub mod summary;
 pub mod tray;
@@ -460,6 +461,7 @@ pub fn run() {
             None::<notifications::manager::NotificationManager<tauri::Wry>>,
         )) as NotificationManagerState<tauri::Wry>)
         .manage(audio::init_system_audio_state())
+        .manage(security::commands::SecurityState::new())
         .manage(summary::summary_engine::ModelManagerState(Arc::new(tokio::sync::Mutex::new(None))))
         .setup(|_app| {
             if let Err(error) = crash_report::start_session() {
@@ -502,6 +504,10 @@ pub fn run() {
             // data from the OS app-data dir into the install-local root. Runs
             // BEFORE model/DB init so migrated models + history are picked up.
             crate::paths::migrate_legacy_data(&_app.handle());
+
+            // Read the keystore before anything can ask for the key, and start
+            // watching for the archive being left open unattended.
+            crate::security::commands::initialize(&_app.handle());
 
             // Meeting detection: load persisted settings and start the monitor
             // if the user enabled it (default off).
@@ -612,6 +618,18 @@ pub fn run() {
             }
         })
         .invoke_handler(tauri::generate_handler![
+            security::commands::security_status,
+            security::commands::security_setup,
+            security::commands::security_unlock,
+            security::commands::security_unlock_with_recovery,
+            security::commands::security_lock,
+            security::commands::security_touch,
+            security::commands::security_change_password,
+            security::commands::security_reset_password,
+            security::commands::security_regenerate_recovery,
+            security::commands::security_remove_recovery,
+            security::commands::security_set_auto_lock,
+            security::commands::security_disable,
             start_recording,
             stop_recording,
             is_recording,
