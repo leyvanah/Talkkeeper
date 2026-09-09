@@ -1324,7 +1324,7 @@
     "quickTitle": "Quick unlock with Windows Hello",
     "quickDescription": "Open the archive with your face or Windows PIN instead of typing the password.",
     "quickWarning": "Weaker than the password. The face check is enforced by the app, not by the encryption: a program running under your Windows account could open the archive without ever asking for your face. In plain terms, whoever can log into your Windows account can open the archive. A disk stolen on its own is still useless. The password and recovery code keep working, and quick unlock can be turned off at any time.",
-    "quickNeedsPassword": "To turn this on, enter your current password in the field above.",
+    "quickNeedsPassword": "To turn this on, enter your current password:",
     "noticeQuickOn": "Quick unlock is on.",
     "noticeQuickOff": "Quick unlock is off; the password is the only way in.",
     "errorQuickDeclined": "Windows Hello did not recognise you.",

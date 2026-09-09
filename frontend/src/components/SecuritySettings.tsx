@@ -47,8 +47,12 @@ export function SecuritySettings() {
   const [currentPassword, setCurrentPassword] = useState('')
   const [replacementPassword, setReplacementPassword] = useState('')
 
-  // Anything that needs the password to prove intent.
+  // Proving intent for the recovery code, and for removing protection.
   const [confirmingPassword, setConfirmingPassword] = useState('')
+
+  // Proving intent for quick unlock. Its own value, so the field can sit in its
+  // own section instead of being shared across the panel.
+  const [quickPassword, setQuickPassword] = useState('')
 
   const describe = useCallback(
     (failure: unknown): string => {
@@ -232,12 +236,14 @@ export function SecuritySettings() {
                   </div>
                   <Switch
                     checked={status.quickEnabled}
-                    disabled={busy || (!status.quickEnabled && !confirmingPassword)}
+                    // Turning it off needs nothing; turning it on needs the
+                    // password typed in this section's own field, below.
+                    disabled={busy || (!status.quickEnabled && !quickPassword)}
                     onCheckedChange={(wanted) =>
                       attempt(async () => {
                         if (wanted) {
-                          await quickEnable(confirmingPassword)
-                          setConfirmingPassword('')
+                          await quickEnable(quickPassword)
+                          setQuickPassword('')
                         } else {
                           await quickDisable()
                         }
@@ -252,8 +258,25 @@ export function SecuritySettings() {
                   {t('quickWarning')}
                 </p>
 
-                {!status.quickEnabled && !confirmingPassword && (
-                  <p className="mt-2 text-xs text-gray-500">{t('quickNeedsPassword')}</p>
+                {/* Its own field rather than one borrowed from the recovery-code
+                    section further down: adding a door should not send the owner
+                    hunting for an input under an unrelated heading. */}
+                {!status.quickEnabled && (
+                  <div className="mt-3">
+                    <label className="mb-1.5 block text-xs text-gray-500">
+                      {t('quickNeedsPassword')}
+                    </label>
+                    <Input
+                      type="password"
+                      value={quickPassword}
+                      onChange={(event) => setQuickPassword(event.target.value)}
+                      placeholder={t('currentPasswordPlaceholder')}
+                      autoComplete="current-password"
+                      disabled={busy}
+                      aria-label={t('currentPasswordPlaceholder')}
+                      className="max-w-xs"
+                    />
+                  </div>
                 )}
               </div>
             )}
