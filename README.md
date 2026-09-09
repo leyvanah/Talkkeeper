@@ -126,6 +126,29 @@ today, and what it does not, stated plainly:
 - The keys live in `keystore.json` beside the database. It holds no secret in
   the clear; copying it gains an attacker nothing but the right to guess.
 
+### Quick unlock (Windows, optional, off by default)
+
+**Settings → Security** can add a Windows Hello prompt as a faster way in. It is
+opt-in, needs the password to switch on, and one switch removes it again.
+
+It is deliberately not the stronger design. That would be `KeyCredentialManager`,
+a signing key held in the TPM that makes an unlock impossible without the
+enrolled face — it needs Windows Hello for Business, which a local Windows
+account does not have, and provisioning it means attaching the machine to a
+Microsoft account or a domain. For a local archive that is the wrong trade.
+
+So quick unlock is a Hello prompt plus a key that **DPAPI** ties to this Windows
+account, and the difference matters:
+
+- **The face check is enforced by the app, not by the encryption.** Code running
+  under this Windows account can read the DPAPI blob without ever showing the
+  prompt. In plain terms, whoever can log into this Windows account can open the
+  archive.
+- A disk taken on its own is still useless, and so is the keystore on another
+  machine or under another account.
+- The password and recovery code are unaffected. If the Windows account changes,
+  quick unlock stops working and the password still opens the archive.
+
 **What is not yet covered.** At this stage the password gates access *through
 the app*. The recording files and the database are not yet encrypted at rest —
 that is the next step. Until then, someone with the disk can read them exactly
