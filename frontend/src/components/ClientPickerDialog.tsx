@@ -26,13 +26,20 @@ import { VisuallyHidden } from '@/components/ui/visually-hidden';
 
 interface ClientPickerDialogProps {
   open: boolean;
-  /** The recording being filed. Null closes the dialog. */
+  /**
+   * The recording being filed. Null with `onSelect` set means nothing is saved
+   * yet — the dialog only reports the choice, as it does before a recording.
+   */
   meetingId: string | null;
   /** Client the recording is filed under right now, if any. */
   currentClientId?: string | null;
   onOpenChange: (open: boolean) => void;
   /** Called after the move succeeds, with the new client id (null = unassigned). */
   onMoved?: (clientId: string | null) => void;
+  /** When set, the choice is handed over instead of written to a meeting. */
+  onSelect?: (clientId: string | null) => void;
+  /** Heading, when "move to a client" is the wrong words for the moment. */
+  title?: string;
 }
 
 const normalize = (name: string) => name.trim().replace(/\s+/g, ' ').toLowerCase();
@@ -43,6 +50,8 @@ export const ClientPickerDialog: React.FC<ClientPickerDialogProps> = ({
   currentClientId,
   onOpenChange,
   onMoved,
+  onSelect,
+  title,
 }) => {
   const t = useTranslations('sidebar');
   const { clients, refetchClients, assignMeetingToClient } = useSidebar();
@@ -64,7 +73,13 @@ export const ClientPickerDialog: React.FC<ClientPickerDialogProps> = ({
   };
 
   const move = async (clientId: string | null, name?: string) => {
-    if (!meetingId || busy) return;
+    if (busy) return;
+    if (onSelect) {
+      onSelect(clientId);
+      close();
+      return;
+    }
+    if (!meetingId) return;
     setBusy(true);
     try {
       await assignMeetingToClient(meetingId, clientId);
@@ -82,14 +97,18 @@ export const ClientPickerDialog: React.FC<ClientPickerDialogProps> = ({
   };
 
   const createAndMove = async () => {
-    if (!meetingId || !trimmed || busy) return;
+    if (!trimmed || busy || (!meetingId && !onSelect)) return;
     setBusy(true);
     try {
       const created = await invoke<{ id: string }>('api_create_client', { displayName: trimmed });
       await refetchClients();
-      await assignMeetingToClient(meetingId, created.id);
-      toast.success(t('meetingMovedToClient', { name: trimmed }));
-      onMoved?.(created.id);
+      if (onSelect) {
+        onSelect(created.id);
+      } else {
+        await assignMeetingToClient(meetingId!, created.id);
+        toast.success(t('meetingMovedToClient', { name: trimmed }));
+        onMoved?.(created.id);
+      }
       close();
     } catch (error) {
       console.error('Failed to create the client:', error);
@@ -105,10 +124,10 @@ export const ClientPickerDialog: React.FC<ClientPickerDialogProps> = ({
     <Dialog open={open} onOpenChange={(next) => { if (!next) close(); }}>
       <DialogContent className="sm:max-w-[425px]">
         <VisuallyHidden>
-          <DialogTitle>{t('moveToClient')}</DialogTitle>
+          <DialogTitle>{title ?? t('moveToClient')}</DialogTitle>
         </VisuallyHidden>
         <div className="py-4">
-          <h3 className="mb-4 text-lg font-semibold text-[var(--af-text)]">{t('moveToClient')}</h3>
+          <h3 className="mb-4 text-lg font-semibold text-[var(--af-text)]">{title ?? t('moveToClient')}</h3>
 
           <input
             type="text"

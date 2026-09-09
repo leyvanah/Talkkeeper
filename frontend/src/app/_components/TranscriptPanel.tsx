@@ -13,6 +13,7 @@
 
 import { VirtualizedTranscriptView } from '@/components/VirtualizedTranscriptView';
 import { PermissionWarning } from '@/components/PermissionWarning';
+import { RecordingClientSelector } from '@/components/RecordingClientSelector';
 import { Button } from '@/components/ui/button';
 import { ButtonGroup } from '@/components/ui/button-group';
 import { Copy, GlobeIcon } from 'lucide-react';
@@ -72,7 +73,8 @@ export function TranscriptPanel({
       <div className="sticky top-0 z-10 bg-white p-4 border-gray-200">
         <div className="flex flex-col space-y-3">
           <div className="flex  flex-col space-y-2">
-            <div className="flex justify-center  items-center space-x-2">
+            <div className="flex flex-wrap justify-center items-center gap-2">
+              <RecordingClientSelector />
               <ButtonGroup>
                 {transcripts?.length > 0 && (
                   <Button

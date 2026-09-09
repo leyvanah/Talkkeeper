@@ -64,7 +64,8 @@
     "meetingMoveFailed": "Не удалось перенести запись",
     "findOrCreateClient": "Найти или ввести новое имя",
     "createClientAndMove": "Создать «{name}» и перенести",
-    "noClientYet": "Выбрать клиента"
+    "noClientYet": "Выбрать клиента",
+    "recordingForClient": "Запись для клиента"
   },
   "home": {
     "recoveredSuccessTitle": "Встреча успешно восстановлена!",

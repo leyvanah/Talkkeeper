@@ -64,7 +64,8 @@
     "meetingMoveFailed": "Could not move the recording",
     "findOrCreateClient": "Find, or type a new name",
     "createClientAndMove": "Create \"{name}\" and move",
-    "noClientYet": "Pick a client"
+    "noClientYet": "Pick a client",
+    "recordingForClient": "Recording for"
   },
   "home": {
     "recoveredSuccessTitle": "Meeting recovered successfully!",

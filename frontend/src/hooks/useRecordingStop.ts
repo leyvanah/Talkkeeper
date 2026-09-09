@@ -13,6 +13,7 @@ import {
   applyPinnedSummaryLanguageToMeeting,
   detectAndCacheSummaryLanguage,
 } from '@/lib/summary-language-preferences';
+import { clearPendingRecordingClient, getPendingRecordingClient } from '@/lib/recording-client';
 import { useTranslations } from 'next-intl';
 
 type SummaryStatus = 'idle' | 'processing' | 'summarizing' | 'regenerating' | 'completed' | 'error';
@@ -68,6 +69,7 @@ export function useRecordingStop(
     setMeetings,
     meetings,
     setIsMeetingActive,
+    assignMeetingToClient,
   } = useSidebar();
 
   const router = useRouter();
@@ -301,6 +303,20 @@ export function useRecordingStop(
           console.log('   Transcripts:', freshTranscripts.length);
           console.log('   folder_path:', folderPath);
 
+          // File it under whoever was chosen before the recording started. This
+          // runs after the save on purpose: the recording is what matters, and
+          // a failure to file it must not put the transcript at risk. If it
+          // fails the meeting simply stays in "Unassigned".
+          const pendingClientId = getPendingRecordingClient();
+          if (pendingClientId) {
+            try {
+              await assignMeetingToClient(meetingId, pendingClientId);
+            } catch (error) {
+              console.warn('Could not file the recording under the chosen client:', error);
+            }
+          }
+          clearPendingRecordingClient();
+
           // Mark meeting as saved in IndexedDB (for recovery system)
           await markMeetingAsSaved();
 
@@ -435,6 +451,7 @@ export function useRecordingStop(
     setMeetings,
     meetings,
     setIsMeetingActive,
+    assignMeetingToClient,
     router,
     recordingState.recordingDuration,
   ]);
