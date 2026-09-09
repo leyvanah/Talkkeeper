@@ -29,6 +29,10 @@ export interface SecurityStatus {
   waitSeconds: number
   autoLockMinutes: number | null
   failedAttempts: number
+  /** Whether this machine could show a Windows Hello prompt at all. */
+  quickAvailable: boolean
+  /** Whether the owner turned quick unlock on. Off unless they did. */
+  quickEnabled: boolean
 }
 
 /**
@@ -65,6 +69,12 @@ interface SecurityContextValue {
   removeRecovery: (password: string) => Promise<void>
   setAutoLock: (minutes: number | null) => Promise<void>
   disable: (password: string) => Promise<void>
+  /** Opens the archive with a Windows Hello prompt. */
+  quickUnlock: (prompt: string) => Promise<void>
+  /** Turns quick unlock on, proving the password first. */
+  quickEnable: (password: string) => Promise<void>
+  /** Turns quick unlock off, back to password only. */
+  quickDisable: () => Promise<void>
 }
 
 const SecurityContext = createContext<SecurityContextValue | null>(null)
@@ -167,6 +177,9 @@ export function SecurityProvider({ children }: { children: React.ReactNode }) {
       removeRecovery: (password) => run<void>('security_remove_recovery', { password }),
       setAutoLock: (minutes) => run<void>('security_set_auto_lock', { minutes }),
       disable: (password) => run<void>('security_disable', { password }),
+      quickUnlock: (prompt) => run<void>('security_quick_unlock', { prompt }),
+      quickEnable: (password) => run<void>('security_quick_enable', { password }),
+      quickDisable: () => run<void>('security_quick_disable'),
     }
   }, [status, loading, refresh])
 

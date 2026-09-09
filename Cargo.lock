@@ -3764,6 +3764,8 @@ dependencies = [
  "whatlang",
  "which 6.0.3",
  "whisper-rs",
+ "windows 0.61.3",
+ "windows-future",
  "windows-sys 0.59.0",
  "winreg 0.55.0",
  "xz2",

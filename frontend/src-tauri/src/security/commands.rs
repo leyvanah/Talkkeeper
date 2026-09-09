@@ -134,6 +134,10 @@ pub struct SecurityStatus {
     pub auto_lock_minutes: Option<u64>,
     /// Consecutive failed attempts, so the screen can warn before the wait bites.
     pub failed_attempts: u32,
+    /// Whether this machine could offer a Windows Hello prompt at all.
+    pub quick_available: bool,
+    /// Whether the owner turned quick unlock on. Off unless they did.
+    pub quick_enabled: bool,
 }
 
 /// A failure the window has to react to differently depending on which it is.
@@ -218,6 +222,113 @@ pub fn security_status(state: State<'_, SecurityState>) -> SecurityStatus {
         wait_seconds: guard.as_ref().map_or(0, Keystore::wait_required),
         auto_lock_minutes: guard.as_ref().and_then(|store| store.auto_lock_minutes),
         failed_attempts: guard.as_ref().map_or(0, |store| store.failed_attempts),
+        #[cfg(windows)]
+        quick_available: super::hello::is_available(),
+        #[cfg(not(windows))]
+        quick_available: false,
+        #[cfg(windows)]
+        quick_enabled: guard.as_ref().is_some_and(Keystore::has_quick_unlock),
+        #[cfg(not(windows))]
+        quick_enabled: false,
+    }
+}
+
+/// Turns quick unlock on for this archive, after the password is proven.
+///
+/// Opt-in and reversible: an archive is password-only until this is called, and
+/// [`security_quick_disable`] puts it back that way.
+#[cfg(windows)]
+#[tauri::command]
+pub fn security_quick_enable(
+    password: String,
+    state: State<'_, SecurityState>,
+) -> Result<(), SecurityError> {
+    if !super::hello::is_available() {
+        return Err(SecurityError::new(
+            "quickUnavailable",
+            "Windows Hello is not set up on this machine",
+        ));
+    }
+
+    state.with_keystore(|keystore| keystore.enable_quick_unlock(&password))?;
+    log::info!("Quick unlock turned on");
+    Ok(())
+}
+
+/// Turns quick unlock off, leaving the password as the way in.
+#[cfg(windows)]
+#[tauri::command]
+pub fn security_quick_disable(state: State<'_, SecurityState>) -> Result<(), SecurityError> {
+    state.with_keystore(|keystore| {
+        keystore.disable_quick_unlock();
+        Ok(())
+    })?;
+    log::info!("Quick unlock turned off");
+    Ok(())
+}
+
+/// Opens the archive with a Windows Hello prompt.
+///
+/// Runs off the async runtime: the prompt is modal and blocks until the owner
+/// answers, which would otherwise stall every other task in the process.
+#[cfg(windows)]
+#[tauri::command]
+pub async fn security_quick_unlock<R: Runtime>(
+    prompt: String,
+    app: AppHandle<R>,
+) -> Result<(), SecurityError> {
+    let window = app
+        .get_webview_window("main")
+        .and_then(|window| window.hwnd().ok())
+        .map(|handle| handle.0 as isize)
+        .ok_or_else(|| {
+            SecurityError::new("quickNoWindow", "the app window could not be found")
+        })?;
+
+    let quick = {
+        let state = app.state::<SecurityState>();
+        let guard = state.keystore_guard();
+        guard
+            .as_ref()
+            .ok_or_else(SecurityError::not_configured)?
+            .quick
+            .clone()
+            .ok_or_else(|| SecurityError::new("quickNotConfigured", "quick unlock is not set up"))?
+    };
+
+    let dek = tauri::async_runtime::spawn_blocking(move || {
+        super::quick::unlock(&quick, window, &prompt)
+    })
+    .await
+    .map_err(|error| SecurityError::new("quickFailed", error.to_string()))?
+    .map_err(SecurityError::from)?;
+
+    app.state::<SecurityState>().session.unlock(dek);
+    log::info!("Archive unlocked with Windows Hello");
+    Ok(())
+}
+
+#[cfg(windows)]
+impl From<super::quick::QuickError> for SecurityError {
+    fn from(error: super::quick::QuickError) -> Self {
+        let message = error.to_string();
+        match error {
+            super::quick::QuickError::NotConfigured => {
+                Self::new("quickNotConfigured", message)
+            }
+            super::quick::QuickError::Hello(super::hello::HelloError::Declined) => {
+                Self::new("quickDeclined", message)
+            }
+            super::quick::QuickError::Hello(super::hello::HelloError::Unavailable) => {
+                Self::new("quickUnavailable", message)
+            }
+            super::quick::QuickError::Hello(_) => Self::new("quickFailed", message),
+            // A DPAPI failure normally means the Windows account changed, or the
+            // keystore was carried over from another machine. Either way the
+            // password still works, and saying so beats a generic error.
+            super::quick::QuickError::Dpapi(_) => Self::new("quickKeyUnusable", message),
+            super::quick::QuickError::Corrupt(_) => Self::new("quickKeyUnusable", message),
+        }
     }
 }
 
@@ -585,6 +696,13 @@ mod tests {
             wait_seconds: guard.as_ref().map_or(0, Keystore::wait_required),
             auto_lock_minutes: guard.as_ref().and_then(|store| store.auto_lock_minutes),
             failed_attempts: guard.as_ref().map_or(0, |store| store.failed_attempts),
+            // Not asked of Windows here: these tests are about the keystore, and
+            // the answer would depend on the machine they run on.
+            quick_available: false,
+            #[cfg(windows)]
+            quick_enabled: guard.as_ref().is_some_and(Keystore::has_quick_unlock),
+            #[cfg(not(windows))]
+            quick_enabled: false,
         }
     }
 }

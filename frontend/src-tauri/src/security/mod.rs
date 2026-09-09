@@ -15,8 +15,14 @@
 //! for the DEK when their turn comes.
 
 pub mod commands;
+#[cfg(windows)]
+pub mod dpapi;
 pub mod envelope;
+#[cfg(windows)]
+pub mod hello;
 pub mod kdf;
+#[cfg(windows)]
+pub mod quick;
 pub mod keystore;
 pub mod recovery;
 pub mod session;

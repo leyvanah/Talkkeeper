@@ -9,7 +9,7 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { useTranslations } from 'next-intl'
-import { Lock, KeyRound, ArrowLeft, Eye, EyeOff } from 'lucide-react'
+import { Lock, KeyRound, ArrowLeft, Eye, EyeOff, ScanFace } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { asSecurityError, useSecurity } from '@/contexts/SecurityContext'
@@ -20,7 +20,7 @@ type Mode = 'password' | 'recovery'
 
 export function LockScreen() {
   const t = useTranslations('security')
-  const { status, unlock, resetPassword } = useSecurity()
+  const { status, unlock, resetPassword, quickUnlock } = useSecurity()
 
   const [mode, setMode] = useState<Mode>('password')
   const [password, setPassword] = useState('')
@@ -75,6 +75,12 @@ export function LockScreen() {
           return t('errorNoRecoveryCode')
         case 'keystoreCorrupt':
           return t('errorKeystoreCorrupt')
+        case 'quickDeclined':
+          return t('errorQuickDeclined')
+        case 'quickUnavailable':
+          return t('errorQuickUnavailable')
+        case 'quickKeyUnusable':
+          return t('errorQuickKeyUnusable')
         default:
           console.error('[LockScreen] Unlock failed:', failure)
           return t('errorUnknown')
@@ -169,6 +175,31 @@ export function LockScreen() {
             <Button type="submit" className="w-full" disabled={busy || blocked || !password}>
               {busy ? t('unlocking') : t('unlock')}
             </Button>
+
+            {/* Offered only where the owner turned it on. The password field
+                stays above it: this is the shortcut, not the way in. */}
+            {status?.quickEnabled && (
+              <Button
+                type="button"
+                variant="outline"
+                className="w-full"
+                disabled={busy || blocked}
+                onClick={async () => {
+                  setBusy(true)
+                  setError(null)
+                  try {
+                    await quickUnlock(t('quickPrompt'))
+                  } catch (failure) {
+                    setError(describe(failure))
+                  } finally {
+                    setBusy(false)
+                  }
+                }}
+              >
+                <ScanFace className="mr-2 h-4 w-4" />
+                {t('quickUnlockAction')}
+              </Button>
+            )}
           </form>
         ) : (
           <form onSubmit={submitRecovery} className="space-y-4">

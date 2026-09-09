@@ -7,9 +7,10 @@
 
 import { useCallback, useState } from 'react'
 import { useTranslations } from 'next-intl'
-import { Lock, KeyRound, ShieldCheck, Timer, TriangleAlert } from 'lucide-react'
+import { Lock, KeyRound, ShieldCheck, Timer, TriangleAlert, ScanFace } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
+import { Switch } from '@/components/ui/switch'
 import { asSecurityError, useSecurity } from '@/contexts/SecurityContext'
 import { RecoveryCodeCard } from '@/components/security/RecoveryCodeCard'
 
@@ -27,6 +28,8 @@ export function SecuritySettings() {
     setAutoLock,
     disable,
     lock,
+    quickEnable,
+    quickDisable,
   } = useSecurity()
 
   const [busy, setBusy] = useState(false)
@@ -61,6 +64,12 @@ export function SecuritySettings() {
           return t('errorRecordingInProgress')
         case 'alreadyConfigured':
           return t('errorAlreadyConfigured')
+        case 'quickDeclined':
+          return t('errorQuickDeclined')
+        case 'quickUnavailable':
+          return t('errorQuickUnavailable')
+        case 'quickKeyUnusable':
+          return t('errorQuickKeyUnusable')
         default:
           console.error('[SecuritySettings] Command failed:', problem)
           return t('errorUnknown')
@@ -208,6 +217,46 @@ export function SecuritySettings() {
                 ))}
               </select>
             </div>
+
+            {/* Quick unlock. Off unless the owner turns it on, and one switch
+                puts the archive back to password-only. */}
+            {status.quickAvailable && (
+              <div className="border-t border-gray-200 pt-5">
+                <div className="flex items-start justify-between gap-4">
+                  <div className="min-w-0">
+                    <h4 className="flex items-center gap-2 text-sm font-medium text-gray-900">
+                      <ScanFace className="h-4 w-4 text-gray-500" />
+                      {t('quickTitle')}
+                    </h4>
+                    <p className="mt-1 text-xs text-gray-500">{t('quickDescription')}</p>
+                  </div>
+                  <Switch
+                    checked={status.quickEnabled}
+                    disabled={busy || (!status.quickEnabled && !confirmingPassword)}
+                    onCheckedChange={(wanted) =>
+                      attempt(async () => {
+                        if (wanted) {
+                          await quickEnable(confirmingPassword)
+                          setConfirmingPassword('')
+                        } else {
+                          await quickDisable()
+                        }
+                      }, wanted ? t('noticeQuickOn') : t('noticeQuickOff'))
+                    }
+                  />
+                </div>
+
+                {/* Said plainly next to the switch, not buried in a document:
+                    this door is weaker than the password. */}
+                <p className="mt-3 rounded-lg border border-amber-500/40 bg-amber-500/10 p-3 text-xs text-[var(--af-text-2)]">
+                  {t('quickWarning')}
+                </p>
+
+                {!status.quickEnabled && !confirmingPassword && (
+                  <p className="mt-2 text-xs text-gray-500">{t('quickNeedsPassword')}</p>
+                )}
+              </div>
+            )}
 
             <div className="border-t border-gray-200 pt-5">
               <h4 className="mb-3 text-sm font-medium text-gray-900">{t('changePasswordTitle')}</h4>

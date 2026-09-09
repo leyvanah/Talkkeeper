@@ -639,6 +639,12 @@ pub fn run() {
             security::commands::security_remove_recovery,
             security::commands::security_set_auto_lock,
             security::commands::security_disable,
+            #[cfg(windows)]
+            security::commands::security_quick_enable,
+            #[cfg(windows)]
+            security::commands::security_quick_disable,
+            #[cfg(windows)]
+            security::commands::security_quick_unlock,
             start_recording,
             stop_recording,
             is_recording,

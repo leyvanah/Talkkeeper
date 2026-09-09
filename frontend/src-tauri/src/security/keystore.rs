@@ -36,6 +36,12 @@ pub struct Keystore {
     /// The same data key sealed with the recovery code, when the owner kept one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub recovery: Option<Envelope>,
+    /// The same data key behind a Windows Hello prompt, when the owner turned
+    /// quick unlock on. Absent by default: an archive is password-only until
+    /// this is deliberately added, and removing it returns to password-only.
+    #[cfg(windows)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub quick: Option<super::quick::QuickUnlock>,
     /// Consecutive failed unlock attempts. Survives a restart on purpose.
     #[serde(default)]
     pub failed_attempts: u32,
@@ -171,6 +177,8 @@ impl Keystore {
             version: 1,
             password: password_envelope,
             recovery: recovery_envelope,
+            #[cfg(windows)]
+            quick: None,
             failed_attempts: 0,
             locked_until: None,
             auto_lock_minutes: DEFAULT_AUTO_LOCK_MINUTES,
@@ -293,6 +301,39 @@ impl Keystore {
     pub fn has_recovery(&self) -> bool {
         self.recovery.is_some()
     }
+
+    /// Whether quick unlock is turned on. False on a fresh archive.
+    #[cfg(windows)]
+    pub fn has_quick_unlock(&self) -> bool {
+        self.quick.is_some()
+    }
+
+    /// Turns quick unlock on, proving the password first.
+    ///
+    /// Requires the password even though the archive may already be open: adding
+    /// a door to the archive should cost the same proof as changing the password.
+    #[cfg(windows)]
+    pub fn enable_quick_unlock(&mut self, password: &str) -> Result<(), KeystoreError> {
+        let dek = self.unlock_with_password(password)?;
+        self.quick = Some(
+            super::quick::enable(&dek)
+                .map_err(|error| KeystoreError::Corrupt(error.to_string()))?,
+        );
+        self.updated_at = now_text();
+        Ok(())
+    }
+
+    /// Turns quick unlock off, leaving the password (and any recovery code).
+    ///
+    /// No password needed: removing a way in never weakens the archive, and
+    /// demanding the password to close a door the owner regrets opening would be
+    /// friction in the wrong direction.
+    #[cfg(windows)]
+    pub fn disable_quick_unlock(&mut self) {
+        self.quick = None;
+        self.updated_at = now_text();
+    }
+
 
     fn check_not_throttled(&self) -> Result<(), KeystoreError> {
         let seconds = self.wait_required();
