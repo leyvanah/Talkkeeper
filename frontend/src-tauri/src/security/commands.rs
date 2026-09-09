@@ -1,0 +1,708 @@
+//! What the window can ask about the lock.
+//!
+//! Errors carry a machine-readable `code` so the interface can say the right
+//! thing in the owner's language; the `message` is a fallback for the log.
+//! Passwords cross this boundary and nowhere else — none of these commands
+//! returns one, and none of them logs one.
+
+use std::sync::Mutex;
+use std::time::Duration;
+
+use serde::{Deserialize, Serialize};
+use tauri::{AppHandle, Emitter, Manager, Runtime, State};
+
+use super::keystore::{Keystore, KeystoreError, DEFAULT_AUTO_LOCK_MINUTES};
+use super::recovery::RecoveryError;
+use super::session::{KeySession, LockState, IDLE_TICK};
+
+/// Event the window listens for when the key is dropped without it asking —
+/// idle timeout, or a lock from the tray.
+pub const LOCKED_EVENT: &str = "archive-locked";
+
+/// Everything the lock owns at runtime.
+pub struct SecurityState {
+    /// The keystore as last read or written. `None` until startup reads it, and
+    /// when no password has been set.
+    keystore: Mutex<Option<Keystore>>,
+    /// Where that keystore is read from and written to. A field rather than a
+    /// constant so the lifecycle can be tested against a temporary directory
+    /// instead of the owner's real archive.
+    path: std::path::PathBuf,
+    /// The key itself.
+    pub session: KeySession,
+}
+
+impl Default for SecurityState {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl SecurityState {
+    pub fn new() -> Self {
+        Self::at(Keystore::path())
+    }
+
+    /// A state backed by a keystore at an explicit path.
+    pub fn at(path: std::path::PathBuf) -> Self {
+        Self {
+            keystore: Mutex::new(None),
+            path,
+            session: KeySession::new(),
+        }
+    }
+
+    /// Reads the keystore from disk and tells the session whether a password
+    /// exists. Called once at startup; a damaged file is reported, not ignored.
+    pub fn load(&self) -> Result<(), SecurityError> {
+        let keystore = Keystore::load_from(&self.path)?;
+        self.session.set_configured(keystore.is_some());
+        self.session.set_auto_lock_after(
+            keystore
+                .as_ref()
+                .and_then(|store| store.auto_lock_minutes)
+                .map(|minutes| Duration::from_secs(minutes * 60)),
+        );
+        *self.keystore_guard() = keystore;
+        Ok(())
+    }
+
+    fn keystore_guard(&self) -> std::sync::MutexGuard<'_, Option<Keystore>> {
+        self.keystore
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    /// Runs `change` against the keystore and writes the result back.
+    ///
+    /// The keystore is saved even when `change` fails, because a failed unlock
+    /// still moves the attempt counter, and that counter is worthless if it does
+    /// not survive closing the window.
+    fn with_keystore<T>(
+        &self,
+        change: impl FnOnce(&mut Keystore) -> Result<T, KeystoreError>,
+    ) -> Result<T, SecurityError> {
+        let mut guard = self.keystore_guard();
+        let keystore = guard.as_mut().ok_or(SecurityError::not_configured())?;
+
+        let outcome = change(keystore);
+        if let Err(error) = keystore.save_to(&self.path) {
+            log::error!("Could not write the keystore: {error}");
+        }
+        outcome.map_err(SecurityError::from)
+    }
+
+    /// Protects a fresh archive and leaves it open. Shared by the command and
+    /// its tests so both take the same path through the keystore.
+    fn create(
+        &self,
+        password: &str,
+        with_recovery: bool,
+    ) -> Result<Option<String>, SecurityError> {
+        if self.path.exists() {
+            return Err(SecurityError::new(
+                "alreadyConfigured",
+                "the archive is already protected by a password",
+            ));
+        }
+
+        let (keystore, code, dek) = Keystore::create(password, with_recovery)?;
+        keystore.save_to(&self.path)?;
+
+        self.session.unlock(dek);
+        self.session.set_auto_lock_after(
+            keystore
+                .auto_lock_minutes
+                .map(|minutes| Duration::from_secs(minutes * 60)),
+        );
+        *self.keystore_guard() = Some(keystore);
+
+        Ok(code.map(|code| code.to_string()))
+    }
+}
+
+/// What the window shows and offers.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SecurityStatus {
+    pub state: LockState,
+    /// Whether a recovery code exists, so the lock screen knows to offer it.
+    pub has_recovery: bool,
+    /// Seconds the owner must wait before the next attempt is accepted.
+    pub wait_seconds: i64,
+    /// Idle minutes before locking; `null` means never.
+    pub auto_lock_minutes: Option<u64>,
+    /// Consecutive failed attempts, so the screen can warn before the wait bites.
+    pub failed_attempts: u32,
+    /// Whether this machine could offer a Windows Hello prompt at all.
+    pub quick_available: bool,
+    /// Whether the owner turned quick unlock on. Off unless they did.
+    pub quick_enabled: bool,
+}
+
+/// A failure the window has to react to differently depending on which it is.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SecurityError {
+    /// Stable identifier the interface branches on.
+    pub code: String,
+    /// English text for logs; the window renders its own by `code`.
+    pub message: String,
+    /// Set only for `tooManyAttempts`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub wait_seconds: Option<i64>,
+    /// Set only for `passwordTooShort`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub minimum: Option<usize>,
+}
+
+impl SecurityError {
+    fn new(code: &str, message: impl Into<String>) -> Self {
+        Self {
+            code: code.to_string(),
+            message: message.into(),
+            wait_seconds: None,
+            minimum: None,
+        }
+    }
+
+    fn not_configured() -> Self {
+        Self::new("notConfigured", "the archive is not protected by a password yet")
+    }
+}
+
+impl From<KeystoreError> for SecurityError {
+    fn from(error: KeystoreError) -> Self {
+        let message = error.to_string();
+        match error {
+            KeystoreError::NotConfigured => Self::not_configured(),
+            KeystoreError::AlreadyConfigured => Self::new("alreadyConfigured", message),
+            KeystoreError::WrongPassword => Self::new("wrongPassword", message),
+            KeystoreError::NoRecoveryCode => Self::new("noRecoveryCode", message),
+            KeystoreError::WrongRecoveryCode => Self::new("wrongRecoveryCode", message),
+            KeystoreError::TooManyAttempts { seconds } => Self {
+                wait_seconds: Some(seconds),
+                ..Self::new("tooManyAttempts", message)
+            },
+            KeystoreError::PasswordTooShort { minimum } => Self {
+                minimum: Some(minimum),
+                ..Self::new("passwordTooShort", message)
+            },
+            KeystoreError::RecoveryFormat(inner) => match inner {
+                RecoveryError::ChecksumMismatch => Self::new("recoveryTypo", message),
+                RecoveryError::WrongLength { .. } => Self::new("recoveryWrongLength", message),
+                RecoveryError::BadCharacter(_) => Self::new("recoveryBadCharacter", message),
+            },
+            KeystoreError::Corrupt(_) => Self::new("keystoreCorrupt", message),
+            KeystoreError::Io(_) => Self::new("keystoreIo", message),
+        }
+    }
+}
+
+impl From<super::envelope::EnvelopeError> for SecurityError {
+    fn from(error: super::envelope::EnvelopeError) -> Self {
+        Self::new("keystoreCorrupt", error.to_string())
+    }
+}
+
+/// The recovery code, returned exactly once at the moment it is created.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RecoveryCodeResponse {
+    pub recovery_code: Option<String>,
+}
+
+/// Whether the archive is locked, and what the lock screen may offer.
+#[tauri::command]
+pub fn security_status(state: State<'_, SecurityState>) -> SecurityStatus {
+    let guard = state.keystore_guard();
+    SecurityStatus {
+        state: state.session.state(),
+        has_recovery: guard.as_ref().is_some_and(Keystore::has_recovery),
+        wait_seconds: guard.as_ref().map_or(0, Keystore::wait_required),
+        auto_lock_minutes: guard.as_ref().and_then(|store| store.auto_lock_minutes),
+        failed_attempts: guard.as_ref().map_or(0, |store| store.failed_attempts),
+        #[cfg(windows)]
+        quick_available: super::hello::is_available(),
+        #[cfg(not(windows))]
+        quick_available: false,
+        #[cfg(windows)]
+        quick_enabled: guard.as_ref().is_some_and(Keystore::has_quick_unlock),
+        #[cfg(not(windows))]
+        quick_enabled: false,
+    }
+}
+
+/// Turns quick unlock on for this archive, after the password is proven.
+///
+/// Opt-in and reversible: an archive is password-only until this is called, and
+/// [`security_quick_disable`] puts it back that way.
+#[cfg(windows)]
+#[tauri::command]
+pub fn security_quick_enable(
+    password: String,
+    state: State<'_, SecurityState>,
+) -> Result<(), SecurityError> {
+    if !super::hello::is_available() {
+        return Err(SecurityError::new(
+            "quickUnavailable",
+            "Windows Hello is not set up on this machine",
+        ));
+    }
+
+    state.with_keystore(|keystore| keystore.enable_quick_unlock(&password))?;
+    log::info!("Quick unlock turned on");
+    Ok(())
+}
+
+/// Turns quick unlock off, leaving the password as the way in.
+#[cfg(windows)]
+#[tauri::command]
+pub fn security_quick_disable(state: State<'_, SecurityState>) -> Result<(), SecurityError> {
+    state.with_keystore(|keystore| {
+        keystore.disable_quick_unlock();
+        Ok(())
+    })?;
+    log::info!("Quick unlock turned off");
+    Ok(())
+}
+
+/// Opens the archive with a Windows Hello prompt.
+///
+/// Runs off the async runtime: the prompt is modal and blocks until the owner
+/// answers, which would otherwise stall every other task in the process.
+#[cfg(windows)]
+#[tauri::command]
+pub async fn security_quick_unlock<R: Runtime>(
+    prompt: String,
+    app: AppHandle<R>,
+) -> Result<(), SecurityError> {
+    let window = app
+        .get_webview_window("main")
+        .and_then(|window| window.hwnd().ok())
+        .map(|handle| handle.0 as isize)
+        .ok_or_else(|| {
+            SecurityError::new("quickNoWindow", "the app window could not be found")
+        })?;
+
+    let quick = {
+        let state = app.state::<SecurityState>();
+        let guard = state.keystore_guard();
+        guard
+            .as_ref()
+            .ok_or_else(SecurityError::not_configured)?
+            .quick
+            .clone()
+            .ok_or_else(|| SecurityError::new("quickNotConfigured", "quick unlock is not set up"))?
+    };
+
+    let dek = tauri::async_runtime::spawn_blocking(move || {
+        super::quick::unlock(&quick, window, &prompt)
+    })
+    .await
+    .map_err(|error| SecurityError::new("quickFailed", error.to_string()))?
+    .map_err(SecurityError::from)?;
+
+    app.state::<SecurityState>().session.unlock(dek);
+    log::info!("Archive unlocked with Windows Hello");
+    Ok(())
+}
+
+#[cfg(windows)]
+impl From<super::quick::QuickError> for SecurityError {
+    fn from(error: super::quick::QuickError) -> Self {
+        let message = error.to_string();
+        match error {
+            super::quick::QuickError::NotConfigured => {
+                Self::new("quickNotConfigured", message)
+            }
+            super::quick::QuickError::Hello(super::hello::HelloError::Declined) => {
+                Self::new("quickDeclined", message)
+            }
+            super::quick::QuickError::Hello(super::hello::HelloError::Unavailable) => {
+                Self::new("quickUnavailable", message)
+            }
+            super::quick::QuickError::Hello(_) => Self::new("quickFailed", message),
+            // A DPAPI failure normally means the Windows account changed, or the
+            // keystore was carried over from another machine. Either way the
+            // password still works, and saying so beats a generic error.
+            super::quick::QuickError::Dpapi(_) => Self::new("quickKeyUnusable", message),
+            super::quick::QuickError::Corrupt(_) => Self::new("quickKeyUnusable", message),
+        }
+    }
+}
+
+/// Protects the archive for the first time and leaves it unlocked.
+///
+/// The recovery code comes back once, here. It is never stored in the clear and
+/// cannot be asked for again — only replaced.
+#[tauri::command]
+pub fn security_setup(
+    password: String,
+    with_recovery: bool,
+    state: State<'_, SecurityState>,
+) -> Result<RecoveryCodeResponse, SecurityError> {
+    let recovery_code = state.create(&password, with_recovery)?;
+
+    log::info!(
+        "Archive protected with a password (recovery code kept: {})",
+        with_recovery
+    );
+
+    Ok(RecoveryCodeResponse { recovery_code })
+}
+
+/// Opens the archive with the password.
+#[tauri::command]
+pub fn security_unlock(
+    password: String,
+    state: State<'_, SecurityState>,
+) -> Result<(), SecurityError> {
+    let dek = state.with_keystore(|keystore| keystore.unlock_with_password(&password))?;
+    state.session.unlock(dek);
+    log::info!("Archive unlocked");
+    Ok(())
+}
+
+/// Opens the archive with the recovery code, for an owner who forgot the
+/// password. They are expected to set a new one straight afterwards.
+#[tauri::command]
+pub fn security_unlock_with_recovery(
+    code: String,
+    state: State<'_, SecurityState>,
+) -> Result<(), SecurityError> {
+    let dek = state.with_keystore(|keystore| keystore.unlock_with_recovery(&code))?;
+    state.session.unlock(dek);
+    log::info!("Archive unlocked with the recovery code");
+    Ok(())
+}
+
+/// Drops the key. Refused while recording: it would end the session.
+#[tauri::command]
+pub async fn security_lock<R: Runtime>(app: AppHandle<R>) -> Result<(), SecurityError> {
+    if crate::audio::recording_commands::is_recording().await {
+        return Err(SecurityError::new(
+            "recordingInProgress",
+            "the archive cannot be locked while recording",
+        ));
+    }
+
+    let state = app.state::<SecurityState>();
+    state.session.lock();
+    log::info!("Archive locked");
+    Ok(())
+}
+
+/// Tells the lock the owner is still there, so the idle clock restarts.
+#[tauri::command]
+pub fn security_touch(state: State<'_, SecurityState>) {
+    state.session.touch();
+}
+
+/// Swaps the password. The recovery code keeps working.
+#[tauri::command]
+pub fn security_change_password(
+    current_password: String,
+    new_password: String,
+    state: State<'_, SecurityState>,
+) -> Result<(), SecurityError> {
+    state.with_keystore(|keystore| keystore.change_password(&current_password, &new_password))?;
+    log::info!("Archive password changed");
+    Ok(())
+}
+
+/// Sets a new password from the recovery code and opens the archive with it.
+#[tauri::command]
+pub fn security_reset_password(
+    recovery_code: String,
+    new_password: String,
+    state: State<'_, SecurityState>,
+) -> Result<(), SecurityError> {
+    state.with_keystore(|keystore| {
+        keystore.reset_password_with_recovery(&recovery_code, &new_password)
+    })?;
+    let dek = state.with_keystore(|keystore| keystore.unlock_with_password(&new_password))?;
+    state.session.unlock(dek);
+    log::info!("Archive password reset with the recovery code");
+    Ok(())
+}
+
+/// Issues a fresh recovery code and retires the previous one.
+#[tauri::command]
+pub fn security_regenerate_recovery(
+    password: String,
+    state: State<'_, SecurityState>,
+) -> Result<RecoveryCodeResponse, SecurityError> {
+    let code = state.with_keystore(|keystore| keystore.regenerate_recovery(&password))?;
+    log::info!("New recovery code issued");
+    Ok(RecoveryCodeResponse {
+        recovery_code: Some(code.to_string()),
+    })
+}
+
+/// Drops the recovery envelope, leaving the password as the only way in.
+#[tauri::command]
+pub fn security_remove_recovery(
+    password: String,
+    state: State<'_, SecurityState>,
+) -> Result<(), SecurityError> {
+    state.with_keystore(|keystore| keystore.remove_recovery(&password))?;
+    log::info!("Recovery code removed; the password is now the only way in");
+    Ok(())
+}
+
+/// Sets the idle timeout, in minutes. `None` never locks on its own.
+#[tauri::command]
+pub fn security_set_auto_lock(
+    minutes: Option<u64>,
+    state: State<'_, SecurityState>,
+) -> Result<(), SecurityError> {
+    state.with_keystore(|keystore| {
+        keystore.auto_lock_minutes = minutes;
+        Ok(())
+    })?;
+    state
+        .session
+        .set_auto_lock_after(minutes.map(|minutes| Duration::from_secs(minutes * 60)));
+    Ok(())
+}
+
+/// Removes the password entirely, after proving it is known.
+///
+/// In B2 this only deletes keys; from B3 onward it would have to decrypt the
+/// archive first, and this command will grow that step rather than being
+/// allowed to strand data behind a key it just deleted.
+#[tauri::command]
+pub fn security_disable(
+    password: String,
+    state: State<'_, SecurityState>,
+) -> Result<(), SecurityError> {
+    state.with_keystore(|keystore| keystore.unlock_with_password(&password).map(|_| ()))?;
+
+    std::fs::remove_file(&state.path).map_err(KeystoreError::Io)?;
+    *state.keystore_guard() = None;
+    state.session.set_configured(false);
+    log::info!("Password protection removed");
+    Ok(())
+}
+
+/// Watches for the archive sitting open with nobody there.
+///
+/// Never locks during a recording — the key is what a recording writes with, and
+/// dropping it mid-session would cost the session. The check simply waits; once
+/// the recording stops, the next tick locks if the idle time has passed.
+pub fn start_idle_locker<R: Runtime>(app: AppHandle<R>) {
+    tauri::async_runtime::spawn(async move {
+        loop {
+            tokio::time::sleep(IDLE_TICK).await;
+
+            let Some(state) = app.try_state::<SecurityState>() else {
+                continue;
+            };
+            if !state.session.idle_expired() {
+                continue;
+            }
+            if crate::audio::recording_commands::is_recording().await {
+                // Deliberately not locking, and deliberately not resetting the
+                // idle clock either: the moment recording stops, this locks.
+                continue;
+            }
+
+            state.session.lock();
+            log::info!("Archive locked after idle timeout");
+            if let Err(error) = app.emit(LOCKED_EVENT, ()) {
+                log::warn!("Could not tell the window the archive locked: {error}");
+            }
+        }
+    });
+}
+
+/// Reads the keystore at startup and reports whether the window should open on
+/// the lock screen. A damaged keystore is surfaced rather than swallowed.
+pub fn initialize(app: &AppHandle<impl Runtime>) {
+    let state = app.state::<SecurityState>();
+    match state.load() {
+        Ok(()) => log::info!(
+            "Archive protection: {:?}",
+            state.session.state()
+        ),
+        Err(error) => log::error!("Could not read the keystore: {}", error.message),
+    }
+
+    if DEFAULT_AUTO_LOCK_MINUTES.is_some() {
+        start_idle_locker(app.clone());
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_wrong_password_reaches_the_window_as_its_own_code() {
+        let error: SecurityError = KeystoreError::WrongPassword.into();
+        assert_eq!(error.code, "wrongPassword");
+        assert!(error.wait_seconds.is_none());
+    }
+
+    #[test]
+    fn a_throttled_attempt_carries_the_wait_the_window_has_to_show() {
+        let error: SecurityError = KeystoreError::TooManyAttempts { seconds: 40 }.into();
+        assert_eq!(error.code, "tooManyAttempts");
+        assert_eq!(error.wait_seconds, Some(40));
+    }
+
+    #[test]
+    fn a_mistyped_recovery_code_is_a_different_code_from_a_wrong_one() {
+        // The window says "check what you typed" for one and "this code does not
+        // open this archive" for the other; they must not collapse into each other.
+        let typo: SecurityError =
+            KeystoreError::RecoveryFormat(RecoveryError::ChecksumMismatch).into();
+        let wrong: SecurityError = KeystoreError::WrongRecoveryCode.into();
+        assert_eq!(typo.code, "recoveryTypo");
+        assert_eq!(wrong.code, "wrongRecoveryCode");
+    }
+
+    #[test]
+    fn a_short_password_carries_the_minimum_so_the_window_need_not_hardcode_it() {
+        let error: SecurityError = KeystoreError::PasswordTooShort { minimum: 8 }.into();
+        assert_eq!(error.code, "passwordTooShort");
+        assert_eq!(error.minimum, Some(8));
+    }
+
+    #[test]
+    fn no_password_reaches_the_window_inside_an_error() {
+        // Every message here is built from the error type, never from input.
+        let error: SecurityError = KeystoreError::WrongPassword.into();
+        assert!(!error.message.contains("horse"));
+        let serialized = serde_json::to_string(&error).unwrap();
+        assert!(serialized.contains("wrongPassword"));
+    }
+
+    #[test]
+    fn a_state_with_no_keystore_answers_that_nothing_is_configured() {
+        let directory = tempfile::tempdir().unwrap();
+        let state = SecurityState::at(directory.path().join("keystore.json"));
+        let error = state.with_keystore(|_| Ok(())).unwrap_err();
+        assert_eq!(error.code, "notConfigured");
+    }
+
+    /// A state over a keystore file in a directory that lives as long as the test.
+    fn temporary_state() -> (tempfile::TempDir, SecurityState) {
+        let directory = tempfile::tempdir().unwrap();
+        let state = SecurityState::at(directory.path().join("keystore.json"));
+        (directory, state)
+    }
+
+    #[test]
+    fn an_unprotected_archive_reports_itself_as_unconfigured() {
+        let (_directory, state) = temporary_state();
+        state.load().unwrap();
+        assert_eq!(state.session.state(), LockState::Unconfigured);
+    }
+
+    #[test]
+    fn setting_a_password_leaves_the_archive_open_with_the_key_in_memory() {
+        let (_directory, state) = temporary_state();
+        let code = state.create("correct horse", true).unwrap();
+
+        assert!(code.is_some());
+        assert_eq!(state.session.state(), LockState::Unlocked);
+        assert!(state.session.with_dek(|key| key.len()).unwrap() == 32);
+    }
+
+    #[test]
+    fn a_second_setup_is_refused_rather_than_orphaning_the_first_key() {
+        let (_directory, state) = temporary_state();
+        state.create("correct horse", false).unwrap();
+
+        let error = state.create("another one", false).unwrap_err();
+        assert_eq!(error.code, "alreadyConfigured");
+    }
+
+    #[test]
+    fn a_restart_finds_the_archive_locked_and_the_password_opens_it() {
+        let (directory, first_run) = temporary_state();
+        let path = directory.path().join("keystore.json");
+        first_run.create("correct horse", false).unwrap();
+
+        // A new process reads the same file and starts with no key.
+        let next_run = SecurityState::at(path);
+        next_run.load().unwrap();
+        assert_eq!(next_run.session.state(), LockState::Locked);
+        assert!(next_run.session.with_dek(|_| ()).is_err());
+
+        next_run
+            .with_keystore(|keystore| keystore.unlock_with_password("correct horse"))
+            .map(|dek| next_run.session.unlock(dek))
+            .unwrap();
+        assert_eq!(next_run.session.state(), LockState::Unlocked);
+    }
+
+    #[test]
+    fn failed_attempts_survive_closing_the_window() {
+        // Otherwise the throttle is worth nothing: restarting would reset it.
+        let (directory, first_run) = temporary_state();
+        let path = directory.path().join("keystore.json");
+        first_run.create("correct horse", false).unwrap();
+
+        for _ in 0..2 {
+            let _ = first_run.with_keystore(|keystore| keystore.unlock_with_password("wrong"));
+        }
+
+        let next_run = SecurityState::at(path);
+        next_run.load().unwrap();
+        assert_eq!(security_status_of(&next_run).failed_attempts, 2);
+    }
+
+    #[test]
+    fn locking_drops_the_key_but_leaves_the_archive_configured() {
+        let (_directory, state) = temporary_state();
+        state.create("correct horse", false).unwrap();
+
+        state.session.lock();
+        assert_eq!(state.session.state(), LockState::Locked);
+        assert!(state.session.with_dek(|_| ()).is_err());
+    }
+
+    #[test]
+    fn the_status_tells_the_window_whether_a_recovery_code_exists() {
+        let (_directory, with_code) = temporary_state();
+        with_code.create("correct horse", true).unwrap();
+        assert!(security_status_of(&with_code).has_recovery);
+
+        let (_other, without_code) = temporary_state();
+        without_code.create("correct horse", false).unwrap();
+        assert!(!security_status_of(&without_code).has_recovery);
+    }
+
+    #[test]
+    fn a_new_keystore_starts_with_the_default_idle_timeout() {
+        let (_directory, state) = temporary_state();
+        state.create("correct horse", false).unwrap();
+        assert_eq!(
+            security_status_of(&state).auto_lock_minutes,
+            DEFAULT_AUTO_LOCK_MINUTES
+        );
+    }
+
+    /// The body of `security_status`, without the Tauri `State` wrapper the test
+    /// has no way to build.
+    fn security_status_of(state: &SecurityState) -> SecurityStatus {
+        let guard = state.keystore_guard();
+        SecurityStatus {
+            state: state.session.state(),
+            has_recovery: guard.as_ref().is_some_and(Keystore::has_recovery),
+            wait_seconds: guard.as_ref().map_or(0, Keystore::wait_required),
+            auto_lock_minutes: guard.as_ref().and_then(|store| store.auto_lock_minutes),
+            failed_attempts: guard.as_ref().map_or(0, |store| store.failed_attempts),
+            // Not asked of Windows here: these tests are about the keystore, and
+            // the answer would depend on the machine they run on.
+            quick_available: false,
+            #[cfg(windows)]
+            quick_enabled: guard.as_ref().is_some_and(Keystore::has_quick_unlock),
+            #[cfg(not(windows))]
+            quick_enabled: false,
+        }
+    }
+}

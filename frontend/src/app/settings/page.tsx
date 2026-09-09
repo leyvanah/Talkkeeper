@@ -2,7 +2,7 @@
 
 import React, { useState, useEffect, useLayoutEffect, useRef } from 'react';
 import { useTranslations } from 'next-intl';
-import { ArrowLeft, Settings2, Mic, Database as DatabaseIcon, SparkleIcon, Radar, Info, Cpu } from 'lucide-react';
+import { ArrowLeft, Settings2, Mic, Database as DatabaseIcon, SparkleIcon, Radar, Info, Cpu, Lock } from 'lucide-react';
 import { useRouter } from 'next/navigation';
 import { invoke } from '@tauri-apps/api/core';
 import { motion } from 'framer-motion';
@@ -15,6 +15,7 @@ import { DiarizationSettings } from '@/components/DiarizationSettings';
 import { AboutSettings } from '@/components/AboutSettings';
 import { BetaSettings } from '@/components/BetaSettings';
 import { LocalStackStatus } from '@/components/LocalStackStatus';
+import { SecuritySettings } from '@/components/SecuritySettings';
 import { useConfig } from '@/contexts/ConfigContext';
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs';
 
@@ -26,6 +27,7 @@ const TABS = [
   { value: 'Transcriptionmodels', labelKey: 'tabTranscription', icon: DatabaseIcon },
   { value: 'summaryModels', labelKey: 'tabSummary', icon: SparkleIcon },
   { value: 'meetingDetection', labelKey: 'tabDetection', icon: Radar },
+  { value: 'security', labelKey: 'tabSecurity', icon: Lock },
   { value: 'localStack', labelKey: 'tabLocalStack', icon: Cpu },
   { value: 'about', labelKey: 'tabAbout', icon: Info },
 ] as const;
@@ -182,6 +184,9 @@ export default function SettingsPage() {
               </TabsContent>
               <TabsContent value="meetingDetection" className="mt-0 min-w-0 max-w-full focus-visible:ring-0">
                 <MeetingDetectionSettings />
+              </TabsContent>
+              <TabsContent value="security" className="mt-0 min-w-0 max-w-full focus-visible:ring-0">
+                <SecuritySettings />
               </TabsContent>
               <TabsContent value="localStack" className="mt-0 min-w-0 max-w-full focus-visible:ring-0">
                 <LocalStackStatus />

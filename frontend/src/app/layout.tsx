@@ -14,6 +14,8 @@ import { listen, UnlistenFn } from '@tauri-apps/api/event'
 import { invoke } from '@tauri-apps/api/core'
 import { applyAppTheme, getSavedAppTheme } from '@/lib/app-theme'
 import { LocaleProvider, getLocaleMessages } from '@/contexts/LocaleContext'
+import { SecurityProvider, useSecurity } from '@/contexts/SecurityContext'
+import { LockScreen } from '@/components/security/LockScreen'
 import { TooltipProvider } from '@/components/ui/tooltip'
 import { RecordingStateProvider } from '@/contexts/RecordingStateContext'
 import { OllamaDownloadProvider } from '@/contexts/OllamaDownloadContext'
@@ -67,6 +69,26 @@ function ConditionalImportDialog({
       preselectedFile={importFilePath}
     />
   );
+}
+
+/**
+ * Stands between the window and the app while the archive is locked.
+ *
+ * Renders the lock screen *instead of* its children, not over them: nothing
+ * behind it mounts, so no provider fetches a transcript the owner has not
+ * unlocked. While the state is still being read it renders an empty ground
+ * rather than a flash of the app.
+ */
+function ArchiveGate({ children }: { children: React.ReactNode }) {
+  const { status, loading } = useSecurity()
+
+  if (loading) {
+    return <div className="h-screen bg-[var(--af-bg)]" />
+  }
+  if (status?.state === 'locked') {
+    return <LockScreen />
+  }
+  return <>{children}</>
 }
 
 // export { metadata } from './metadata'
@@ -371,6 +393,8 @@ export default function RootLayout({
             />
           </>
         ) : (
+          <SecurityProvider>
+          <ArchiveGate>
           <AnalyticsProvider>
             <RecordingStateProvider>
               <TranscriptProvider>
@@ -415,6 +439,8 @@ export default function RootLayout({
               </TranscriptProvider>
             </RecordingStateProvider>
           </AnalyticsProvider>
+          </ArchiveGate>
+          </SecurityProvider>
         )}
 
         <Toaster position="bottom-center" theme="dark" richColors closeButton />
