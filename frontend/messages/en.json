@@ -58,11 +58,13 @@
     "clientHasNoMeetings": "No recordings yet",
     "moveToClient": "Move to a client",
     "moveToClientAria": "Move to a client",
-    "findClientPlaceholder": "Find by name",
     "currentClient": "current",
     "meetingMovedToClient": "Moved to {name}",
     "meetingUnassigned": "Moved to Unassigned",
-    "meetingMoveFailed": "Could not move the recording"
+    "meetingMoveFailed": "Could not move the recording",
+    "findOrCreateClient": "Find, or type a new name",
+    "createClientAndMove": "Create \"{name}\" and move",
+    "noClientYet": "Pick a client"
   },
   "home": {
     "recoveredSuccessTitle": "Meeting recovered successfully!",

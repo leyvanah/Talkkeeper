@@ -29,6 +29,7 @@ import { ChevronDown, ChevronRight, FileText, AudioLines, ArrowRight, Settings, 
 import { useTranslations } from 'next-intl';
 import { useRouter, usePathname } from 'next/navigation';
 import { useSidebar, UNASSIGNED_FOLDER_ID, clientFolderId } from './SidebarProvider';
+import { ClientPickerDialog } from '@/components/ClientPickerDialog';
 import type { CurrentMeeting, SidebarItem } from '@/components/Sidebar/SidebarProvider';
 import { ConfirmationModal } from '../ConfirmationModel/confirmation-modal';
 import { ModelConfig } from '@/components/ModelSettingsModal';
@@ -121,7 +122,6 @@ const Sidebar: React.FC = () => {
     clients,
     refetchClients,
     refetchMeetings,
-    assignMeetingToClient,
   } = useSidebar();
 
   // Get recording state from RecordingStateContext (single source of truth)
@@ -185,12 +185,6 @@ const Sidebar: React.FC = () => {
   const [clientDialog, setClientDialog] = useState<{ mode: 'create' | 'rename'; clientId: string | null; name: string } | null>(null);
   const [clientDeleteState, setClientDeleteState] = useState<{ id: string; name: string; meetingCount: number } | null>(null);
   const [assignDialogMeetingId, setAssignDialogMeetingId] = useState<string | null>(null);
-  const [assignSearch, setAssignSearch] = useState('');
-
-  const clientsById = useMemo(
-    () => new Map(clients.map(client => [client.id, client])),
-    [clients]
-  );
 
   const normalizedNewName = clientDialog?.name.trim().replace(/\s+/g, ' ').toLowerCase() ?? '';
   const duplicateClientName = normalizedNewName.length > 0 && clients.some(client =>
@@ -581,23 +575,6 @@ const Sidebar: React.FC = () => {
     setClientDeleteState(null);
   };
 
-  const handleAssignMeeting = async (clientId: string | null) => {
-    if (!assignDialogMeetingId) return;
-    try {
-      await assignMeetingToClient(assignDialogMeetingId, clientId);
-      if (clientId) toggleFolderOpen(clientFolderId(clientId));
-      toast.success(clientId
-        ? t('meetingMovedToClient', { name: clientsById.get(clientId)?.displayName ?? '' })
-        : t('meetingUnassigned'));
-    } catch (error) {
-      console.error('Failed to change the meeting client:', error);
-      toast.error(t('meetingMoveFailed'), {
-        description: error instanceof Error ? error.message : String(error),
-      });
-    }
-    setAssignDialogMeetingId(null);
-    setAssignSearch('');
-  };
 
   // Expose setShowModelSettings to window for Rust tray to call
   useEffect(() => {
@@ -836,7 +813,6 @@ const Sidebar: React.FC = () => {
                       <button
                         onClick={(e) => {
                           e.stopPropagation();
-                          setAssignSearch('');
                           setAssignDialogMeetingId(item.id);
                         }}
                         className="rounded-md p-1 text-[var(--af-text-3)] hover:bg-[var(--af-hover)] hover:text-[var(--af-accent)]"
@@ -1109,67 +1085,13 @@ const Sidebar: React.FC = () => {
       </Dialog>
 
       {/* Filing one recording under a client */}
-      <Dialog
+      <ClientPickerDialog
         open={assignDialogMeetingId !== null}
-        onOpenChange={(open) => { if (!open) { setAssignDialogMeetingId(null); setAssignSearch(''); } }}
-      >
-        <DialogContent className="sm:max-w-[425px]">
-          <VisuallyHidden>
-            <DialogTitle>{t('moveToClient')}</DialogTitle>
-          </VisuallyHidden>
-          <div className="py-4">
-            <h3 className="mb-4 text-lg font-semibold">{t('moveToClient')}</h3>
-            {clients.length > 4 && (
-              <input
-                type="text"
-                value={assignSearch}
-                onChange={(e) => setAssignSearch(e.target.value)}
-                className="mb-2 w-full rounded-md border border-[var(--af-border-strong)] bg-[var(--af-panel)] px-3 py-2 text-sm text-[var(--af-text)] focus:border-transparent focus:outline-none focus:ring-2 focus:ring-[var(--af-accent)]"
-                placeholder={t('findClientPlaceholder')}
-                autoFocus
-              />
-            )}
-            <div className="max-h-64 space-y-1 overflow-y-auto custom-scrollbar">
-              {clients
-                .filter(client => client.displayName.toLowerCase().includes(assignSearch.trim().toLowerCase()))
-                .map(client => {
-                  const isCurrent = meetings.find(m => m.id === assignDialogMeetingId)?.client_id === client.id;
-                  return (
-                    <button
-                      key={client.id}
-                      onClick={() => handleAssignMeeting(client.id)}
-                      disabled={isCurrent}
-                      className={`flex w-full items-center gap-2 rounded-md px-3 py-2 text-left text-sm transition-colors ${isCurrent
-                        ? 'bg-[var(--af-panel-2)] text-[var(--af-text-3)]'
-                        : 'text-[var(--af-text)] hover:bg-[var(--af-hover)]'}`}
-                    >
-                      <User className="h-3.5 w-3.5 shrink-0 text-[var(--af-text-3)]" />
-                      <span className="min-w-0 flex-1 truncate">{client.displayName}</span>
-                      {isCurrent && <span className="shrink-0 text-[11px]">{t('currentClient')}</span>}
-                    </button>
-                  );
-                })}
-              <button
-                onClick={() => handleAssignMeeting(null)}
-                className="flex w-full items-center gap-2 rounded-md px-3 py-2 text-left text-sm text-[var(--af-text-2)] transition-colors hover:bg-[var(--af-hover)]"
-              >
-                <Inbox className="h-3.5 w-3.5 shrink-0 text-[var(--af-text-3)]" />
-                <span>{t('unassignedMeetings')}</span>
-              </button>
-            </div>
-            <button
-              onClick={() => {
-                setAssignDialogMeetingId(null);
-                setClientDialog({ mode: 'create', clientId: null, name: assignSearch.trim() });
-              }}
-              className="mt-3 flex w-full items-center justify-center gap-2 rounded-lg border border-[var(--af-border-strong)] px-3 py-2 text-sm font-medium text-[var(--af-text-2)] transition-colors hover:bg-[var(--af-hover)] hover:text-[var(--af-text)]"
-            >
-              <Plus className="h-4 w-4" />
-              {t('newClient')}
-            </button>
-          </div>
-        </DialogContent>
-      </Dialog>
+        meetingId={assignDialogMeetingId}
+        currentClientId={meetings.find(m => m.id === assignDialogMeetingId)?.client_id ?? null}
+        onOpenChange={(open) => { if (!open) setAssignDialogMeetingId(null); }}
+        onMoved={(clientId) => { if (clientId) toggleFolderOpen(clientFolderId(clientId)); }}
+      />
 
       {/* Edit Meeting Title Modal */}
       <Dialog open={editModalState.isOpen} onOpenChange={(open) => {

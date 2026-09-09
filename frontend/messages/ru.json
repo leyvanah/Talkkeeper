@@ -58,11 +58,13 @@
     "clientHasNoMeetings": "Записей пока нет",
     "moveToClient": "Перенести к клиенту",
     "moveToClientAria": "Перенести к клиенту",
-    "findClientPlaceholder": "Найти по имени",
     "currentClient": "сейчас здесь",
     "meetingMovedToClient": "Перенесено: {name}",
     "meetingUnassigned": "Перенесено в «Без клиента»",
-    "meetingMoveFailed": "Не удалось перенести запись"
+    "meetingMoveFailed": "Не удалось перенести запись",
+    "findOrCreateClient": "Найти или ввести новое имя",
+    "createClientAndMove": "Создать «{name}» и перенести",
+    "noClientYet": "Выбрать клиента"
   },
   "home": {
     "recoveredSuccessTitle": "Встреча успешно восстановлена!",
