@@ -1,4 +1,4 @@
-//! Native Windows toast notifications shown as "Meetily - Actually Free"
+//! Native Windows toast notifications shown as "Talkkeeper"
 //! (with our icon) instead of "Windows PowerShell".
 //!
 //! ## Why this module exists
@@ -36,7 +36,7 @@ use std::sync::Once;
 pub const APP_USER_MODEL_ID: &str = "com.meetily.ai";
 
 /// Friendly name Windows shows as the toast's source.
-const DISPLAY_NAME: &str = "Meetily - Actually Free";
+const DISPLAY_NAME: &str = "Talkkeeper";
 
 /// App icon embedded at compile time so `IconUri` always has a real file to
 /// point at, regardless of how the portable app was unpacked. Path is relative
@@ -108,7 +108,7 @@ fn register_aumid(icon: &Path) -> std::io::Result<()> {
     Ok(())
 }
 
-/// Show a native toast attributed to Meetily, with a **Start recording** action.
+/// Show a native toast attributed to Talkkeeper, with a **Start recording** action.
 /// Button (and body click) emit `start-recording-from-notification` so the UI
 /// can start capture the same way as the sidebar / in-app toast.
 pub fn show_toast<R: tauri::Runtime>(
@@ -125,7 +125,7 @@ pub fn show_toast<R: tauri::Runtime>(
     Toast::new(APP_USER_MODEL_ID)
         .title(title)
         .text1(body)
-        .text2("Tap Start recording to begin in Meetily.")
+        .text2("Tap Start recording to begin in Talkkeeper.")
         .duration(Duration::Long)
         .add_button("Start recording", "start_recording")
         .on_activated(move |action| {

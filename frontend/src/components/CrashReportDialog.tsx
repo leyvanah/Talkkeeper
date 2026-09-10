@@ -45,7 +45,7 @@ export default function CrashReportDialog({ report, onResolved }: CrashReportDia
     } catch (error) {
       console.error('[CrashReport] Failed to persist dismissal:', error)
       toast.warning(t('crashDismissFailed'), {
-        description: 'You can continue now, but Meetily may ask about it again next launch.',
+        description: 'You can continue now, but Talkkeeper may ask about it again next launch.',
       })
     }
     onResolved()

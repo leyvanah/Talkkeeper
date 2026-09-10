@@ -282,7 +282,7 @@ fn reject_path_inside_bundle(path: &Path, bundle_root: &Path) -> Result<()> {
 
     if candidate == bundle || candidate.starts_with(&bundle) {
         return Err(anyhow!(
-            "The recordings folder cannot be inside the Meetily app bundle. Choose a folder in Movies, Music, Documents, or another writable location."
+            "The recordings folder cannot be inside the Talkkeeper app bundle. Choose a folder in Movies, Music, Documents, or another writable location."
         ));
     }
 

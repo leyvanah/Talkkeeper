@@ -56,13 +56,13 @@ export function About() {
                 <div className="mb-3">
                     <Image
                         src="icon_128x128.png"
-                        alt="Meetily Logo"
+                        alt="Talkkeeper Logo"
                         width={64}
                         height={64}
                         className="mx-auto"
                     />
                 </div>
-                {/* <h1 className="text-xl font-bold text-gray-900">Meetily</h1> */}
+                {/* <h1 className="text-xl font-bold text-gray-900">Talkkeeper</h1> */}
                 <span className="text-sm text-gray-500"> v{currentVersion}</span>
                 <p className="text-medium text-gray-600 mt-1">
                     {t('tagline')}

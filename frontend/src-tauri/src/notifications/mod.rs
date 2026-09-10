@@ -5,7 +5,7 @@ pub mod settings;
 pub mod commands;
 pub mod manager;
 
-// Windows-only: native toasts that appear as "Meetily - Actually Free" instead
+// Windows-only: native toasts that appear as "Talkkeeper" instead
 // of "Windows PowerShell" (see native_windows.rs for the full explanation).
 #[cfg(windows)]
 pub mod native_windows;

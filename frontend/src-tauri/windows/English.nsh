@@ -1,4 +1,4 @@
-; Meetily - Actually Free — custom English installer strings
+; Talkkeeper — custom English installer strings
 LangString addOrReinstall ${LANG_ENGLISH} "Add / reinstall components"
 LangString alreadyInstalled ${LANG_ENGLISH} "Already installed"
 LangString alreadyInstalledLong ${LANG_ENGLISH} "${PRODUCTNAME} ${VERSION} is already installed. Choose what to do next, then click Next."
@@ -19,7 +19,7 @@ LangString unableToUninstall ${LANG_ENGLISH} "Unable to uninstall."
 LangString uninstallApp ${LANG_ENGLISH} "Uninstall ${PRODUCTNAME}"
 LangString uninstallBeforeInstalling ${LANG_ENGLISH} "Uninstall before installing"
 LangString unknown ${LANG_ENGLISH} "unknown"
-LangString webview2AbortError ${LANG_ENGLISH} "WebView2 install failed. Meetily needs it to run — restart the setup and try again."
+LangString webview2AbortError ${LANG_ENGLISH} "WebView2 install failed. Talkkeeper needs it to run — restart the setup and try again."
 LangString webview2DownloadError ${LANG_ENGLISH} "WebView2 download failed — $0"
 LangString webview2DownloadSuccess ${LANG_ENGLISH} "WebView2 bootstrapper downloaded"
 LangString webview2Downloading ${LANG_ENGLISH} "Downloading WebView2 bootstrapper…"

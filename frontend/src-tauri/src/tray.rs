@@ -27,7 +27,7 @@ pub fn create_tray<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
         // the menu and never the app. Reserve left-click for "open the window"
         // and leave the menu on right-click, which is what people expect.
         .show_menu_on_left_click(false)
-        .tooltip("Meetily - Actually Free")
+        .tooltip("Talkkeeper")
         .icon(app.default_window_icon().unwrap().clone())
         .on_menu_event(|app, event| handle_menu_event(app, event.id.as_ref()))
         .on_tray_icon_event(|tray, event| {

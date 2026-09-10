@@ -27,7 +27,7 @@ impl<R: Runtime> SystemNotificationHandler<R> {
             return Ok(());
         }
 
-        // Windows: raise a native toast that is attributed to Meetily (with our
+        // Windows: raise a native toast that is attributed to Talkkeeper (with our
         // name + icon) rather than PowerShell. The Tauri plugin can't do this
         // for a portable exe running from `target\release` (see native_windows).
         // Best-effort: on any failure we fall through to the plugin below so we

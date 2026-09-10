@@ -91,7 +91,7 @@ export function SetupOverviewStep() {
     if (!cudaStatus?.setupDownloadUrl) return;
     invoke('open_external_url', {
       url: cudaStatus.setupDownloadUrl,
-    }).catch((error) => console.error('Failed to open latest Meetily setup:', error));
+    }).catch((error) => console.error('Failed to open latest Talkkeeper setup:', error));
   };
 
   const accelerationLabel = cudaStatus?.reconfigurationRequired

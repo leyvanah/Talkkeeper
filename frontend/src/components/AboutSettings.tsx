@@ -6,7 +6,7 @@ import { invoke } from "@tauri-apps/api/core"
 import { Github, Shield, Cpu, Heart } from "lucide-react"
 
 /**
- * About panel for Meetily - Actually Free. Shows version, a short description,
+ * About panel for Talkkeeper. Shows version, a short description,
  * and links to the source and privacy policy. Purely informational.
  */
 export function AboutSettings() {
@@ -41,7 +41,7 @@ export function AboutSettings() {
             M
           </div>
           <div>
-            <h3 className="text-xl font-semibold text-gray-900">Meetily · Actually Free</h3>
+            <h3 className="text-xl font-semibold text-gray-900">Talkkeeper</h3>
             <p className="text-sm text-gray-600">
               {t('versionTagline', { version })}
             </p>
