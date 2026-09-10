@@ -147,7 +147,7 @@ fn detect_vram_gb() -> f32 {
         }
     }
 
-    /// TODO: Vulkan VRAM detection
+    // TODO: Vulkan VRAM detection
 
     eprintln!("VRAM detection not available, using conservative estimate");
     4.0 // Conservative fallback
@@ -258,8 +258,23 @@ fn calculate_gpu_layers(
     layers
 }
 
-/// Get default GPU layer count with smart detection
+/// Get default GPU layer count with smart detection.
+///
+/// `LLAMA_GPU_LAYERS` overrides the estimate. The estimate below is a heuristic
+/// on top of another heuristic — a guessed layer count, a guessed KV size, and
+/// (outside Metal and CUDA) a guessed 4 GB of VRAM — so on any machine whose
+/// real numbers differ it is wrong in one direction or the other, and there is
+/// otherwise no way to find out except rebuilding. Measuring one backend
+/// against another needs exactly this knob.
 fn get_default_gpu_layers(model_path: &PathBuf, context_size: u32) -> u32 {
+    if let Some(override_layers) = std::env::var("LLAMA_GPU_LAYERS")
+        .ok()
+        .and_then(|value| value.trim().parse::<u32>().ok())
+    {
+        eprintln!("🔧 LLAMA_GPU_LAYERS override: {} layers", override_layers);
+        return override_layers;
+    }
+
     let vram = detect_vram_gb();
     // TODO: Use actual model metadata instead of heuristics
     // Heuristic: Estimate total layers based on file size
