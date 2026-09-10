@@ -77,6 +77,14 @@ pub fn models_dir() -> PathBuf {
     dir
 }
 
+/// Directory that holds the application log (`<root>/logs`). Kept beside the
+/// rest of the app-managed data so a portable install stays in one folder.
+pub fn logs_dir() -> PathBuf {
+    let dir = install_data_root().join("logs");
+    let _ = std::fs::create_dir_all(&dir);
+    dir
+}
+
 /// One-time, non-destructive migration of a previous (scattered) install.
 ///
 /// Earlier builds stored data under the OS application-data directory

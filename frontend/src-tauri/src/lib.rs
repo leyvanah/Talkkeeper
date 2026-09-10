@@ -49,6 +49,7 @@ pub mod anthropic;
 pub mod groq;
 pub mod openrouter;
 pub mod live_assistant;
+pub mod logging;
 pub mod meeting_detection;
 pub mod minibar;
 pub mod gigaam_engine;

@@ -338,9 +338,10 @@ async fn make_api_request<R: Runtime, T: for<'de> Deserialize<'de>>(
         error_msg
     })?;
 
-    // Safely truncate response for logging, respecting UTF-8 character boundaries
-    let truncated = response_text.chars().take(200).collect::<String>();
-    log_info!("Response body: {}", truncated);
+    // The body itself is never logged. This path is dead today, but the log now
+    // lands in a file beside the archive, and a response body is exactly the
+    // kind of thing that would carry a transcript into it.
+    log_info!("Response body: {} chars", response_text.chars().count());
 
     serde_json::from_str(&response_text).map_err(|e| {
         let error_msg = format!("Failed to parse JSON: {}", e);
