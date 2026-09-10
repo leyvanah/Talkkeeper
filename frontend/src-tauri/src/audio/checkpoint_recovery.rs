@@ -348,7 +348,7 @@ mod tests {
 
     #[test]
     fn concat_paths_escape_apostrophes() {
-        let line = ffconcat_file_line(std::path::Path::new("/Users/O'Brien/audio.mp4"));
-        assert_eq!(line, "file '/Users/O'\\''Brien/audio.mp4'\n");
+        let line = ffconcat_file_line(std::path::Path::new("/tmp/O'Brien/audio.mp4"));
+        assert_eq!(line, "file '/tmp/O'\\''Brien/audio.mp4'\n");
     }
 }
