@@ -8,14 +8,31 @@ import { invoke } from '@tauri-apps/api/core';
 import { useRecordingState } from '@/contexts/RecordingStateContext';
 
 
-interface SidebarItem {
+export interface SidebarItem {
   id: string;
   title: string;
   type: 'folder' | 'file';
   children?: SidebarItem[];
   createdAt?: string;
   durationSeconds?: number;
+  /** Folders: the client they stand for. Files: the client they are filed under. */
+  clientId?: string | null;
+  /** Folders only: how many recordings the client has. */
+  meetingCount?: number;
 }
+
+/** One client, with the two numbers the tree sorts and labels itself by. */
+export interface ClientSummary {
+  id: string;
+  displayName: string;
+  notes?: string;
+  meetingCount: number;
+  lastMeetingAt?: string;
+}
+
+/** Id of the pseudo-folder that holds recordings not filed under anyone. */
+export const UNASSIGNED_FOLDER_ID = 'unassigned';
+export const clientFolderId = (clientId: string) => `client:${clientId}`;
 
 export interface CurrentMeeting {
   id: string;
@@ -23,6 +40,8 @@ export interface CurrentMeeting {
   created_at?: string;
   /** Approx length in seconds (from transcript timings). */
   duration_seconds?: number;
+  /** Client this recording is filed under, or null while it is unassigned. */
+  client_id?: string | null;
 }
 
 interface SidebarContextType {
@@ -46,7 +65,11 @@ interface SidebarContextType {
   stopSummaryPolling: (meetingId: string) => void;
   // Refetch meetings from backend
   refetchMeetings: () => Promise<void>;
-
+  // Clients the recordings are grouped under
+  clients: ClientSummary[];
+  refetchClients: () => Promise<void>;
+  /** Files a recording under a client, or (with null) out from under all of them. */
+  assignMeetingToClient: (meetingId: string, clientId: string | null) => Promise<void>;
 }
 
 const SidebarContext = createContext<SidebarContextType | null>(null);
@@ -64,6 +87,7 @@ export function SidebarProvider({ children }: { children: React.ReactNode }) {
   const [currentMeeting, setCurrentMeeting] = useState<CurrentMeeting | null>({ id: 'intro-call', title: '+ ' + t('newCall') });
   const [isCollapsed, setIsCollapsed] = useState(false);
   const [meetings, setMeetings] = useState<CurrentMeeting[]>([]);
+  const [clients, setClients] = useState<ClientSummary[]>([]);
   const [sidebarItems, setSidebarItems] = useState<SidebarItem[]>([]);
   const [isMeetingActive, setIsMeetingActive] = useState(false);
   const [serverAddress, setServerAddress] = useState('');
@@ -91,12 +115,14 @@ export function SidebarProvider({ children }: { children: React.ReactNode }) {
           title: string;
           created_at?: string;
           duration_seconds?: number;
+          client_id?: string | null;
         }>;
         const transformedMeetings = meetings.map((meeting) => ({
           id: meeting.id,
           title: meeting.title,
           created_at: meeting.created_at ?? (meeting as any).createdAt ?? (meeting as any).updated_at,
           duration_seconds: meeting.duration_seconds,
+          client_id: meeting.client_id ?? (meeting as any).clientId ?? null,
         }));
         setMeetings(transformedMeetings);
         Analytics.trackBackendConnection(true);
@@ -112,6 +138,31 @@ export function SidebarProvider({ children }: { children: React.ReactNode }) {
     fetchMeetings();
   }, [serverAddress, fetchMeetings]);
 
+  const fetchClients = React.useCallback(async () => {
+    try {
+      setClients(await invoke<ClientSummary[]>('api_list_clients'));
+    } catch (error) {
+      console.error('Error fetching clients:', error);
+      setClients([]);
+    }
+  }, []);
+
+  useEffect(() => {
+    fetchClients();
+  }, [fetchClients]);
+
+  const assignMeetingToClient = React.useCallback(async (meetingId: string, clientId: string | null) => {
+    await invoke('api_set_meeting_client', { meetingId, clientId });
+    setMeetings(previous => previous.map(meeting => (
+      meeting.id === meetingId ? { ...meeting, client_id: clientId } : meeting
+    )));
+    setCurrentMeeting(previous => (
+      previous && previous.id === meetingId ? { ...previous, client_id: clientId } : previous
+    ));
+    // Counts and "last seen" on the folders move with it.
+    await fetchClients();
+  }, [fetchClients]);
+
   useEffect(() => {
     const fetchSettings = async () => {
       setServerAddress('http://localhost:5167');
@@ -120,22 +171,59 @@ export function SidebarProvider({ children }: { children: React.ReactNode }) {
     fetchSettings();
   }, []);
 
-  const baseItems: SidebarItem[] = [
-    {
-      id: 'meetings',
-      title: t('recentMeetings'),
+  // The library is a tree: one folder per client, then everything not filed
+  // under anyone. Clients keep the backend's order (whoever was seen last comes
+  // first); a client with no recordings still gets a folder, because the name
+  // is usually created before the first recording exists.
+  const baseItems: SidebarItem[] = (() => {
+    const byClient = new Map<string, SidebarItem[]>();
+    const unassigned: SidebarItem[] = [];
+    for (const meeting of meetings) {
+      const item: SidebarItem = {
+        id: meeting.id,
+        title: meeting.title,
+        type: 'file' as const,
+        createdAt: meeting.created_at,
+        durationSeconds: meeting.duration_seconds,
+        clientId: meeting.client_id ?? null,
+      };
+      const clientId = meeting.client_id;
+      if (!clientId) {
+        unassigned.push(item);
+        continue;
+      }
+      const existing = byClient.get(clientId);
+      if (existing) existing.push(item);
+      else byClient.set(clientId, [item]);
+    }
+
+    const items: SidebarItem[] = clients.map(client => ({
+      id: clientFolderId(client.id),
+      title: client.displayName,
       type: 'folder' as const,
-      children: [
-        ...meetings.map(meeting => ({
-          id: meeting.id,
-          title: meeting.title,
-          type: 'file' as const,
-          createdAt: meeting.created_at,
-          durationSeconds: meeting.duration_seconds,
-        }))
-      ]
-    },
-  ];
+      clientId: client.id,
+      meetingCount: client.meetingCount,
+      children: byClient.get(client.id) ?? [],
+    }));
+
+    // A recording whose client row is gone would otherwise be in no folder at
+    // all. The backend detaches on delete, so this only covers a stale list.
+    const knownClientIds = new Set(clients.map(client => client.id));
+    for (const [clientId, orphans] of byClient) {
+      if (!knownClientIds.has(clientId)) unassigned.push(...orphans);
+    }
+    unassigned.sort((a, b) => (b.createdAt ?? '').localeCompare(a.createdAt ?? ''));
+
+    items.push({
+      id: UNASSIGNED_FOLDER_ID,
+      title: t('unassignedMeetings'),
+      type: 'folder' as const,
+      clientId: null,
+      meetingCount: unassigned.length,
+      children: unassigned,
+    });
+    return items;
+  })();
 
 
   const toggleCollapse = () => {
@@ -150,10 +238,10 @@ export function SidebarProvider({ children }: { children: React.ReactNode }) {
     setSidebarItems(baseItems);
   }, [pathname]);
 
-  // Update sidebar items when meetings change
+  // Update sidebar items when meetings or clients change
   useEffect(() => {
     setSidebarItems(baseItems);
-  }, [meetings]);
+  }, [meetings, clients]);
 
   // "New Recording" only opens the home/ready screen. The user must still tap
   // the red mic button to actually start capture — auto-start was surprising.
@@ -302,7 +390,9 @@ export function SidebarProvider({ children }: { children: React.ReactNode }) {
       startSummaryPolling,
       stopSummaryPolling,
       refetchMeetings: fetchMeetings,
-
+      clients,
+      refetchClients: fetchClients,
+      assignMeetingToClient,
     }}>
       {children}
     </SidebarContext.Provider>

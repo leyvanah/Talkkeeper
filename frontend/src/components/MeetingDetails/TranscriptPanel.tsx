@@ -25,6 +25,7 @@ import {
 } from '@/components/VirtualizedTranscriptView';
 import { TranscriptButtonGroup } from './TranscriptButtonGroup';
 import { RecordingPlayer, RecordingPlayerHandle } from './RecordingPlayer';
+import { MeetingClientBadge } from '@/components/MeetingClientBadge';
 
 interface TranscriptPanelProps {
   transcripts: Transcript[];
@@ -136,22 +137,21 @@ export function TranscriptPanel({
         <h1 className="truncate text-xl font-bold text-[var(--af-text)] sm:text-2xl">
           {title || t('untitledMeeting')}
         </h1>
-        {(dateLabel || timeLabel) && (
-          <div className="mt-2 flex min-w-0 flex-wrap items-center gap-x-4 gap-y-1 text-sm text-[var(--af-text-2)]">
-            {dateLabel && (
-              <span className="inline-flex min-w-0 items-center gap-1.5">
-                <Calendar size={15} className="shrink-0 text-[var(--af-text-3)]" />
-                <span className="truncate">{dateLabel}</span>
-              </span>
-            )}
-            {timeLabel && (
-              <span className="inline-flex min-w-0 items-center gap-1.5">
-                <Clock size={15} className="shrink-0 text-[var(--af-text-3)]" />
-                <span className="truncate">{timeLabel}</span>
-              </span>
-            )}
-          </div>
-        )}
+        <div className="mt-2 flex min-w-0 flex-wrap items-center gap-x-4 gap-y-1 text-sm text-[var(--af-text-2)]">
+          <MeetingClientBadge meetingId={meetingId} />
+          {dateLabel && (
+            <span className="inline-flex min-w-0 items-center gap-1.5">
+              <Calendar size={15} className="shrink-0 text-[var(--af-text-3)]" />
+              <span className="truncate">{dateLabel}</span>
+            </span>
+          )}
+          {timeLabel && (
+            <span className="inline-flex min-w-0 items-center gap-1.5">
+              <Clock size={15} className="shrink-0 text-[var(--af-text-3)]" />
+              <span className="truncate">{timeLabel}</span>
+            </span>
+          )}
+        </div>
       </div>
 
       {/* The action container owns its responsive breakpoint, since this column
