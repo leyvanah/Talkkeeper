@@ -113,7 +113,16 @@ export function useSummaryGeneration({
           const { meetingId, processId, stage, message, data } = event.payload || ({} as any);
           if (activeMeetingIdRef.current !== meeting.id) return;
           if (meetingId && meetingId !== meeting.id) return;
-          if (!processId || processId !== activeProcessIdRef.current) return;
+          if (!processId) return;
+          // Normally only our own run is ours to render. But a run started
+          // before this component mounted — the automatic pass after a
+          // recording, or a run the user walked away from — has no process id
+          // here to match, and its completion used to be dropped on the floor
+          // while the summary sat finished in the database. The event names the
+          // meeting, and this is that meeting, so it is ours to show.
+          const isOurRun = processId === activeProcessIdRef.current;
+          const isUnclaimedRunForThisMeeting = activeProcessIdRef.current === null;
+          if (!isOurRun && !isUnclaimedRunForThisMeeting) return;
 
           if (stage === 'preparing' || stage === 'generating') {
             setSummaryStatus((prev) =>

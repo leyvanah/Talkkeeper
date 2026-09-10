@@ -1,7 +1,5 @@
 #[cfg(target_os = "windows")]
 use std::ptr;
-#[cfg(target_os = "windows")]
-use env_logger;
 #[cfg(target_os = "macos")]
 use std::process::Command;
 
@@ -30,9 +28,10 @@ pub fn show_console() -> Result<String, String> {
             if AllocConsole() == 0 {
                 return Err("Failed to allocate console".to_string());
             }
-            // Reinitialize stdout, stdin, stderr for the new console
-            std::env::set_var("RUST_LOG", "info");
-            env_logger::init();
+            // The logger is installed once at startup. Initialising it again
+            // here panicked (`env_logger::init` refuses a second logger), so
+            // showing the console took the whole command down with it. The new
+            // console simply gives the existing stderr somewhere to land.
         } else {
             // Show existing console window
             ShowWindow(console_window, SW_SHOW);

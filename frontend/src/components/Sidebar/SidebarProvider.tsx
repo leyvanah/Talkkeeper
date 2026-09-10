@@ -30,6 +30,25 @@ export interface ClientSummary {
   lastMeetingAt?: string;
 }
 
+/**
+ * How long the summary watchdog waits with no sign of life before it stops
+ * watching.
+ *
+ * This is not a budget for the work — the backend already has one
+ * (`GENERATION_TIMEOUT_SECS`, 15 minutes for the model call, plus the time it
+ * spends loading the model before that clock starts). A shorter deadline here
+ * cancels nothing; it only reports a failure while the work is still running.
+ * The old fixed cap of 200 polls (16m40s) sat barely above the backend's own
+ * deadline, which left no room for model loading on a slow machine.
+ *
+ * So this counts silence, not elapsed time, and is generous enough to cover a
+ * whole backend deadline of silence before concluding anything.
+ */
+const SUMMARY_STALL_LIMIT_MS = 20 * 60 * 1000;
+
+/** How long an "idle" backend is given to produce a process before giving up. */
+const IDLE_GRACE_MS = 20 * 1000;
+
 /** Id of the pseudo-folder that holds recordings not filed under anyone. */
 export const UNASSIGNED_FOLDER_ID = 'unassigned';
 export const clientFolderId = (clientId: string) => `client:${clientId}`;
@@ -289,21 +308,45 @@ export function SidebarProvider({ children }: { children: React.ReactNode }) {
 
     console.log(`📊 Starting polling for meeting ${meetingId}, process ${processId}`);
 
-    let pollCount = 0;
-    const MAX_POLLS = 200; // ~16.5 minutes at 5-second intervals
     let stopped = false;
+    const startedAt = Date.now();
+    // Last moment the backend proved it was still moving — a status change, or
+    // a result appearing. Extended on every sign of life.
+    let lastProgressAt = startedAt;
+    let lastStatus: string | null = null;
 
     const tick = async () => {
       if (stopped || !isCurrentPoll()) return;
-      pollCount++;
 
-      if (pollCount >= MAX_POLLS) {
-        console.warn(`⏱️ Polling timeout for ${meetingId} after ${MAX_POLLS} iterations`);
+      // The backend gives the model GENERATION_TIMEOUT_SECS (900s) and spends
+      // extra time before that clock starts, loading the model. Waiting less
+      // than that here does not stop anything — it only reports a failure while
+      // the work is still running, which is exactly what used to happen. So the
+      // watchdog waits on evidence of a stall, never on a fixed budget, and the
+      // ceiling below sits above the backend's own deadline rather than under.
+      const stalledFor = Date.now() - lastProgressAt;
+      if (stalledFor >= SUMMARY_STALL_LIMIT_MS) {
         stopped = true;
         clearPoll(meetingId);
+        // Never announce failure without looking one more time: the run may
+        // have finished between the last poll and this decision.
+        try {
+          const finalCheck = await invoke('api_get_summary', { meetingId }) as any;
+          if (finalCheck?.data) {
+            console.log(`✅ Summary for ${meetingId} was ready after all`);
+            onUpdate({ ...finalCheck, status: 'completed' });
+            return;
+          }
+        } catch (error) {
+          console.error(`Final summary check failed for ${meetingId}:`, error);
+        }
+        const minutes = Math.round(stalledFor / 60000);
+        console.warn(`⏱️ No progress on ${meetingId} for ${minutes} minutes; stopped watching`);
         onUpdate({
           status: 'error',
-          error: 'Summary generation timed out after 15 minutes. Please try again or check your model configuration.'
+          // Says what is actually known. The task may still be running in the
+          // background; reopening the meeting will show it if it finishes.
+          error: `No progress for ${minutes} minutes. The summary may still be running — reopen this meeting to check, or try again.`,
         });
         return;
       }
@@ -312,6 +355,13 @@ export function SidebarProvider({ children }: { children: React.ReactNode }) {
         const result = await invoke('api_get_summary', {
           meetingId: meetingId,
         }) as any;
+
+        // Any change of state, or a result showing up, means it is alive.
+        const observedStatus = (result?.status || '').toLowerCase();
+        if (observedStatus !== lastStatus || result?.data) {
+          lastStatus = observedStatus;
+          lastProgressAt = Date.now();
+        }
 
         if (stopped || !isCurrentPoll()) return;
         console.log(`📊 Polling update for ${meetingId}:`, result.status);
@@ -327,7 +377,7 @@ export function SidebarProvider({ children }: { children: React.ReactNode }) {
           // Backend may flip to idle once the row is gone; if data is present
           // treat it as done so the UI still picks up the summary.
           (status === 'idle' && !!result.data) ||
-          (status === 'idle' && pollCount > 3);
+          (status === 'idle' && Date.now() - startedAt > IDLE_GRACE_MS);
 
         if (terminal) {
           console.log(`Polling completed for ${meetingId}, status: ${result.status}`);
