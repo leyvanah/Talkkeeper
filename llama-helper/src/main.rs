@@ -147,10 +147,95 @@ fn detect_vram_gb() -> f32 {
         }
     }
 
-    // TODO: Vulkan VRAM detection
+    #[cfg(feature = "vulkan")]
+    {
+        if let Some(device) = detect_ggml_gpu() {
+            eprintln!(
+                "Vulkan device: {} — {:.2} GB free of {:.2} GB{}",
+                device.description,
+                device.free_gb,
+                device.total_gb,
+                if device.integrated { " (integrated)" } else { "" }
+            );
+            return device.free_gb;
+        }
+        eprintln!("No Vulkan GPU reported by ggml");
+    }
 
     eprintln!("VRAM detection not available, using conservative estimate");
     4.0 // Conservative fallback
+}
+
+/// What ggml reports about a GPU it can actually use.
+#[cfg(feature = "vulkan")]
+struct GgmlGpu {
+    description: String,
+    free_gb: f32,
+    total_gb: f32,
+    /// Integrated: its memory is the same system RAM the CPU would use.
+    integrated: bool,
+}
+
+/// Asks ggml which GPU it sees and how much memory is free on it.
+///
+/// The numbers come from the same library that will place the layers, which is
+/// the point: anything measured elsewhere (WMI reports a clamped 2 GB on this
+/// machine, for one) can disagree with what the backend is willing to allocate.
+///
+/// Must be called after the llama backend is initialised — the backend registry
+/// is empty before that. `ModelState::new` does it at startup.
+#[cfg(feature = "vulkan")]
+fn detect_ggml_gpu() -> Option<GgmlGpu> {
+    use llama_cpp_sys_2 as sys;
+
+    const BYTES_PER_GB: f32 = 1024.0 * 1024.0 * 1024.0;
+    let mut best: Option<GgmlGpu> = None;
+
+    unsafe {
+        for index in 0..sys::ggml_backend_dev_count() {
+            let device = sys::ggml_backend_dev_get(index);
+            if device.is_null() {
+                continue;
+            }
+
+            let device_type = sys::ggml_backend_dev_type(device);
+            let integrated = device_type == sys::GGML_BACKEND_DEVICE_TYPE_IGPU;
+            if device_type != sys::GGML_BACKEND_DEVICE_TYPE_GPU && !integrated {
+                continue;
+            }
+
+            let mut free_bytes: usize = 0;
+            let mut total_bytes: usize = 0;
+            sys::ggml_backend_dev_memory(device, &mut free_bytes, &mut total_bytes);
+            if total_bytes == 0 {
+                continue;
+            }
+
+            let description_ptr = sys::ggml_backend_dev_description(device);
+            let description = if description_ptr.is_null() {
+                String::from("unnamed device")
+            } else {
+                std::ffi::CStr::from_ptr(description_ptr)
+                    .to_string_lossy()
+                    .into_owned()
+            };
+
+            let candidate = GgmlGpu {
+                description,
+                free_gb: free_bytes as f32 / BYTES_PER_GB,
+                total_gb: total_bytes as f32 / BYTES_PER_GB,
+                integrated,
+            };
+            if best
+                .as_ref()
+                .is_none_or(|current| candidate.free_gb > current.free_gb)
+            {
+                best = Some(candidate);
+            }
+        }
+    }
+
+    best
 }
 
 #[cfg(feature = "metal")]
@@ -275,7 +360,6 @@ fn get_default_gpu_layers(model_path: &PathBuf, context_size: u32) -> u32 {
         return override_layers;
     }
 
-    let vram = detect_vram_gb();
     // TODO: Use actual model metadata instead of heuristics
     // Heuristic: Estimate total layers based on file size
     // 7B models (Q4) are ~4.1GB and have ~32-35 layers
@@ -286,8 +370,37 @@ fn get_default_gpu_layers(model_path: &PathBuf, context_size: u32) -> u32 {
 
     let estimated_layers = if file_size_gb > 2.5 { 33 } else { 28 };
 
+    // An integrated GPU shares the system's memory, so a layer left on the CPU
+    // saves nothing — it only adds a crossing. Measured on a 4B model with a
+    // 15k-token prompt: all layers on the GPU produced ~11 tokens/s, a third of
+    // them produced 4.3, and the CPU alone produced 5.6. Splitting is the worst
+    // of the three, so on shared memory it is all or nothing.
+    //
+    // The guard is the weights plus a gigabyte, checked against what ggml says
+    // is free. It deliberately does not consult the KV estimate below: that one
+    // assumes multi-head attention and overshoots by roughly 1.7x on a modern
+    // grouped-query model, which is exactly how this machine ended up offering
+    // the GPU ten layers out of thirty-three.
+    #[cfg(feature = "vulkan")]
+    {
+        if let Some(device) = detect_ggml_gpu() {
+            if device.integrated && device.free_gb >= file_size_gb + 1.0 {
+                eprintln!(
+                    "✅ Shared-memory GPU with {:.2} GB free — offloading every layer",
+                    device.free_gb
+                );
+                return ALL_LAYERS;
+            }
+        }
+    }
+
+    let vram = detect_vram_gb();
     calculate_gpu_layers(model_path, estimated_layers, vram, context_size)
 }
+
+/// More layers than any model has; llama.cpp clamps it to the real count.
+#[cfg(feature = "vulkan")]
+const ALL_LAYERS: u32 = 999;
 
 // ============================================================================
 // Model State Management
