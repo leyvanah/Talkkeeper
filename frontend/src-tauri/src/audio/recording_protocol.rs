@@ -175,9 +175,28 @@ fn content_type(path: &Path) -> &'static str {
 }
 
 fn serve(path: &Path, range: Option<&header::HeaderValue>) -> std::io::Result<Response<Vec<u8>>> {
-    let mut file = std::fs::File::open(path)?;
-    let length = file.metadata()?.len();
+    // Every offset below is an offset into the audio, which for an encrypted
+    // recording is not an offset into the file: the header and the per-frame
+    // tags are not audio. The source hands back the audio's length and reads at
+    // the audio's offsets, so the player is none the wiser.
+    let source = super::encrypted_audio::AudioSource::open(path)
+        .map_err(|error| std::io::Error::new(std::io::ErrorKind::Other, error.to_string()))?;
+    let length = source.len();
+    debug!("Serving {} ({length} bytes of audio)", path.display());
+    serve_bytes(source, length, content_type(path), range)
+}
 
+/// Answer a range out of an open recording.
+///
+/// Separate from [`serve`] so that what the player gets back can be tested
+/// against an encrypted recording without a key having to be installed
+/// process-wide for the whole test run.
+fn serve_bytes(
+    mut file: impl Read + Seek,
+    length: u64,
+    content_type: &str,
+    range: Option<&header::HeaderValue>,
+) -> std::io::Result<Response<Vec<u8>>> {
     let asked_for_range = range.is_some();
     let asked = range
         .and_then(|value| value.to_str().ok())
@@ -205,15 +224,14 @@ fn serve(path: &Path, range: Option<&header::HeaderValue>) -> std::io::Result<Re
     body.truncate(read);
 
     debug!(
-        "Serving {} bytes of {} ({}..={} of {length})",
+        "Handing back {} bytes ({}..={} of {length})",
         body.len(),
-        path.display(),
         start,
         end
     );
 
     let builder = base_response()
-        .header(header::CONTENT_TYPE, content_type(path))
+        .header(header::CONTENT_TYPE, content_type)
         .header(header::ACCEPT_RANGES, "bytes")
         .header(header::CONTENT_LENGTH, body.len());
 
@@ -232,7 +250,7 @@ fn serve(path: &Path, range: Option<&header::HeaderValue>) -> std::io::Result<Re
     Ok(response.unwrap_or_else(|_| refuse(StatusCode::INTERNAL_SERVER_ERROR, "Malformed response")))
 }
 
-fn read_as_much_as_possible(file: &mut std::fs::File, buffer: &mut [u8]) -> std::io::Result<usize> {
+fn read_as_much_as_possible(file: &mut impl Read, buffer: &mut [u8]) -> std::io::Result<usize> {
     let mut filled = 0;
     while filled < buffer.len() {
         match file.read(&mut buffer[filled..])? {
@@ -362,6 +380,46 @@ mod tests {
         assert_eq!(parse_range("bytes=0-1,5-6", 1000), None);
         assert_eq!(parse_range("bytes=abc-", 1000), None);
         assert_eq!(parse_range("bytes=0-0", 0), None);
+    }
+
+    /// The whole reason the recording is framed rather than sealed whole: the
+    /// player asks for a window in the middle of an encrypted session and gets
+    /// exactly those bytes of audio, at the offsets it asked for.
+    #[test]
+    fn a_range_out_of_an_encrypted_recording_is_the_right_range() {
+        use crate::audio::encrypted_audio::AudioSource;
+        use crate::security::envelope::generate_dek;
+        use crate::security::stream::{EncryptedWriter, FRAME_LEN};
+        use std::io::Write;
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("audio.mp4");
+        let key = generate_dek();
+        let audio: Vec<u8> = (0..3 * FRAME_LEN).map(|index| (index % 251) as u8).collect();
+
+        let mut writer =
+            EncryptedWriter::create(std::fs::File::create(&path).unwrap(), &key).unwrap();
+        writer.write_all(&audio).unwrap();
+        writer.finish().unwrap();
+
+        // Nothing of the session is readable in the file itself.
+        let on_disk = std::fs::read(&path).unwrap();
+        let needle = &audio[70_000..70_064];
+        assert!(!on_disk.windows(needle.len()).any(|w| w == needle));
+
+        let source = AudioSource::open_with_key(&path, key.as_ref()).unwrap();
+        let length = source.len();
+        assert_eq!(length, audio.len() as u64, "the file's length is not the audio's");
+
+        let range = header::HeaderValue::from_static("bytes=70000-70063");
+        let response = serve_bytes(source, length, "audio/mp4", Some(&range)).unwrap();
+
+        assert_eq!(response.status(), StatusCode::PARTIAL_CONTENT);
+        assert_eq!(response.body(), &audio[70_000..=70_063].to_vec());
+        assert_eq!(
+            response.headers().get(header::CONTENT_RANGE).unwrap(),
+            format!("bytes 70000-70063/{length}").as_str()
+        );
     }
 
     #[test]

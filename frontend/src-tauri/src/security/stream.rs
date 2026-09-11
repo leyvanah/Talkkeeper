@@ -41,7 +41,7 @@ use aes_gcm::aead::{Aead, KeyInit, Payload};
 use aes_gcm::{Aes256Gcm, Key, Nonce};
 use rand::RngCore;
 
-use super::envelope::Dek;
+use super::kdf::KEY_LEN;
 
 /// Marks a file as an encrypted stream. Deliberately not a valid prefix of any
 /// container the application writes, so sniffing it cannot misfire.
@@ -84,6 +84,8 @@ pub enum StreamError {
     ImpossibleFrameSize(u32),
     #[error("the key does not open this stream, or the stream is damaged")]
     WrongKeyOrDamaged,
+    #[error("a stream key must be {KEY_LEN} bytes, not {0}")]
+    BadKeyLength(usize),
     #[error(transparent)]
     Io(#[from] io::Error),
 }
@@ -119,8 +121,14 @@ pub fn file_looks_encrypted(path: &std::path::Path) -> bool {
     }
 }
 
-fn cipher_for(key: &Dek) -> Aes256Gcm {
-    Aes256Gcm::new(Key::<Aes256Gcm>::from_slice(key.as_ref()))
+/// The key comes in as bytes rather than as a `Dek` because that is how the
+/// session hands it over — borrowed for the length of a closure, never copied
+/// out. A wrong length is an error here instead of a panic inside AES.
+fn cipher_for(key: &[u8]) -> Result<Aes256Gcm, StreamError> {
+    if key.len() != KEY_LEN {
+        return Err(StreamError::BadKeyLength(key.len()));
+    }
+    Ok(Aes256Gcm::new(Key::<Aes256Gcm>::from_slice(key)))
 }
 
 /// The header as it sits on disk, and the pieces of it that matter.
@@ -200,16 +208,20 @@ impl<W: Write> EncryptedWriter<W> {
     /// Start an encrypted stream, writing the header immediately so that even a
     /// recording that dies in its first second leaves a file that is recognised
     /// rather than mistaken for plaintext.
-    pub fn create(inner: W, key: &Dek) -> io::Result<Self> {
+    pub fn create(inner: W, key: impl AsRef<[u8]>) -> io::Result<Self> {
         Self::create_with_frame_len(inner, key, FRAME_LEN)
     }
 
-    fn create_with_frame_len(mut inner: W, key: &Dek, frame_len: usize) -> io::Result<Self> {
+    fn create_with_frame_len(
+        mut inner: W,
+        key: impl AsRef<[u8]>,
+        frame_len: usize,
+    ) -> io::Result<Self> {
         let header = Header::new(frame_len);
         inner.write_all(&header.bytes)?;
         Ok(Self {
             inner,
-            cipher: cipher_for(key),
+            cipher: cipher_for(key.as_ref())?,
             header,
             pending: Vec::with_capacity(frame_len),
             next_frame: 0,
@@ -303,7 +315,7 @@ impl<R: Read + Seek> EncryptedReader<R> {
     /// This reads and authenticates the final frame, which is what a wrong key
     /// fails on: opening is the moment to find that out, not halfway through
     /// playback.
-    pub fn open(mut inner: R, key: &Dek) -> Result<Self, StreamError> {
+    pub fn open(mut inner: R, key: impl AsRef<[u8]>) -> Result<Self, StreamError> {
         let stored_len = inner.seek(SeekFrom::End(0))?;
         inner.seek(SeekFrom::Start(0))?;
 
@@ -319,7 +331,7 @@ impl<R: Read + Seek> EncryptedReader<R> {
 
         let mut reader = Self {
             inner,
-            cipher: cipher_for(key),
+            cipher: cipher_for(key.as_ref())?,
             header,
             frames: 0,
             last_frame_len: 0,
@@ -504,6 +516,8 @@ impl<R: Read + Seek> Seek for EncryptedReader<R> {
 mod tests {
     use super::*;
     use std::io::Cursor;
+
+    use super::super::envelope::Dek;
 
     fn key() -> Dek {
         super::super::envelope::generate_dek()

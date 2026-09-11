@@ -4,6 +4,7 @@ pub mod decoder;
 pub mod echo_cancel;
 pub mod echo_filter;
 pub mod encode;
+pub mod encrypted_audio;
 pub mod ffmpeg;
 pub mod vad;
 pub mod streaming_encoder;

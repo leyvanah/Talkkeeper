@@ -5,7 +5,7 @@
 //! Passwords cross this boundary and nowhere else — none of these commands
 //! returns one, and none of them logs one.
 
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
@@ -29,7 +29,7 @@ pub struct SecurityState {
     /// instead of the owner's real archive.
     path: std::path::PathBuf,
     /// The key itself.
-    pub session: KeySession,
+    pub session: Arc<KeySession>,
 }
 
 impl Default for SecurityState {
@@ -40,7 +40,11 @@ impl Default for SecurityState {
 
 impl SecurityState {
     pub fn new() -> Self {
-        Self::at(Keystore::path())
+        let state = Self::at(Keystore::path());
+        // Only the real state publishes itself: a test built on a temporary
+        // keystore must not become the session the audio pipeline encrypts with.
+        super::session::install(state.session.clone());
+        state
     }
 
     /// A state backed by a keystore at an explicit path.
@@ -48,7 +52,7 @@ impl SecurityState {
         Self {
             keystore: Mutex::new(None),
             path,
-            session: KeySession::new(),
+            session: Arc::new(KeySession::new()),
         }
     }
 

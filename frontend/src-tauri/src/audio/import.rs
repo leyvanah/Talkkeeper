@@ -199,11 +199,11 @@ fn extract_duration_from_metadata(path: &Path) -> Result<f64> {
     use symphonia::core::meta::MetadataOptions;
     use symphonia::core::probe::Hint;
 
-    // Open the file
-    let file = std::fs::File::open(path)
-        .map_err(|e| anyhow!("Failed to open audio file: {}", e))?;
+    // Open the file. A meeting's own recording may be encrypted, and reading its
+    // duration from metadata must work on one as it does on an imported file.
+    let source = crate::audio::encrypted_audio::media_source(path)?;
 
-    let mss = MediaSourceStream::new(Box::new(file), Default::default());
+    let mss = MediaSourceStream::new(source, Default::default());
 
     // Set up format hint based on file extension
     let mut hint = Hint::new();

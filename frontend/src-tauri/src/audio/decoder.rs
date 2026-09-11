@@ -420,11 +420,13 @@ pub fn decode_audio_file_with_progress(
             (None, Cow::Borrowed(path))
         };
 
-    // Open the file (use decode_path which may be the temp WAV)
-    let file = std::fs::File::open(decode_path.as_ref())
-        .map_err(|e| anyhow!("Failed to open audio file '{}': {}", decode_path.display(), e))?;
+    // Open the file (use decode_path which may be the temp WAV). Recordings
+    // written after B3 are encrypted, so this goes through the one place that
+    // knows the difference — a plaintext file, an imported one and a temp WAV
+    // all still open exactly as before.
+    let source = super::encrypted_audio::media_source(decode_path.as_ref())?;
 
-    let mss = MediaSourceStream::new(Box::new(file), Default::default());
+    let mss = MediaSourceStream::new(source, Default::default());
 
     // Set up format hint based on file extension
     let mut hint = Hint::new();

@@ -24,7 +24,9 @@ const LOG_FLOOR: f32 = 1.1921e-07; // torch.finfo(float32).eps
 /// Read a WAV file and return (mono samples in [-1, 1], sample_rate).
 /// Supports PCM 16-bit and 32-bit float, mono or multi-channel (downmixed).
 pub fn read_wav(path: &Path) -> Result<(Vec<f32>, u32)> {
-    let bytes = std::fs::read(path)?;
+    // A recording may be encrypted on disk; `std::fs::read` would hand back
+    // ciphertext and the RIFF check below would fail on it.
+    let bytes = crate::audio::encrypted_audio::read_all(path)?;
     if bytes.len() < 44 || &bytes[0..4] != b"RIFF" || &bytes[8..12] != b"WAVE" {
         return Err(anyhow!("Not a RIFF/WAVE file: {}", path.display()));
     }
