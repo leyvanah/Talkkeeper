@@ -36,6 +36,16 @@ export interface SecurityStatus {
 }
 
 /**
+ * How the recordings on disk actually stand, which is not always what the
+ * password implies: a conversion interrupted halfway, or a folder restored from
+ * a backup made before the password existed, leaves some of them plaintext.
+ */
+export interface RecordingEncryption {
+  encrypted: number
+  plaintext: number
+}
+
+/**
  * A failure the interface reacts to by code. `message` is English and belongs in
  * the console, never on screen — the lock screen renders its own text.
  */
@@ -69,6 +79,10 @@ interface SecurityContextValue {
   removeRecovery: (password: string) => Promise<void>
   setAutoLock: (minutes: number | null) => Promise<void>
   disable: (password: string) => Promise<void>
+  /** Counts the recordings on disk by whether they are encrypted. */
+  recordingEncryption: () => Promise<RecordingEncryption>
+  /** Brings the plaintext ones under the key, and reports the new count. */
+  encryptRecordings: () => Promise<RecordingEncryption>
   /** Opens the archive with a Windows Hello prompt. */
   quickUnlock: (prompt: string) => Promise<void>
   /** Turns quick unlock on, proving the password first. */
@@ -176,6 +190,9 @@ export function SecurityProvider({ children }: { children: React.ReactNode }) {
       },
       removeRecovery: (password) => run<void>('security_remove_recovery', { password }),
       setAutoLock: (minutes) => run<void>('security_set_auto_lock', { minutes }),
+      // Neither of these changes the lock state, so neither re-reads it.
+      recordingEncryption: () => invoke<RecordingEncryption>('security_recording_encryption'),
+      encryptRecordings: () => invoke<RecordingEncryption>('security_encrypt_recordings'),
       disable: (password) => run<void>('security_disable', { password }),
       quickUnlock: (prompt) => run<void>('security_quick_unlock', { prompt }),
       quickEnable: (password) => run<void>('security_quick_enable', { password }),
