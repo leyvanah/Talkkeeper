@@ -120,6 +120,8 @@ export function SecuritySettings() {
           return t('errorQuickUnavailable')
         case 'quickKeyUnusable':
           return t('errorQuickKeyUnusable')
+        case 'quickKeySetupFailed':
+          return t('errorQuickKeySetupFailed')
         case 'decryptionIncomplete':
           return t('errorDecryptionIncomplete')
         case 'locked':
