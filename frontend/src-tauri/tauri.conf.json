@@ -102,6 +102,7 @@
         ],
         "externalBin": [
             "binaries/llama-helper",
+            "binaries/llama-helper-cpu",
             "binaries/ffmpeg"
         ],
         "macOS": {

@@ -1,7 +1,7 @@
 // Sidecar process lifecycle management for llama-helper
 // Handles spawning, health checking, keep-alive, and graceful shutdown
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
@@ -76,7 +76,7 @@ impl Drop for RequestGuard {
 impl SidecarManager {
     /// Create a new sidecar manager
     pub fn new(_app_data_dir: PathBuf) -> Result<Self> {
-        let helper_binary_path = Self::resolve_helper_binary()?;
+        let helper_binary_path = Self::choose_helper_binary(Self::resolve_helper_binary()?);
 
         // Get idle timeout from env var or use default
         let idle_timeout_secs = std::env::var("LLAMA_IDLE_TIMEOUT")
@@ -102,6 +102,98 @@ impl SidecarManager {
             current_model_path: Arc::new(RwLock::new(None)),
             idle_timeout_secs,
         })
+    }
+
+    /// Pick between the shipped helper and the CPU-only one beside it.
+    ///
+    /// The helper that uses the GPU is built against Vulkan and **imports
+    /// `vulkan-1.dll`**, so on a machine with no Vulkan loader it does not fall
+    /// back to the processor — it does not start at all. A CPU-only helper is
+    /// shipped next to it for exactly that case.
+    ///
+    /// The choice is made by running the thing, not by probing for a loader.
+    /// A probe answers "a loader exists", while the ways this actually breaks
+    /// are "a loader exists but no device", "the driver faults while
+    /// initialising" and "what answered is a software rasteriser". Starting the
+    /// process covers all of them, and it keeps the machine working when a
+    /// driver update breaks Vulkan: summaries get slower instead of stopping.
+    ///
+    /// Costs one process start of a few hundred milliseconds, and only when a
+    /// CPU helper was actually shipped — with nothing to choose between, there
+    /// is nothing to check.
+    fn choose_helper_binary(primary: PathBuf) -> PathBuf {
+        let Some(fallback) = Self::cpu_sibling(&primary) else {
+            return primary;
+        };
+        if Self::starts_on_this_machine(&primary) {
+            return primary;
+        }
+        log::warn!(
+            "{} could not start — using the CPU helper instead. Summaries will \
+             be slower; a missing or broken Vulkan loader is the usual reason.",
+            primary.display()
+        );
+        fallback
+    }
+
+    /// The CPU-only helper shipped beside `primary`, if there is one.
+    fn cpu_sibling(primary: &Path) -> Option<PathBuf> {
+        let name = primary.file_name()?.to_str()?;
+        if name.starts_with("llama-helper-cpu") {
+            return None;
+        }
+        let rest = name.strip_prefix("llama-helper")?;
+        let sibling = primary.with_file_name(format!("llama-helper-cpu{rest}"));
+        sibling.is_file().then_some(sibling)
+    }
+
+    /// Does this binary get as far as running?
+    ///
+    /// A missing import library does not fail the spawn — Windows creates the
+    /// process and the loader kills it, which shows up as an immediate exit
+    /// (`0xC0000135`). So the check is "still alive a moment later", and the
+    /// probe is then stopped: it is a long-running server, and the one that
+    /// serves requests is started later with a model.
+    fn starts_on_this_machine(binary: &Path) -> bool {
+        let mut command = std::process::Command::new(binary);
+        command
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null());
+
+        #[cfg(target_os = "windows")]
+        {
+            use std::os::windows::process::CommandExt;
+            const CREATE_NO_WINDOW: u32 = 0x08000000;
+            command.creation_flags(CREATE_NO_WINDOW);
+        }
+
+        let mut child = match command.spawn() {
+            Ok(child) => child,
+            Err(error) => {
+                log::warn!("{} would not start: {error}", binary.display());
+                return false;
+            }
+        };
+
+        std::thread::sleep(Duration::from_millis(400));
+        match child.try_wait() {
+            Ok(Some(status)) => {
+                log::warn!("{} exited immediately: {status}", binary.display());
+                false
+            }
+            Ok(None) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                true
+            }
+            Err(error) => {
+                log::warn!("Could not tell whether {} ran: {error}", binary.display());
+                let _ = child.kill();
+                let _ = child.wait();
+                false
+            }
+        }
     }
 
     /// Resolve the path to llama-helper binary
@@ -165,7 +257,9 @@ impl SidecarManager {
                     for entry in entries.flatten() {
                         let path = entry.path();
                         if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
-                            if name.starts_with("llama-helper") && !name.ends_with(".d") {
+                            if name.starts_with("llama-helper")
+                                && !name.starts_with("llama-helper-cpu")
+                                && !name.ends_with(".d") {
                                 log::info!("Found fuzzy match next to executable: {}", path.display());
                                 return Ok(path);
                             }
@@ -220,7 +314,9 @@ impl SidecarManager {
                 for entry in entries.flatten() {
                     let path = entry.path();
                     if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
-                        if name.starts_with("llama-helper") && !name.ends_with(".d") {
+                        if name.starts_with("llama-helper")
+                                && !name.starts_with("llama-helper-cpu")
+                                && !name.ends_with(".d") {
                             log::info!("Found fuzzy match in RESOURCE_DIR: {}", path.display());
                             return Ok(path);
                         }
@@ -666,5 +762,28 @@ impl Drop for SidecarManager {
         // Note: Actual cleanup happens in shutdown() method
         // We can't do async work in Drop, so this is best-effort
         log::debug!("SidecarManager dropped");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The CPU helper is found by name beside the one that was resolved, and
+    /// only when it was actually shipped — a machine with one helper must not
+    /// be told there is a choice.
+    #[test]
+    fn the_cpu_helper_is_found_beside_the_one_that_ships() {
+        let dir = tempfile::tempdir().unwrap();
+        let primary = dir.path().join("llama-helper-x86_64-pc-windows-msvc.exe");
+        std::fs::write(&primary, b"gpu").unwrap();
+        assert_eq!(SidecarManager::cpu_sibling(&primary), None);
+
+        let cpu = dir.path().join("llama-helper-cpu-x86_64-pc-windows-msvc.exe");
+        std::fs::write(&cpu, b"cpu").unwrap();
+        assert_eq!(SidecarManager::cpu_sibling(&primary), Some(cpu.clone()));
+
+        // And the CPU helper has no fallback of its own to look for.
+        assert_eq!(SidecarManager::cpu_sibling(&cpu), None);
     }
 }

@@ -287,6 +287,8 @@ impl From<KeystoreError> for SecurityError {
                 RecoveryError::BadCharacter(_) => Self::new("recoveryBadCharacter", message),
             },
             KeystoreError::Corrupt(_) => Self::new("keystoreCorrupt", message),
+            #[cfg(windows)]
+            KeystoreError::QuickKeyUnusable(_) => Self::new("quickKeySetupFailed", message),
             KeystoreError::Io(_) => Self::new("keystoreIo", message),
         }
     }
@@ -343,7 +345,15 @@ pub fn security_quick_enable(
         ));
     }
 
-    state.with_keystore(|keystore| keystore.enable_quick_unlock(&password))?;
+    // Logged on the way out as well as on success. Without this a refused
+    // password left nothing behind at all: the only trace of six rejected
+    // attempts was the counter inside the keystore, which is not where anyone
+    // looks when a switch simply does not move.
+    state
+        .with_keystore(|keystore| keystore.enable_quick_unlock(&password))
+        .inspect_err(|error| {
+            log::warn!("Quick unlock was not turned on: {} ({})", error.code, error.message)
+        })?;
     log::info!("Quick unlock turned on");
     Ok(())
 }

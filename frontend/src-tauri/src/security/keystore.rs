@@ -80,6 +80,14 @@ pub enum KeystoreError {
     PasswordTooShort { minimum: usize },
     #[error("the keystore file is damaged: {0}")]
     Corrupt(String),
+    /// Windows refused to tie a key to this account. Kept apart from
+    /// `Corrupt` because it says nothing about the keystore: the password and
+    /// the recovery code still open the archive, and only the quick way in is
+    /// unavailable. Reported as a damaged keystore, it read as "unknown error"
+    /// and sent whoever hit it looking in the wrong place.
+    #[cfg(windows)]
+    #[error("the quick-unlock key could not be created: {0}")]
+    QuickKeyUnusable(String),
     #[error("could not read or write the keystore: {0}")]
     Io(#[from] std::io::Error),
 }
@@ -317,7 +325,7 @@ impl Keystore {
         let dek = self.unlock_with_password(password)?;
         self.quick = Some(
             super::quick::enable(&dek)
-                .map_err(|error| KeystoreError::Corrupt(error.to_string()))?,
+                .map_err(|error| KeystoreError::QuickKeyUnusable(error.to_string()))?,
         );
         self.updated_at = now_text();
         Ok(())
