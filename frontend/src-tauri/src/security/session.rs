@@ -9,10 +9,47 @@
 //! recording.** Wiping the key mid-session would end the session. Idle locking
 //! resumes as soon as the recording stops.
 
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use super::envelope::Dek;
+
+/// The one session of this process, for code that cannot be handed the Tauri
+/// state.
+///
+/// Reading a recording happens deep inside the audio pipeline, where there is
+/// no `AppHandle` — and threading one down to the decoder would mean carrying
+/// the key through a dozen signatures that have no business holding it. So the
+/// session publishes itself once at startup and the readers ask for the key
+/// through [`with_current_key`], which borrows it for the length of a closure
+/// and never hands out a copy.
+static CURRENT: OnceLock<Arc<KeySession>> = OnceLock::new();
+
+/// Publishes the session. The first caller wins; later calls are ignored, which
+/// is what keeps a test's temporary session from replacing the real one.
+pub fn install(session: Arc<KeySession>) {
+    let _ = CURRENT.set(session);
+}
+
+/// Runs `use_key` with the archive key, or returns `None` when the archive is
+/// locked, has no password, or the session was never installed.
+///
+/// Honest about one limit: a cipher built inside the closure keeps an expanded
+/// copy of the key for as long as it lives, so locking the archive stops new
+/// readers rather than reaching into open ones. Readers are short-lived and
+/// there is no auto-lock during a recording, which is what makes that
+/// acceptable.
+pub fn with_current_key<T>(use_key: impl FnOnce(&[u8]) -> T) -> Option<T> {
+    CURRENT.get()?.with_dek(use_key).ok()
+}
+
+/// Whether an archive key exists to encrypt new recordings with.
+pub fn archive_is_open() -> bool {
+    CURRENT
+        .get()
+        .map(|session| session.is_unlocked())
+        .unwrap_or(false)
+}
 
 /// How often the idle check runs. Fine-grained enough that a one-minute timeout
 /// means roughly a minute, cheap enough to ignore.

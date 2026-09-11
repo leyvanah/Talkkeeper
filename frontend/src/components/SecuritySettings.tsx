@@ -5,13 +5,26 @@
  * recovery code, and how long the archive stays open unattended.
  */
 
-import { useCallback, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import { useTranslations } from 'next-intl'
-import { Lock, KeyRound, ShieldCheck, Timer, TriangleAlert, ScanFace } from 'lucide-react'
+import { listen } from '@tauri-apps/api/event'
+import {
+  FileLock2,
+  KeyRound,
+  Lock,
+  ScanFace,
+  ShieldCheck,
+  Timer,
+  TriangleAlert,
+} from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Switch } from '@/components/ui/switch'
-import { asSecurityError, useSecurity } from '@/contexts/SecurityContext'
+import {
+  asSecurityError,
+  useSecurity,
+  type RecordingEncryption,
+} from '@/contexts/SecurityContext'
 import { RecoveryCodeCard } from '@/components/security/RecoveryCodeCard'
 
 /** Idle timeouts offered, in minutes. `0` stands for "never". */
@@ -30,6 +43,8 @@ export function SecuritySettings() {
     lock,
     quickEnable,
     quickDisable,
+    recordingEncryption,
+    encryptRecordings,
   } = useSecurity()
 
   const [busy, setBusy] = useState(false)
@@ -37,6 +52,10 @@ export function SecuritySettings() {
   const [notice, setNotice] = useState<string | null>(null)
   /** Set while a freshly issued recovery code is being shown. */
   const [freshCode, setFreshCode] = useState<string | null>(null)
+  /** How the recordings on disk stand; null until counted. */
+  const [recordings, setRecordings] = useState<RecordingEncryption | null>(null)
+  /** Progress of a conversion, while one is running. */
+  const [converting, setConverting] = useState<{ done: number; total: number } | null>(null)
 
   // Setting protection up.
   const [newPassword, setNewPassword] = useState('')
@@ -53,6 +72,33 @@ export function SecuritySettings() {
   // Proving intent for quick unlock. Its own value, so the field can sit in its
   // own section instead of being shared across the panel.
   const [quickPassword, setQuickPassword] = useState('')
+
+  // Counting walks the recording folders, so it happens once the archive is
+  // open rather than on every render of the panel.
+  useEffect(() => {
+    if (status?.state !== 'unlocked') return
+    let current = true
+    recordingEncryption()
+      .then((counts) => {
+        if (current) setRecordings(counts)
+      })
+      .catch((failure) => console.error('[SecuritySettings] Could not count recordings:', failure))
+    return () => {
+      current = false
+    }
+  }, [status?.state, recordingEncryption])
+
+  // A conversion reports itself as it goes: an archive of a year's sessions is
+  // gigabytes, and a panel showing nothing is a panel the owner force-quits.
+  useEffect(() => {
+    const unlisten = listen<{ done: number; total: number }>('archive-conversion', (event) => {
+      const { done, total } = event.payload
+      setConverting(done >= total ? null : { done, total })
+    })
+    return () => {
+      unlisten.then((stop) => stop())
+    }
+  }, [])
 
   const describe = useCallback(
     (failure: unknown): string => {
@@ -74,6 +120,10 @@ export function SecuritySettings() {
           return t('errorQuickUnavailable')
         case 'quickKeyUnusable':
           return t('errorQuickKeyUnusable')
+        case 'decryptionIncomplete':
+          return t('errorDecryptionIncomplete')
+        case 'locked':
+          return t('errorLocked')
         default:
           console.error('[SecuritySettings] Command failed:', problem)
           return t('errorUnknown')
@@ -196,6 +246,49 @@ export function SecuritySettings() {
             <div className="flex items-center gap-2 text-sm text-emerald-500">
               <ShieldCheck className="h-4 w-4" />
               {t('protectionOn')}
+            </div>
+
+            {/* The recordings on disk, counted rather than assumed. A partly
+                converted archive is a real state — an interrupted conversion, a
+                folder restored from an older backup — and it should be visible
+                rather than implied by the password being set. */}
+            <div>
+              <label className="mb-1.5 flex items-center gap-2 text-sm font-medium text-gray-900">
+                <FileLock2 className="h-4 w-4 text-gray-500" />
+                {t('recordingsTitle')}
+              </label>
+              <p className="mb-2 text-xs text-gray-500">
+                {converting
+                  ? t('recordingsConverting', { done: converting.done, total: converting.total })
+                  : !recordings
+                    ? t('recordingsCounting')
+                    : recordings.encrypted + recordings.plaintext === 0
+                      ? t('recordingsNone')
+                      : recordings.plaintext === 0
+                        ? t('recordingsAllEncrypted', { count: recordings.encrypted })
+                        : t('recordingsPartly', {
+                            encrypted: recordings.encrypted,
+                            plaintext: recordings.plaintext,
+                          })}
+              </p>
+              {recordings && recordings.plaintext > 0 && (
+                <>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    disabled={busy}
+                    onClick={() =>
+                      attempt(async () => {
+                        setRecordings(await encryptRecordings())
+                        setConverting(null)
+                      }, t('noticeRecordingsEncrypted'))
+                    }
+                  >
+                    {busy ? t('working') : t('encryptExisting')}
+                  </Button>
+                  <p className="mt-2 text-xs text-amber-500">{t('encryptExistingHint')}</p>
+                </>
+              )}
             </div>
 
             {/* Idle timeout. Never applies while a recording is running. */}

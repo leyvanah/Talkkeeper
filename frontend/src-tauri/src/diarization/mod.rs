@@ -643,14 +643,25 @@ fn apply_source_track_hint(
 }
 
 /// Decode any supported audio container to a temporary 16 kHz mono WAV using
-/// the bundled ffmpeg. Returns the original path unchanged if it's already WAV.
+/// the bundled ffmpeg. Returns the original path unchanged if it is already a
+/// plaintext WAV.
+///
+/// Two things here are the way they are because of B3. The recording may be
+/// encrypted, and ffmpeg cannot open what it cannot decrypt, so in that case it
+/// is fed on stdin instead of by name. And the temporary file is written
+/// through the same encryption as the recording: an hour of a session lying in
+/// the system temp directory as a plain WAV would give away exactly what the
+/// archive is encrypted for. Writing to a pipe means the RIFF sizes in
+/// ffmpeg's header are placeholders — [`dsp::read_wav`] clamps the data chunk
+/// to what is actually in the file, so that costs nothing.
 fn ensure_wav(path: &Path) -> Result<(PathBuf, bool)> {
-    if path
+    let already_wav = path
         .extension()
         .and_then(|e| e.to_str())
         .map(|e| e.eq_ignore_ascii_case("wav"))
-        .unwrap_or(false)
-    {
+        .unwrap_or(false);
+    let encrypted_input = crate::security::stream::file_looks_encrypted(path);
+    if already_wav && !encrypted_input {
         return Ok((path.to_path_buf(), false));
     }
 
@@ -670,15 +681,22 @@ fn ensure_wav(path: &Path) -> Result<(PathBuf, bool)> {
 
     log::info!("🎞️ Decoding {} → 16 kHz mono WAV for diarization", path.display());
     let mut cmd = std::process::Command::new(&ffmpeg);
+    cmd.args(["-hide_banner", "-loglevel", "error", "-y", "-i"]);
+    if encrypted_input {
+        cmd.arg("pipe:0");
+    } else {
+        cmd.arg(path);
+    }
     cmd.args([
-        "-hide_banner",
-        "-loglevel", "error",
-        "-y",
-        "-i",
+        "-vn", "-ac", "1", "-ar", "16000", "-c:a", "pcm_s16le", "-f", "wav", "pipe:1",
     ])
-    .arg(path)
-    .args(["-vn", "-ac", "1", "-ar", "16000", "-c:a", "pcm_s16le"])
-    .arg(&out);
+    .stdin(if encrypted_input {
+        std::process::Stdio::piped()
+    } else {
+        std::process::Stdio::null()
+    })
+    .stdout(std::process::Stdio::piped())
+    .stderr(std::process::Stdio::null());
 
     #[cfg(target_os = "windows")]
     {
@@ -686,11 +704,47 @@ fn ensure_wav(path: &Path) -> Result<(PathBuf, bool)> {
         cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
     }
 
-    let status = cmd
-        .status()
+    let mut child = cmd
+        .spawn()
         .map_err(|e| anyhow!("Failed to run ffmpeg: {}", e))?;
-    if !status.success() || !out.exists() {
+
+    // The decrypted recording goes in on its own thread: ffmpeg's output has to
+    // be drained at the same time, or both pipes fill up and neither side moves.
+    let feeder = child.stdin.take().map(|mut stdin| {
+        let source_path = path.to_path_buf();
+        std::thread::spawn(move || {
+            match crate::audio::encrypted_audio::AudioSource::open(&source_path) {
+                // A closed pipe is ffmpeg saying it has what it needs, not a
+                // failure — it stops reading as soon as it has the whole input.
+                Ok(mut source) => {
+                    let _ = std::io::copy(&mut source, &mut stdin);
+                }
+                Err(error) => log::error!("Could not read {}: {error}", source_path.display()),
+            }
+        })
+    });
+
+    let written = child
+        .stdout
+        .take()
+        .ok_or_else(|| anyhow!("ffmpeg gave no output pipe"))
+        .and_then(|mut stdout| {
+            let mut sink = crate::audio::encrypted_audio::AudioSink::create(&out)?;
+            std::io::copy(&mut stdout, &mut sink)?;
+            sink.finish()?;
+            Ok(())
+        });
+
+    let status = child
+        .wait()
+        .map_err(|e| anyhow!("Failed to wait for ffmpeg: {}", e))?;
+    if let Some(feeder) = feeder {
+        let _ = feeder.join();
+    }
+
+    if written.is_err() || !status.success() || !out.exists() {
         let _ = std::fs::remove_file(&out);
+        written?;
         return Err(anyhow!("ffmpeg failed to decode {}", path.display()));
     }
     Ok((out, true))

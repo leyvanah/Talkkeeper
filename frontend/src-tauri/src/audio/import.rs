@@ -199,11 +199,11 @@ fn extract_duration_from_metadata(path: &Path) -> Result<f64> {
     use symphonia::core::meta::MetadataOptions;
     use symphonia::core::probe::Hint;
 
-    // Open the file
-    let file = std::fs::File::open(path)
-        .map_err(|e| anyhow!("Failed to open audio file: {}", e))?;
+    // Open the file. A meeting's own recording may be encrypted, and reading its
+    // duration from metadata must work on one as it does on an imported file.
+    let source = crate::audio::encrypted_audio::media_source(path)?;
 
-    let mss = MediaSourceStream::new(Box::new(file), Default::default());
+    let mss = MediaSourceStream::new(source, Default::default());
 
     // Set up format hint based on file extension
     let mut hint = Hint::new();
@@ -376,12 +376,24 @@ async fn run_import<R: Runtime>(
     );
     let dest_path = meeting_folder.join(&dest_filename);
 
+    // Copied through the archive's encryption rather than with `fs::copy`: an
+    // imported recording lands in a meeting folder and becomes one of the
+    // archive's own files, and a session imported from a phone recorder is no
+    // less private than one recorded here. The source file is left as it is —
+    // it belongs to whoever put it there.
     let src = source.clone();
     let dst = dest_path.clone();
-    tokio::task::spawn_blocking(move || std::fs::copy(&src, &dst))
-        .await
-        .map_err(|e| anyhow!("Copy task join error: {}", e))?
-        .map_err(|e| anyhow!("Failed to copy audio file: {}", e))?;
+    tokio::task::spawn_blocking(move || -> Result<()> {
+        let mut from = std::fs::File::open(&src)
+            .map_err(|error| anyhow!("Failed to open the audio file: {error}"))?;
+        let mut into = super::encrypted_audio::AudioSink::create(&dst)?;
+        std::io::copy(&mut from, &mut into)
+            .map_err(|error| anyhow!("Failed to copy the audio file: {error}"))?;
+        into.finish()?;
+        Ok(())
+    })
+    .await
+    .map_err(|e| anyhow!("Copy task join error: {}", e))??;
 
     info!("Copied audio to: {}", dest_path.display());
 

@@ -5,7 +5,7 @@
 //! Passwords cross this boundary and nowhere else — none of these commands
 //! returns one, and none of them logs one.
 
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
@@ -14,10 +14,16 @@ use tauri::{AppHandle, Emitter, Manager, Runtime, State};
 use super::keystore::{Keystore, KeystoreError, DEFAULT_AUTO_LOCK_MINUTES};
 use super::recovery::RecoveryError;
 use super::session::{KeySession, LockState, IDLE_TICK};
+use crate::audio::archive_encryption::{ConversionReport, Direction};
 
 /// Event the window listens for when the key is dropped without it asking —
 /// idle timeout, or a lock from the tray.
 pub const LOCKED_EVENT: &str = "archive-locked";
+
+/// Progress while recordings on disk are being converted: `{done, total}`.
+/// An archive of a year's sessions is gigabytes, and a window with no sign of
+/// life is a window the owner force-quits halfway through.
+pub const CONVERSION_EVENT: &str = "archive-conversion";
 
 /// Everything the lock owns at runtime.
 pub struct SecurityState {
@@ -29,7 +35,7 @@ pub struct SecurityState {
     /// instead of the owner's real archive.
     path: std::path::PathBuf,
     /// The key itself.
-    pub session: KeySession,
+    pub session: Arc<KeySession>,
 }
 
 impl Default for SecurityState {
@@ -40,7 +46,11 @@ impl Default for SecurityState {
 
 impl SecurityState {
     pub fn new() -> Self {
-        Self::at(Keystore::path())
+        let state = Self::at(Keystore::path());
+        // Only the real state publishes itself: a test built on a temporary
+        // keystore must not become the session the audio pipeline encrypts with.
+        super::session::install(state.session.clone());
+        state
     }
 
     /// A state backed by a keystore at an explicit path.
@@ -48,7 +58,7 @@ impl SecurityState {
         Self {
             keystore: Mutex::new(None),
             path,
-            session: KeySession::new(),
+            session: Arc::new(KeySession::new()),
         }
     }
 
@@ -119,6 +129,89 @@ impl SecurityState {
 
         Ok(code.map(|code| code.to_string()))
     }
+}
+
+/// Run one pass over the recordings on disk, off the UI thread.
+///
+/// Returns `None` when the archive is locked: converting needs the key, and
+/// there is nothing to say about an archive that cannot be opened.
+async fn convert_archive<R: Runtime>(
+    app: &AppHandle<R>,
+    direction: Direction,
+) -> Option<ConversionReport> {
+    let roots = crate::audio::recording_preferences::recording_roots(app).await;
+    let reporter = app.clone();
+    let task = tauri::async_runtime::spawn_blocking(move || {
+        super::session::with_current_key(|key| {
+            crate::audio::archive_encryption::convert_all(&roots, key, direction, |done, total| {
+                let _ = reporter.emit(
+                    CONVERSION_EVENT,
+                    serde_json::json!({ "done": done, "total": total }),
+                );
+            })
+        })
+    });
+    match task.await {
+        Ok(report) => report,
+        Err(error) => {
+            log::error!("The archive conversion task failed: {error}");
+            None
+        }
+    }
+}
+
+/// How many recordings are encrypted and how many are not.
+///
+/// The settings screen uses this to tell the owner the truth about an archive
+/// that is only partly converted, which is the state a crash or a restored
+/// backup leaves behind.
+#[tauri::command]
+pub async fn security_recording_encryption<R: Runtime>(
+    app: AppHandle<R>,
+) -> Result<RecordingEncryption, SecurityError> {
+    let roots = crate::audio::recording_preferences::recording_roots(&app).await;
+    let counted = tauri::async_runtime::spawn_blocking(move || {
+        crate::audio::archive_encryption::count_recordings(&roots)
+    })
+    .await
+    .map_err(|error| SecurityError::new("countFailed", error.to_string()))?;
+
+    Ok(RecordingEncryption {
+        encrypted: counted.encrypted,
+        plaintext: counted.plaintext,
+    })
+}
+
+/// Bring recordings that are still plaintext under the key.
+///
+/// Deliberately something the owner asks for rather than something that
+/// happens on its own: it rewrites files that hold sessions which cannot be
+/// recorded again, and the owner is the one who decides when a backup exists.
+/// Each file is verified before it replaces the original — see
+/// [`crate::audio::archive_encryption`].
+#[tauri::command]
+pub async fn security_encrypt_recordings<R: Runtime>(
+    app: AppHandle<R>,
+) -> Result<RecordingEncryption, SecurityError> {
+    let report = convert_archive(&app, Direction::Encrypt)
+        .await
+        .ok_or_else(|| SecurityError::new("locked", "the archive is locked"))?;
+
+    if !report.is_complete() {
+        log::error!(
+            "{} recordings could not be encrypted; they are unchanged",
+            report.failed.len()
+        );
+    }
+    security_recording_encryption(app).await
+}
+
+/// The state of the recordings on disk.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RecordingEncryption {
+    pub encrypted: usize,
+    pub plaintext: usize,
 }
 
 /// What the window shows and offers.
@@ -337,7 +430,8 @@ impl From<super::quick::QuickError> for SecurityError {
 /// The recovery code comes back once, here. It is never stored in the clear and
 /// cannot be asked for again — only replaced.
 #[tauri::command]
-pub fn security_setup(
+pub async fn security_setup<R: Runtime>(
+    app: AppHandle<R>,
     password: String,
     with_recovery: bool,
     state: State<'_, SecurityState>,
@@ -348,6 +442,19 @@ pub fn security_setup(
         "Archive protected with a password (recovery code kept: {})",
         with_recovery
     );
+
+    // Setting a password has to cover the sessions already recorded, or the
+    // lock screen promises something that is not true. This is the one moment
+    // it happens without being asked for separately: the owner just asked for
+    // the archive to be protected.
+    if let Some(report) = convert_archive(&app, Direction::Encrypt).await {
+        if !report.is_complete() {
+            log::error!(
+                "{} recordings could not be encrypted and are still plaintext",
+                report.failed.len()
+            );
+        }
+    }
 
     Ok(RecoveryCodeResponse { recovery_code })
 }
@@ -469,15 +576,44 @@ pub fn security_set_auto_lock(
 
 /// Removes the password entirely, after proving it is known.
 ///
-/// In B2 this only deletes keys; from B3 onward it would have to decrypt the
-/// archive first, and this command will grow that step rather than being
-/// allowed to strand data behind a key it just deleted.
+/// **The recordings are decrypted before the key is deleted, and the key is
+/// not deleted unless every one of them made it.** Deleting it first would
+/// leave the archive behind a key that no longer exists anywhere — the sessions
+/// would still be on disk, unreadable forever. A recording that cannot be
+/// converted therefore cancels the whole operation, with the password still in
+/// place and nothing lost.
 #[tauri::command]
-pub fn security_disable(
+pub async fn security_disable<R: Runtime>(
+    app: AppHandle<R>,
     password: String,
     state: State<'_, SecurityState>,
 ) -> Result<(), SecurityError> {
-    state.with_keystore(|keystore| keystore.unlock_with_password(&password).map(|_| ()))?;
+    // Opens the archive as well as proving the password: the key is what the
+    // recordings have to be decrypted with.
+    let dek = state.with_keystore(|keystore| keystore.unlock_with_password(&password))?;
+    state.session.unlock(dek);
+
+    match convert_archive(&app, Direction::Decrypt).await {
+        Some(report) if report.is_complete() => {
+            log::info!("Archive decrypted: {} recordings", report.converted);
+        }
+        Some(report) => {
+            log::error!(
+                "Keeping the password: {} recordings could not be decrypted",
+                report.failed.len()
+            );
+            return Err(SecurityError::new(
+                "decryptionIncomplete",
+                "some recordings could not be decrypted, so the password was kept",
+            ));
+        }
+        None => {
+            return Err(SecurityError::new(
+                "locked",
+                "the archive closed before the recordings could be decrypted",
+            ));
+        }
+    }
 
     std::fs::remove_file(&state.path).map_err(KeystoreError::Io)?;
     *state.keystore_guard() = None;
@@ -532,6 +668,17 @@ pub fn initialize(app: &AppHandle<impl Runtime>) {
     if DEFAULT_AUTO_LOCK_MINUTES.is_some() {
         start_idle_locker(app.clone());
     }
+
+    // Clean up after a conversion that was interrupted by a crash or a
+    // shutdown. Not a migration — it only puts back what was moved aside and
+    // throws away what was never verified.
+    let app_for_recovery = app.clone();
+    tauri::async_runtime::spawn(async move {
+        let roots = crate::audio::recording_preferences::recording_roots(&app_for_recovery).await;
+        tauri::async_runtime::spawn_blocking(move || {
+            crate::audio::archive_encryption::recover_interrupted(&roots);
+        });
+    });
 }
 
 #[cfg(test)]

@@ -361,10 +361,26 @@ mod loudness_normalizer_tests {
              callback will fall behind the device and lose audio",
             realtime_factor
         );
+        // Drift is judged on medians rather than on the first and last second
+        // alone. Each sample is a couple of milliseconds, the suite runs tests
+        // in parallel — several of them spawning FFmpeg — and one scheduling
+        // hiccup in a two-millisecond sample says nothing about whether the
+        // chain slows down. Five seconds at each end still catch a chain whose
+        // cost grows with the recording, which is the defect this guards.
+        let median = |window: &[f64]| {
+            let mut sorted = window.to_vec();
+            sorted.sort_by(f64::total_cmp);
+            sorted[sorted.len() / 2]
+        };
+        let early = median(&per_second[..5]);
+        let late = median(&per_second[per_second.len() - 5..]);
         assert!(
-            last < first * 2.0,
+            late < early * 2.0,
             "the microphone chain slows down as the recording goes on: \
-             {:.1} ms for the first second, {:.1} ms for the last",
+             {:.1} ms in the first seconds, {:.1} ms in the last \
+             (first second {:.1} ms, last {:.1} ms)",
+            early * 1000.0,
+            late * 1000.0,
             first * 1000.0,
             last * 1000.0
         );

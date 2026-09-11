@@ -315,20 +315,27 @@ fn convert_to_wav_with_ffmpeg(
     let input_str = input_path
         .to_str()
         .ok_or_else(|| anyhow!("Invalid input path (non-UTF8)"))?;
-    let output_str = temp_path
-        .to_str()
-        .ok_or_else(|| anyhow!("Invalid temp path (non-UTF8)"))?;
 
+    // An imported recording in a meeting folder is encrypted like any other
+    // (B3), and FFmpeg cannot open what it cannot decrypt — so it is fed on
+    // stdin in that case. The WAV comes back on stdout and is written through
+    // the same encryption, because a plaintext copy of the session sitting in
+    // the archive folder, however briefly, is the thing being avoided.
+    let encrypted_input = crate::security::stream::file_looks_encrypted(input_path);
     let mut command = Command::new(&ffmpeg_path);
     command
+        .args(["-i", if encrypted_input { "pipe:0" } else { input_str }])
         .args([
-            "-i", input_str,
             "-vn",                  // Strip video tracks
             "-acodec", "pcm_s16le", // Output PCM WAV (Symphonia handles natively)
             "-y",                   // Overwrite without prompt
-            output_str,
+            "-f", "wav", "pipe:1",
         ])
-        .stdin(Stdio::null())
+        .stdin(if encrypted_input {
+            Stdio::piped()
+        } else {
+            Stdio::null()
+        })
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
 
@@ -343,26 +350,63 @@ fn convert_to_wav_with_ffmpeg(
     debug!("FFmpeg conversion command: {:?}", command);
 
     #[allow(clippy::zombie_processes)]
-    let child = command
+    let mut child = command
         .spawn()
         .map_err(|e| anyhow!("Failed to spawn ffmpeg process: {}", e))?;
 
-    let output = child
-        .wait_with_output()
-        .map_err(|e| anyhow!("Failed to wait for ffmpeg process: {}", e))?;
+    // Both pipes have to be drained while the other runs, or FFmpeg blocks on
+    // a full one and the conversion never finishes.
+    let feeder = child.stdin.take().map(|mut stdin| {
+        let source_path = input_path.to_path_buf();
+        std::thread::spawn(move || match super::encrypted_audio::AudioSource::open(&source_path) {
+            // A closed pipe is FFmpeg saying it has read enough.
+            Ok(mut source) => {
+                let _ = std::io::copy(&mut source, &mut stdin);
+            }
+            Err(error) => error!("Could not read {}: {error}", source_path.display()),
+        })
+    });
+    let complaints = child.stderr.take().map(|mut stderr| {
+        std::thread::spawn(move || {
+            let mut text = String::new();
+            let _ = std::io::Read::read_to_string(&mut stderr, &mut text);
+            text
+        })
+    });
 
-    let stderr_text = String::from_utf8_lossy(&output.stderr);
+    let written = child
+        .stdout
+        .take()
+        .ok_or_else(|| anyhow!("FFmpeg gave no output pipe"))
+        .and_then(|mut stdout| {
+            let mut sink = super::encrypted_audio::AudioSink::create(&temp_path)?;
+            std::io::copy(&mut stdout, &mut sink)?;
+            sink.finish()?;
+            Ok(())
+        });
+
+    let status = child
+        .wait()
+        .map_err(|e| anyhow!("Failed to wait for ffmpeg process: {}", e))?;
+    if let Some(feeder) = feeder {
+        let _ = feeder.join();
+    }
+    let stderr_text = complaints
+        .and_then(|handle| handle.join().ok())
+        .unwrap_or_default();
     debug!("FFmpeg stderr: {}", stderr_text);
 
-    if !output.status.success() {
+    written?;
+
+    if !status.success() {
         error!(
             "FFmpeg conversion failed (exit code: {}): {}",
-            output.status, stderr_text
+            status, stderr_text
         );
         return Err(anyhow!(
             "FFmpeg conversion failed with exit code: {}. \
              The file may be corrupted or in an unsupported format.",
-            output.status
+            status
         ));
     }
 
@@ -420,11 +464,13 @@ pub fn decode_audio_file_with_progress(
             (None, Cow::Borrowed(path))
         };
 
-    // Open the file (use decode_path which may be the temp WAV)
-    let file = std::fs::File::open(decode_path.as_ref())
-        .map_err(|e| anyhow!("Failed to open audio file '{}': {}", decode_path.display(), e))?;
+    // Open the file (use decode_path which may be the temp WAV). Recordings
+    // written after B3 are encrypted, so this goes through the one place that
+    // knows the difference — a plaintext file, an imported one and a temp WAV
+    // all still open exactly as before.
+    let source = super::encrypted_audio::media_source(decode_path.as_ref())?;
 
-    let mss = MediaSourceStream::new(Box::new(file), Default::default());
+    let mss = MediaSourceStream::new(source, Default::default());
 
     // Set up format hint based on file extension
     let mut hint = Hint::new();
@@ -580,6 +626,52 @@ pub fn decode_audio_file_with_progress(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A format only FFmpeg can demux, decoded through the pre-conversion.
+    ///
+    /// That conversion now writes its WAV through a pipe and through the
+    /// archive's encryption, both of which could break a path that was working:
+    /// a WAV written to a pipe carries placeholder chunk sizes, and the file it
+    /// lands in is no longer a plain WAV. Imports of `.mkv`, `.webm` and `.wma`
+    /// all go this way.
+    #[test]
+    fn a_format_symphonia_cannot_read_still_decodes() {
+        let Some(ffmpeg) = find_ffmpeg_path() else {
+            eprintln!("skipping: FFmpeg is not installed");
+            return;
+        };
+        let dir = tempfile::tempdir().unwrap();
+        let source = dir.path().join("imported.mkv");
+
+        let mut make = Command::new(&ffmpeg);
+        make.args([
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-y",
+            "-f",
+            "lavfi",
+            "-i",
+            "sine=frequency=440:duration=2",
+            "-c:a",
+            "libopus",
+        ])
+        .arg(&source);
+        #[cfg(target_os = "windows")]
+        {
+            use std::os::windows::process::CommandExt;
+            make.creation_flags(0x08000000);
+        }
+        assert!(make.status().unwrap().success(), "could not build the test file");
+
+        let decoded = decode_audio_file(&source).expect("decode");
+        assert!(
+            (decoded.duration_seconds - 2.0).abs() < 0.2,
+            "expected about two seconds, got {:.3}s",
+            decoded.duration_seconds
+        );
+        assert!(decoded.samples.iter().any(|sample| sample.abs() > 0.01));
+    }
 
     #[test]
     fn test_to_whisper_format_mono_16k() {

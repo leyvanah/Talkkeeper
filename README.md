@@ -149,10 +149,36 @@ account, and the difference matters:
 - The password and recovery code are unaffected. If the Windows account changes,
   quick unlock stops working and the password still opens the archive.
 
-**What is not yet covered.** At this stage the password gates access *through
-the app*. The recording files and the database are not yet encrypted at rest —
-that is the next step. Until then, someone with the disk can read them exactly
-as before.
+### Recordings on disk
+
+**The recording files are encrypted at rest.** Every track — the mixed one, the
+microphone, the system audio, and the two lossless working tracks — is sealed
+with AES-256-GCM under the archive's data key. Without the password none of them
+opens, in this app or any other.
+
+They are sealed in fixed 64 KiB frames rather than as one blob, which is what
+keeps a recording seekable: the player asks for the part you dragged to and gets
+those frames, and a recording cut short by a crash still plays up to where it
+stopped. Each frame is bound to its own place in its own file, so frames cannot
+be reordered, and one lifted from another recording will not verify.
+
+- **Setting a password encrypts the recordings that already exist.** Removing
+  the password decrypts them first and deletes the key only once every one of
+  them opens without it — so turning protection off cannot strand a session
+  behind a key that no longer exists.
+- No file is rewritten in place. A converted file is verified against the
+  original's SHA-256 before it replaces it, and the original is deleted only
+  after that. An interrupted conversion is put right at the next start.
+- **Settings → Security** counts what is encrypted and what is not, because a
+  password being set and every file being converted are two different
+  statements — a restored backup can leave some in the clear — and offers to
+  convert the rest.
+- An archive with no password writes plaintext: there is nothing to encrypt
+  with, and the settings screen says so.
+
+**What is not yet covered.** Meeting titles, client names and transcript text
+are still stored in the clear in the database — that is the next step. The
+recordings themselves, which are the bulk of what a session is, are not.
 
 **Boundaries that will remain after that step.** The key sits in the memory of a
 running process: cold-boot attacks, swap files, crash dumps and a live operating

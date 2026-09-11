@@ -11,8 +11,8 @@
 //! ## Why the bytes come back to us instead of FFmpeg writing the file
 //!
 //! Every byte of the recording passes through one place — [`Sink::write`] —
-//! which is where encryption will be inserted (B3) without the encoder, the
-//! pipeline or the recording saver knowing about it.
+//! which is where encryption sits (B3), without the encoder, the pipeline or
+//! the recording saver knowing about it.
 //!
 //! Writing to a pipe means the container cannot be revised afterwards, so MP4
 //! is written in fragments. That is also what makes an interrupted recording
@@ -27,7 +27,7 @@
 //! encoder has closed cleanly, so nothing ever reads a half-written track.
 
 use std::fs::File;
-use std::io::{BufWriter, Read, Write};
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, Command, Stdio};
 use std::thread::JoinHandle;
@@ -91,23 +91,24 @@ pub const FLAC: EncodeFormat = EncodeFormat {
 
 /// Where a track's encoded bytes go.
 ///
-/// The only implementation writes them to a file. It exists as a trait so that
-/// encryption can be put in front of the file without anything above knowing
-/// (B3), and so tests can hold a track in memory.
+/// In the application that is a file, encrypted or not; a trait so that the
+/// encryption sits in front of the file without anything above knowing, and so
+/// tests can hold a track in memory.
 pub trait Sink: Send {
     fn write(&mut self, bytes: &[u8]) -> std::io::Result<()>;
     fn finish(&mut self) -> std::io::Result<()>;
 }
 
-struct FileSink(BufWriter<File>);
-
-impl Sink for FileSink {
+/// The file a track is written to, encrypted when the archive has a key (B3).
+/// Which it is, is decided in one place — see
+/// [`super::encrypted_audio::AudioSink`] — so nothing here has to know.
+impl Sink for super::encrypted_audio::AudioSink {
     fn write(&mut self, bytes: &[u8]) -> std::io::Result<()> {
-        self.0.write_all(bytes)
+        std::io::Write::write_all(self, bytes)
     }
 
     fn finish(&mut self) -> std::io::Result<()> {
-        self.0.flush()
+        super::encrypted_audio::AudioSink::finish(self)
     }
 }
 
@@ -146,7 +147,7 @@ impl StreamingEncoder {
         let file = File::create(&partial_path)?;
         Self::start_into(
             label,
-            Box::new(FileSink(BufWriter::with_capacity(1 << 16, file))),
+            Box::new(super::encrypted_audio::AudioSink::into_file(file)?),
             partial_path,
             final_path,
             sample_rate,
@@ -477,6 +478,64 @@ mod tests {
         // decode_audio_file is the reader used by retranscription and import;
         // it must take the file as written, without a conversion step.
         let decoded = decode_audio_file(&path).expect("decode");
+        assert_eq!(decoded.sample_rate, 48000);
+        assert_eq!(decoded.channels, 1);
+        assert!(
+            (decoded.duration_seconds - 2.0).abs() < 0.15,
+            "expected about two seconds, got {:.3}s",
+            decoded.duration_seconds
+        );
+    }
+
+    /// The same recording, written with a key: what lands on disk must not be
+    /// an MP4 at all, and must come back as one byte for byte once decrypted.
+    #[test]
+    fn a_recorded_track_is_encrypted_when_the_archive_has_a_key() {
+        use crate::audio::encrypted_audio::{AudioSink, AudioSource};
+        use crate::security::envelope::generate_dek;
+        use crate::security::stream::looks_encrypted;
+        use std::io::Read as _;
+
+        if ffmpeg_missing() {
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("audio.mp4");
+        let key = generate_dek();
+
+        // `start_into` is what `start` calls; the sink is keyed explicitly here
+        // because a process-wide key installed by a test would follow the whole
+        // test run around.
+        let partial = partial_path_for(&path);
+        let sink = AudioSink::create_with_key(&partial, key.as_ref()).expect("sink");
+        let mut encoder = StreamingEncoder::start_into(
+            "mixed",
+            Box::new(sink),
+            partial,
+            path.clone(),
+            48000,
+            1,
+            MP4_AAC,
+        )
+        .expect("start");
+        record(&mut encoder, 48000, 2.0);
+        assert_eq!(encoder.finish().expect("finish"), path);
+
+        let on_disk = std::fs::read(&path).unwrap();
+        assert!(looks_encrypted(&on_disk), "the track was written in the clear");
+        assert!(
+            !on_disk.windows(4).any(|w| w == b"ftyp"),
+            "an MP4 header is visible in the encrypted track"
+        );
+
+        // Decrypted, it is the same recording the plaintext test decodes.
+        let mut source = AudioSource::open_with_key(&path, key.as_ref()).expect("open");
+        let mut decrypted = Vec::new();
+        source.read_to_end(&mut decrypted).unwrap();
+        let plain = dir.path().join("plain.mp4");
+        std::fs::write(&plain, &decrypted).unwrap();
+
+        let decoded = decode_audio_file(&plain).expect("decode");
         assert_eq!(decoded.sample_rate, 48000);
         assert_eq!(decoded.channels, 1);
         assert!(

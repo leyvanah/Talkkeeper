@@ -26,6 +26,7 @@ pub mod quick;
 pub mod keystore;
 pub mod recovery;
 pub mod session;
+pub mod stream;
 
 pub use keystore::{Keystore, KeystoreError};
 pub use session::{KeySession, LockState, SessionError};
