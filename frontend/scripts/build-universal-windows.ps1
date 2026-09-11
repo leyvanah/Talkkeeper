@@ -256,7 +256,7 @@ try {
   Remove-Item $universalMarker -Force -ErrorAction SilentlyContinue
 }
 
-$installer = Join-Path $cpuTarget "release\bundle\nsis\Meetily - Actually Free_${appVersion}_x64-setup.exe"
+$installer = Join-Path $cpuTarget "release\bundle\nsis\Talkkeeper_${appVersion}_x64-setup.exe"
 if (-not (Test-Path $installer)) { throw "Universal installer missing: $installer" }
 $dist = Join-Path $repo "dist"
 New-Item -ItemType Directory -Force -Path $dist | Out-Null

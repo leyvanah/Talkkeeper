@@ -1,10 +1,10 @@
-# Meetily - Actually Free
+# Talkkeeper
 
 <p align="center">
-  <img src="frontend/src-tauri/icon-source.png" alt="Meetily - Actually Free logo" width="240" />
+  <img src="frontend/src-tauri/icon-source.png" alt="Talkkeeper logo" width="240" />
 </p>
 
-An entirely free, fully unlocked fork of [Meetily](https://github.com/Zackriya-Solutions/meetily). Every feature is available without an account, subscription, license key, trial, or paid tier.
+Talkkeeper is a fork of [Meetily - Actually Free](https://github.com/TylerBuza/Meetily-ActuallyFree), itself an entirely free, fully unlocked fork of [Meetily](https://github.com/Zackriya-Solutions/meetily). Every feature is available without an account, subscription, license key, trial, or paid tier.
 
 [Download for Windows](https://github.com/TylerBuza/Meetily-ActuallyFree/releases/latest) · [Download for macOS Apple Silicon](https://github.com/TylerBuza/Meetily-ActuallyFree/releases/tag/v0.2.5-macos)
 
@@ -104,7 +104,7 @@ meetings.
 
 Use **Settings → General → Data Storage Locations** or **Settings → Recording →
 Save Location** to choose another writable recordings folder.
-Meetily validates the destination before saving it and keeps core app data in
+Talkkeeper validates the destination before saving it and keeps core app data in
 the platform-specific location above.
 
 ## Password And Keys
@@ -195,6 +195,6 @@ candidate, publication, and physical-device checks.
 
 ## Credits And License
 
-Maintained by [Tyler Buza](https://buza.dev). Based on the original [Meetily](https://github.com/Zackriya-Solutions/meetily) project by Zackriya Solutions.
+Talkkeeper is a fork of [Meetily - Actually Free](https://github.com/TylerBuza/Meetily-ActuallyFree), maintained by [Tyler Buza](https://buza.dev), which is based on the original [Meetily](https://github.com/Zackriya-Solutions/meetily) project by Zackriya Solutions.
 
 MIT licensed. See [`LICENSE.md`](LICENSE.md). Original copyright notices and license terms are retained.

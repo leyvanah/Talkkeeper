@@ -569,7 +569,7 @@ export function TranscriptSettings({ transcriptModelConfig, setTranscriptModelCo
                     maxLength={1000}
                     rows={5}
                     disabled={isSavingVocabulary || !whisperIsActive}
-                    placeholder={'Meetily\nTauri\nKubernetes\nOKR'}
+                    placeholder={'Talkkeeper\nTauri\nKubernetes\nOKR'}
                     className="resize-y"
                 />
                 <div className="flex items-center justify-between gap-3">

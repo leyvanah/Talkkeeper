@@ -294,7 +294,7 @@ export function UpdateDialog({ open, onOpenChange, updateInfo }: UpdateDialogPro
                 </div>
               </div>
               <p className="text-center text-sm text-slate-400">
-                Meetily will restart automatically when the update is installed.
+                Talkkeeper will restart automatically when the update is installed.
               </p>
             </div>
           )}

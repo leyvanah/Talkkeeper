@@ -1,6 +1,6 @@
 {
     "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
-    "productName": "Meetily - Actually Free",
+    "productName": "Talkkeeper",
     "version": "0.2.12",
     "identifier": "com.meetily.ai",
     "build": {
@@ -12,7 +12,7 @@
     "app": {
         "windows": [
             {
-                "title": "Meetily - Actually Free",
+                "title": "Talkkeeper",
                 "width": 1100,
                 "height": 700,
                 "center": true,

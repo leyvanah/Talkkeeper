@@ -577,10 +577,10 @@ briefly report an older value during phase transitions. The key is unique per ru
 the engine exits. Closing
 is blocked once installation starts because externally terminating NSIS can
 leave a partial installation. The wrapper also restores the previously
-registered install path from `HKCU\Software\meetily\Meetily - Actually Free`
+registered install path from `HKCU\Software\meetily\Talkkeeper`
 before offering the default. Fresh installs default to
-`%LOCALAPPDATA%\Meetily-ActuallyFree` (no spaces); do not derive the folder from
-the display product name, which intentionally contains spaces.
+`%LOCALAPPDATA%\Talkkeeper`; the folder is written out literally and is not
+derived from the display product name, which stays free to change.
 
 Backend selection still belongs to `installer-hooks.nsh`; do not reimplement it
 in the bootstrapper. The universal package stages three app executables and the
@@ -617,8 +617,8 @@ Khronos ICD scan remains only for packages missing the probe. The helper is
 installer-only and is removed with the staged variants after selection.
 
 The raw engine detects `/UPDATE` before its install-files page is shown. Update
-mode must use updater-specific chrome and language (`Meetily - Actually Free
-Updater`, `Updating Meetily`, and `Updating app files`) rather than exposing the
+mode must use updater-specific chrome and language (`Talkkeeper Updater`,
+`Updating Talkkeeper`, and `Updating app files`) rather than exposing the
 setup wording. Keep the verbose NSIS extraction log collapsed, preserve the
 stock MUI header font metrics so title/subtitle rectangles do not overlap at
 scaled DPI, and show a monotonic overall percentage in the header. The update
@@ -680,7 +680,7 @@ an exact-size file with valid GGUF magic becomes `Available`. Progress reaching
 
 The updater is already "inside the app" from the user's perspective: the Tauri
 plugin checks `latest.json`, downloads `*-universal-updater.exe`, verifies its
-matching `.sig`, exits Meetily, and launches that payload to replace files that
+matching `.sig`, exits Talkkeeper, and launches that payload to replace files that
 the running process cannot overwrite. GitHub must expose the updater as a
 release asset so installed clients can download it. Users manually launch only
 `*-universal-setup.exe`; removing the updater asset breaks in-app updates.
@@ -823,7 +823,7 @@ parses both files and verifies the packaged values.
 ### Bundle integrity and writable data
 
 A signed `.app` is immutable at runtime. Writing a database, settings, models,
-or logs beneath `Meetily.app/Contents/MacOS` changes the sealed bundle and makes
+or logs beneath `Talkkeeper.app/Contents/MacOS` changes the sealed bundle and makes
 `codesign --verify --deep --strict` fail after first launch. macOS therefore
 uses `~/Library/Application Support/Meetily` for core data,
 `~/Library/Application Support/com.meetily.ai` for Tauri plugin stores, and
