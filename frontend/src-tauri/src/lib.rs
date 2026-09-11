@@ -640,6 +640,8 @@ pub fn run() {
             security::commands::security_remove_recovery,
             security::commands::security_set_auto_lock,
             security::commands::security_disable,
+            security::commands::security_recording_encryption,
+            security::commands::security_encrypt_recordings,
             #[cfg(windows)]
             security::commands::security_quick_enable,
             #[cfg(windows)]

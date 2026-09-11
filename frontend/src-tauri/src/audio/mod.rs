@@ -1,4 +1,5 @@
 // src/audio/mod.rs
+pub mod archive_encryption;
 pub mod audio_processing;
 pub mod decoder;
 pub mod echo_cancel;
