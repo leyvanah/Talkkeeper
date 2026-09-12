@@ -10,14 +10,15 @@
 //!   password is recoverable without a backdoor — the second envelope only opens
 //!   with a code the owner holds.
 //!
-//! This module owns the key material and the on-disk keystore. It deliberately
-//! encrypts nothing else yet: audio (B3) and database fields (B4) ask this module
-//! for the DEK when their turn comes.
+//! This module owns the key material and the on-disk keystore. What is done with
+//! that key lives beside it: [`stream`] seals the recordings (B3) and [`field`]
+//! seals the text columns of the database (B4).
 
 pub mod commands;
 #[cfg(windows)]
 pub mod dpapi;
 pub mod envelope;
+pub mod field;
 #[cfg(windows)]
 pub mod hello;
 pub mod kdf;

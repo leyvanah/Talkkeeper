@@ -147,6 +147,7 @@ argon2 = "0.5"        # argon2id: password -> key-encryption key
 aes-gcm = "0.10"      # AES-256-GCM: wraps the data key, later the data itself
 zeroize = "1.8"       # wipes key material out of memory on lock
 base64 = "0.22"       # keystore fields are text, so the file stays readable
+hmac = "0.12"         # blind index: finds a client by exact name without storing it
 bytes = { version = "1.9.0", features = ["serde"] }
 
 esaxx-rs = "0.1.10"
