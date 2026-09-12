@@ -9,6 +9,7 @@ import { useCallback, useEffect, useState } from 'react'
 import { useTranslations } from 'next-intl'
 import { listen } from '@tauri-apps/api/event'
 import {
+  Database,
   FileLock2,
   KeyRound,
   Lock,
@@ -23,6 +24,7 @@ import { Switch } from '@/components/ui/switch'
 import {
   asSecurityError,
   useSecurity,
+  type FieldEncryption,
   type RecordingEncryption,
 } from '@/contexts/SecurityContext'
 import { RecoveryCodeCard } from '@/components/security/RecoveryCodeCard'
@@ -45,6 +47,8 @@ export function SecuritySettings() {
     quickDisable,
     recordingEncryption,
     encryptRecordings,
+    fieldEncryption,
+    encryptFields,
   } = useSecurity()
 
   const [busy, setBusy] = useState(false)
@@ -54,6 +58,8 @@ export function SecuritySettings() {
   const [freshCode, setFreshCode] = useState<string | null>(null)
   /** How the recordings on disk stand; null until counted. */
   const [recordings, setRecordings] = useState<RecordingEncryption | null>(null)
+  /** How the database columns stand; null until counted. */
+  const [dbFields, setDbFields] = useState<FieldEncryption | null>(null)
   /** Progress of a conversion, while one is running. */
   const [converting, setConverting] = useState<{ done: number; total: number } | null>(null)
 
@@ -87,6 +93,24 @@ export function SecuritySettings() {
       current = false
     }
   }, [status?.state, recordingEncryption])
+
+  // The database count is a handful of queries rather than a walk of the disk,
+  // but it is asked at the same moment and for the same reason: a partly
+  // converted archive is a real state and should be visible.
+  useEffect(() => {
+    if (status?.state !== 'unlocked') return
+    let current = true
+    fieldEncryption()
+      .then((counts) => {
+        if (current) setDbFields(counts)
+      })
+      .catch((failure) =>
+        console.error('[SecuritySettings] Could not count database values:', failure),
+      )
+    return () => {
+      current = false
+    }
+  }, [status?.state, fieldEncryption])
 
   // A conversion reports itself as it goes: an archive of a year's sessions is
   // gigabytes, and a panel showing nothing is a panel the owner force-quits.
@@ -289,6 +313,46 @@ export function SecuritySettings() {
                     {busy ? t('working') : t('encryptExisting')}
                   </Button>
                   <p className="mt-2 text-xs text-amber-500">{t('encryptExistingHint')}</p>
+                </>
+              )}
+            </div>
+
+            {/* The same, for the words rather than the audio: titles, names,
+                transcripts and summaries live in the database, and an archive
+                recorded before the password existed still holds them in the
+                clear until this pass runs. */}
+            <div>
+              <label className="mb-1.5 flex items-center gap-2 text-sm font-medium text-gray-900">
+                <Database className="h-4 w-4 text-gray-500" />
+                {t('fieldsTitle')}
+              </label>
+              <p className="mb-2 text-xs text-gray-500">
+                {!dbFields
+                  ? t('fieldsCounting')
+                  : dbFields.sealed + dbFields.plaintext === 0
+                    ? t('fieldsNone')
+                    : dbFields.plaintext === 0
+                      ? t('fieldsAllSealed', { count: dbFields.sealed })
+                      : t('fieldsPartly', {
+                          sealed: dbFields.sealed,
+                          plaintext: dbFields.plaintext,
+                        })}
+              </p>
+              {dbFields && dbFields.plaintext > 0 && (
+                <>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    disabled={busy}
+                    onClick={() =>
+                      attempt(async () => {
+                        setDbFields(await encryptFields())
+                      }, t('noticeFieldsEncrypted'))
+                    }
+                  >
+                    {busy ? t('working') : t('encryptFields')}
+                  </Button>
+                  <p className="mt-2 text-xs text-gray-500">{t('encryptFieldsHint')}</p>
                 </>
               )}
             </div>

@@ -350,7 +350,7 @@ impl PeopleRepository {
                         WHEN t.audio_end_time IS NOT NULL AND t.audio_start_time IS NOT NULL \
                              AND t.audio_end_time > t.audio_start_time \
                             THEN t.audio_end_time - t.audio_start_time \
-                        ELSE 0 END), 0.0), \
+                        ELSE 0.0 END), 0.0), \
                     (SELECT tx.transcript FROM transcripts tx \
                      JOIN person_speakers px ON px.meeting_id = tx.meeting_id \
                                              AND px.speaker_label = tx.speaker \

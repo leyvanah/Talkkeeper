@@ -642,6 +642,8 @@ pub fn run() {
             security::commands::security_disable,
             security::commands::security_recording_encryption,
             security::commands::security_encrypt_recordings,
+            security::commands::security_field_encryption,
+            security::commands::security_encrypt_fields,
             #[cfg(windows)]
             security::commands::security_quick_enable,
             #[cfg(windows)]

@@ -46,6 +46,16 @@ export interface RecordingEncryption {
 }
 
 /**
+ * The same question about the database: how many of the values that hold what
+ * was said are sealed, and how many are still readable. A `NULL` counts as
+ * neither, so the two numbers are of values that exist.
+ */
+export interface FieldEncryption {
+  sealed: number
+  plaintext: number
+}
+
+/**
  * A failure the interface reacts to by code. `message` is English and belongs in
  * the console, never on screen — the lock screen renders its own text.
  */
@@ -83,6 +93,10 @@ interface SecurityContextValue {
   recordingEncryption: () => Promise<RecordingEncryption>
   /** Brings the plaintext ones under the key, and reports the new count. */
   encryptRecordings: () => Promise<RecordingEncryption>
+  /** Counts the database values by whether they are sealed. */
+  fieldEncryption: () => Promise<FieldEncryption>
+  /** Seals the ones that are not, and reports the new count. */
+  encryptFields: () => Promise<FieldEncryption>
   /** Opens the archive with a Windows Hello prompt. */
   quickUnlock: (prompt: string) => Promise<void>
   /** Turns quick unlock on, proving the password first. */
@@ -193,6 +207,8 @@ export function SecurityProvider({ children }: { children: React.ReactNode }) {
       // Neither of these changes the lock state, so neither re-reads it.
       recordingEncryption: () => invoke<RecordingEncryption>('security_recording_encryption'),
       encryptRecordings: () => invoke<RecordingEncryption>('security_encrypt_recordings'),
+      fieldEncryption: () => invoke<FieldEncryption>('security_field_encryption'),
+      encryptFields: () => invoke<FieldEncryption>('security_encrypt_fields'),
       disable: (password) => run<void>('security_disable', { password }),
       quickUnlock: (prompt) => run<void>('security_quick_unlock', { prompt }),
       quickEnable: (password) => run<void>('security_quick_enable', { password }),

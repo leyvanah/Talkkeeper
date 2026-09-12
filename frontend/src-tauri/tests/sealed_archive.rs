@@ -15,6 +15,7 @@
 use std::sync::Arc;
 
 use app_lib::api::TranscriptSegment;
+use app_lib::database::field_encryption;
 use app_lib::database::fields;
 use app_lib::database::repositories::client::ClientsRepository;
 use app_lib::database::repositories::meeting::MeetingsRepository;
@@ -47,8 +48,8 @@ async fn archive() -> SqlitePool {
              transcript TEXT NOT NULL, timestamp TEXT NOT NULL, summary TEXT, \
              action_items TEXT, key_points TEXT, audio_start_time REAL, \
              audio_end_time REAL, duration REAL, speaker TEXT); \
-         CREATE TABLE summary_processes (meeting_id TEXT PRIMARY KEY, result TEXT); \
-         CREATE TABLE transcript_chunks (meeting_id TEXT PRIMARY KEY, meeting_name TEXT); \
+         CREATE TABLE summary_processes (meeting_id TEXT PRIMARY KEY, result TEXT, \n             result_backup TEXT); \
+         CREATE TABLE transcript_chunks (meeting_id TEXT PRIMARY KEY, meeting_name TEXT, \n             transcript_text TEXT NOT NULL DEFAULT ''); \
          CREATE TABLE people (id TEXT PRIMARY KEY, display_name TEXT NOT NULL, \
              normalized_name TEXT NOT NULL UNIQUE, notes TEXT, created_at TEXT NOT NULL, \
              updated_at TEXT NOT NULL); \
@@ -265,4 +266,103 @@ async fn the_same_name_is_recognised_through_the_blind_index() {
         "the same name must give the same blind index"
     );
     assert!(!indexes[0].contains("анна"));
+}
+
+#[tokio::test]
+async fn an_archive_written_before_b4_converts_and_converts_back() {
+    // The migration, both ways, on rows that look exactly like an archive
+    // recorded before the password existed: plaintext, written straight into
+    // the columns.
+    let pool = archive().await;
+    sqlx::raw_sql(
+        "INSERT INTO meetings (id, title, created_at, updated_at) \
+             VALUES ('m1', 'Встреча в четверг', '2026-09-01T10:00:00Z', '2026-09-01T10:00:00Z'); \
+         INSERT INTO transcripts (id, meeting_id, transcript, timestamp, speaker) \
+             VALUES ('t1', 'm1', 'отчёт будет в пятницу', '00:00', 'Анна'); \
+         INSERT INTO summary_processes (meeting_id, result) \
+             VALUES ('m1', '{\"markdown\":\"обсудили смету\"}'); \
+         INSERT INTO clients (id, display_name, normalized_name, notes, created_at, updated_at) \
+             VALUES ('c1', 'Анна Петрова', 'анна петрова', 'звонить до обеда', 'n', 'n'); \
+         INSERT INTO people (id, display_name, normalized_name, created_at, updated_at) \
+             VALUES ('p1', 'Анна', 'анна', 'n', 'n'); \
+         INSERT INTO person_speakers VALUES ('p1', 'm1', 'Анна');",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    let before = field_encryption::count(&pool).await.unwrap();
+    assert_eq!(before.sealed, 0);
+    assert!(before.plaintext >= 8);
+
+    let report = field_encryption::convert_all(&pool, field_encryption::Direction::Encrypt)
+        .await
+        .unwrap();
+    assert_eq!(report.converted, before.plaintext);
+
+    let after = field_encryption::count(&pool).await.unwrap();
+    assert_eq!(after.plaintext, 0, "the pass left something in the clear");
+    assert_eq!(after.sealed, before.plaintext);
+
+    let stored = every_stored_value(&pool).await;
+    for word in ["Встреча", "пятницу", "Анна", "Петрова", "звонить"] {
+        assert!(!stored.contains(word), "{word:?} survived the conversion");
+    }
+
+    // Reading it works, which is the point of having converted it.
+    let meeting = MeetingsRepository::get_meeting(&pool, "m1")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(meeting.title, "Встреча в четверг");
+    assert_eq!(meeting.transcripts[0].speaker.as_deref(), Some("Анна"));
+    let profile = PeopleRepository::get_profile(&pool, "p1").await.unwrap();
+    assert_eq!(profile.message_count, 1, "the join survived the conversion");
+
+    // And the way back, which is what removing the password depends on.
+    let back = field_encryption::convert_all(&pool, field_encryption::Direction::Decrypt)
+        .await
+        .unwrap();
+    assert_eq!(back.converted, after.sealed);
+    assert_eq!(field_encryption::count(&pool).await.unwrap().sealed, 0);
+
+    let stored = every_stored_value(&pool).await;
+    assert!(stored.contains("Встреча в четверг"));
+    assert!(stored.contains("Анна Петрова"));
+    let lookup: String = sqlx::query_scalar("SELECT normalized_name FROM clients")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(
+        lookup, "анна петрова",
+        "the lookup column has to come back from the name, not from the index"
+    );
+}
+
+#[tokio::test]
+async fn a_second_pass_has_nothing_left_to_do() {
+    // Running the conversion twice is what a nervous owner does, and what a
+    // crashed first attempt leaves behind. It must not double-seal anything.
+    let pool = archive().await;
+    sqlx::raw_sql(
+        "INSERT INTO meetings (id, title, created_at, updated_at) \
+             VALUES ('m1', 'Первая', '2026-09-01T10:00:00Z', '2026-09-01T10:00:00Z');",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    field_encryption::convert_all(&pool, field_encryption::Direction::Encrypt)
+        .await
+        .unwrap();
+    let again = field_encryption::convert_all(&pool, field_encryption::Direction::Encrypt)
+        .await
+        .unwrap();
+    assert_eq!(again.converted, 0);
+
+    let meeting = MeetingsRepository::get_meeting(&pool, "m1")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(meeting.title, "Первая");
 }

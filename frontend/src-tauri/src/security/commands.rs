@@ -206,6 +206,93 @@ pub async fn security_encrypt_recordings<R: Runtime>(
     security_recording_encryption(app).await
 }
 
+/// Where the copy of the database is written before B4 first converts it.
+///
+/// Kept next to the database rather than somewhere tidy, so an owner who
+/// needs it finds it in the folder they are already looking at.
+fn database_backup_path() -> std::path::PathBuf {
+    crate::paths::install_data_root().join("meeting_minutes.before-encryption.sqlite")
+}
+
+/// How many database values are sealed and how many are not.
+#[tauri::command]
+pub async fn security_field_encryption(
+    state: State<'_, crate::state::AppState>,
+) -> Result<FieldEncryption, SecurityError> {
+    let counts = crate::database::field_encryption::count(state.db_manager.pool())
+        .await
+        .map_err(|error| SecurityError::new("countFailed", error.to_string()))?;
+    Ok(FieldEncryption {
+        sealed: counts.sealed,
+        plaintext: counts.plaintext,
+    })
+}
+
+/// Bring the titles, transcripts, names and summaries already in the
+/// database under the key.
+///
+/// A copy of the database is written first, once, and never overwritten.
+/// The conversion itself is one transaction, so a failure leaves the archive
+/// exactly as it was — but a copy costs a few megabytes and answers the
+/// question the owner would otherwise have to trust an answer to.
+#[tauri::command]
+pub async fn security_encrypt_fields(
+    state: State<'_, crate::state::AppState>,
+) -> Result<FieldEncryption, SecurityError> {
+    if !super::session::archive_is_open() {
+        return Err(SecurityError::new("locked", "the archive is locked"));
+    }
+    convert_database(state.db_manager.pool(), DatabaseDirection::Encrypt).await?;
+    security_field_encryption(state).await
+}
+
+use crate::database::field_encryption::Direction as DatabaseDirection;
+
+/// One pass over the database columns, with the backup taken first when the
+/// pass is the one that seals things.
+async fn convert_database(
+    pool: &sqlx::SqlitePool,
+    direction: DatabaseDirection,
+) -> Result<(), SecurityError> {
+    if direction == DatabaseDirection::Encrypt {
+        match crate::database::field_encryption::back_up(pool, &database_backup_path()).await {
+            Ok(true) => log::info!("Wrote a copy of the database before encrypting it"),
+            Ok(false) => log::info!("A copy of the database from before encryption already exists"),
+            // Worth stopping for: the copy is the owner's way back if the
+            // conversion turns out to have been a mistake.
+            Err(error) => {
+                log::error!("Could not copy the database: {error}");
+                return Err(SecurityError::new("backupFailed", error.to_string()));
+            }
+        }
+    }
+
+    match crate::database::field_encryption::convert_all(pool, direction).await {
+        Ok(report) => {
+            log::info!("Database fields: {}", report.summary());
+            Ok(())
+        }
+        Err(error) => {
+            log::error!("The database conversion failed and was rolled back: {error}");
+            Err(SecurityError::new(
+                match direction {
+                    DatabaseDirection::Encrypt => "fieldEncryptionFailed",
+                    DatabaseDirection::Decrypt => "fieldDecryptionIncomplete",
+                },
+                error.to_string(),
+            ))
+        }
+    }
+}
+
+/// The state of the text columns in the database.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FieldEncryption {
+    pub sealed: usize,
+    pub plaintext: usize,
+}
+
 /// The state of the recordings on disk.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -445,6 +532,7 @@ pub async fn security_setup<R: Runtime>(
     password: String,
     with_recovery: bool,
     state: State<'_, SecurityState>,
+    archive: State<'_, crate::state::AppState>,
 ) -> Result<RecoveryCodeResponse, SecurityError> {
     let recovery_code = state.create(&password, with_recovery)?;
 
@@ -464,6 +552,16 @@ pub async fn security_setup<R: Runtime>(
                 report.failed.len()
             );
         }
+    }
+
+    // The same argument covers the database: a lock screen over readable
+    // titles and transcripts would be a promise the file does not keep. A
+    // failure here is logged rather than returned — the password is already
+    // set and the recovery code has to reach the owner, who would otherwise
+    // have a protected archive and no code for it. The settings screen shows
+    // what is still in the clear and offers the pass again.
+    if let Err(error) = convert_database(archive.db_manager.pool(), DatabaseDirection::Encrypt).await {
+        log::error!("The database was not encrypted at setup: {}", error.message);
     }
 
     Ok(RecoveryCodeResponse { recovery_code })
@@ -597,11 +695,17 @@ pub async fn security_disable<R: Runtime>(
     app: AppHandle<R>,
     password: String,
     state: State<'_, SecurityState>,
+    archive: State<'_, crate::state::AppState>,
 ) -> Result<(), SecurityError> {
     // Opens the archive as well as proving the password: the key is what the
     // recordings have to be decrypted with.
     let dek = state.with_keystore(|keystore| keystore.unlock_with_password(&password))?;
     state.session.unlock(dek);
+
+    // The database goes first: it converts inside a transaction, so a
+    // failure costs nothing, while a half-decrypted folder of recordings
+    // would have to be converted back.
+    convert_database(archive.db_manager.pool(), DatabaseDirection::Decrypt).await?;
 
     match convert_archive(&app, Direction::Decrypt).await {
         Some(report) if report.is_complete() => {
