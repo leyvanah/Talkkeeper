@@ -1,3 +1,4 @@
+use crate::database::fields;
 use crate::database::models::SummaryProcess;
 use chrono::Utc;
 use serde_json::Value;
@@ -49,7 +50,7 @@ impl SummaryProcessesRepository {
         let now = Utc::now();
 
         sqlx::query("UPDATE summary_processes SET result = ?, updated_at = ? WHERE meeting_id = ?")
-            .bind(&result_json.unwrap())
+            .bind(fields::seal(fields::SUMMARY_RESULT, &result_json.unwrap()))
             .bind(now)
             .bind(meeting_id)
             .execute(&mut *transaction)
@@ -136,7 +137,7 @@ impl SummaryProcessesRepository {
             WHERE meeting_id = ? AND status = 'PENDING'
             "#
         )
-        .bind(result_str)
+        .bind(fields::seal(fields::SUMMARY_RESULT, &result_str))
         .bind(now)
         .bind(now)
         .bind(chunk_count)

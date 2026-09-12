@@ -6,6 +6,7 @@ use super::common::{create_transcript_segments, split_segment_at_silence};
 use super::constants::AUDIO_EXTENSIONS;
 use super::working_track::find_working_track;
 use crate::config::{DEFAULT_WHISPER_MODEL, DEFAULT_PARAKEET_MODEL};
+use crate::database::fields;
 use crate::database::models::DateTimeUtc;
 use crate::database::repositories::vocabulary::VocabularyRepository;
 use crate::parakeet_engine::ParakeetEngine;
@@ -637,12 +638,15 @@ async fn run_retranscription<R: Runtime>(
         )
         .bind(&segment.id)
         .bind(&meeting_id)
-        .bind(&segment.text)
+        .bind(fields::seal(fields::TRANSCRIPT_TEXT, &segment.text))
         .bind(&segment.timestamp)
         .bind(segment.audio_start_time)
         .bind(segment.audio_end_time)
         .bind(segment.duration)
-        .bind(&segment.speaker)
+        .bind(fields::seal_joinable_opt(
+            fields::TRANSCRIPT_SPEAKER,
+            segment.speaker.as_deref(),
+        ))
         .execute(&mut *tx)
         .await
         .map_err(|e| anyhow!("Failed to insert transcript: {}", e))?;

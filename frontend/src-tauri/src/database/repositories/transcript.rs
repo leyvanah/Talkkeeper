@@ -1,4 +1,5 @@
 use crate::api::{TranscriptSearchResult, TranscriptSegment};
+use crate::database::fields;
 use futures_util::TryStreamExt;
 use chrono::{DateTime, Duration, SecondsFormat, Utc};
 use sqlx::{Connection, Error as SqlxError, SqlitePool};
@@ -34,7 +35,7 @@ impl TranscriptsRepository {
              VALUES (?, ?, ?, ?, ?, ?)",
         )
         .bind(&meeting_id)
-        .bind(meeting_title)
+        .bind(fields::seal(fields::MEETING_TITLE, meeting_title))
         .bind(recording_started_at)
         .bind(now)
         .bind(&folder_path)
@@ -43,7 +44,9 @@ impl TranscriptsRepository {
         .await;
 
         if let Err(e) = result {
-            error!("Failed to create meeting '{}': {}", meeting_title, e);
+            // The title is not logged: from B4 on it is sealed in the
+            // database, and a log file is not.
+            error!("Failed to create meeting {}: {}", meeting_id, e);
             transaction.rollback().await?;
             return Err(e);
         }
@@ -67,12 +70,15 @@ impl TranscriptsRepository {
             )
             .bind(&transcript_id)
             .bind(&meeting_id)
-            .bind(&segment.text)
+            .bind(fields::seal(fields::TRANSCRIPT_TEXT, &segment.text))
             .bind(timestamp)
             .bind(segment.audio_start_time)
             .bind(segment.audio_end_time)
             .bind(segment.duration)
-            .bind(&segment.speaker)
+            .bind(fields::seal_joinable_opt(
+                fields::TRANSCRIPT_SPEAKER,
+                segment.speaker.as_deref(),
+            ))
             .execute(&mut *transaction)
             .await;
 
@@ -134,10 +140,12 @@ impl TranscriptsRepository {
             .fetch(pool);
 
             while let Some((id, title, transcript, timestamp)) = rows.try_next().await? {
+                let transcript = fields::open(fields::TRANSCRIPT_TEXT, &transcript)?;
                 if !transcript.to_lowercase().contains(&needle) {
                     continue;
                 }
                 if seen.insert(id.clone()) {
+                    let title = fields::open(fields::MEETING_TITLE, &title)?;
                     let match_context = Self::get_match_context(&transcript, query);
                     results.push(TranscriptSearchResult {
                         id,
@@ -161,10 +169,12 @@ impl TranscriptsRepository {
             .fetch(pool);
 
             while let Some((id, title, result, timestamp)) = rows.try_next().await? {
+                let result = fields::open(fields::SUMMARY_RESULT, &result)?;
                 if !result.to_lowercase().contains(&needle) {
                     continue;
                 }
                 if seen.insert(id.clone()) {
+                    let title = fields::open(fields::MEETING_TITLE, &title)?;
                     let match_context = Self::get_match_context(&result, query);
                     results.push(TranscriptSearchResult {
                         id,
@@ -186,6 +196,7 @@ impl TranscriptsRepository {
             .fetch(pool);
 
             while let Some((id, title, timestamp)) = rows.try_next().await? {
+                let title = fields::open(fields::MEETING_TITLE, &title)?;
                 if !title.to_lowercase().contains(&needle) {
                     continue;
                 }

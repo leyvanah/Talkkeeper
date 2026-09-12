@@ -781,7 +781,10 @@ async fn create_meeting_with_transcripts(
          VALUES (?, ?, ?, ?, ?, ?)",
     )
     .bind(&meeting_id)
-    .bind(title)
+    .bind(crate::database::fields::seal(
+        crate::database::fields::MEETING_TITLE,
+        title,
+    ))
     .bind(recording_started_at)
     .bind(now)
     .bind(&folder_path)
@@ -798,7 +801,10 @@ async fn create_meeting_with_transcripts(
         )
         .bind(&segment.id)
         .bind(&meeting_id)
-        .bind(&segment.text)
+        .bind(crate::database::fields::seal(
+            crate::database::fields::TRANSCRIPT_TEXT,
+            &segment.text,
+        ))
         .bind(&segment.timestamp)
         .bind(segment.audio_start_time)
         .bind(segment.audio_end_time)

@@ -13,6 +13,7 @@ use std::cmp::Ordering;
 use std::collections::HashMap;
 use uuid::Uuid;
 
+use crate::database::fields;
 use crate::state::AppState;
 
 const DEFAULT_SEARCH_LIMIT: i64 = 40;
@@ -153,6 +154,8 @@ impl PeopleRepository {
             if taken == wanted {
                 break;
             }
+            let display_name = fields::open(fields::PERSON_NAME, &display_name)?;
+            let notes = fields::open_opt(fields::PERSON_NOTES, notes)?;
             let normalized = normalize_person_name(&display_name);
             if !normalized.contains(&needle) {
                 continue;
@@ -188,6 +191,7 @@ impl PeopleRepository {
             if taken == wanted {
                 break;
             }
+            let title = fields::open(fields::MEETING_TITLE, &title)?;
             let lowered = title.to_lowercase();
             if !lowered.contains(&needle) {
                 continue;
@@ -242,6 +246,9 @@ impl PeopleRepository {
                     break;
                 };
 
+                let title = fields::open(fields::MEETING_TITLE, &title)?;
+                let text = fields::open(fields::TRANSCRIPT_TEXT, &text)?;
+                let speaker = fields::open_opt(fields::TRANSCRIPT_SPEAKER, speaker)?;
                 let speaker_match = speaker
                     .as_deref()
                     .map(|value| value.to_lowercase().contains(&needle))
@@ -285,6 +292,8 @@ impl PeopleRepository {
                 let Some((meeting_id, title, created_at, raw)) = rows.try_next().await? else {
                     break;
                 };
+                let title = fields::open(fields::MEETING_TITLE, &title)?;
+                let raw = fields::open(fields::SUMMARY_RESULT, &raw)?;
                 let Some(visible) = visible_summary_text(&raw) else {
                     continue;
                 };
@@ -363,17 +372,18 @@ impl PeopleRepository {
             .into_iter()
             .map(
                 |(meeting_id, title, created_at, message_count, speaking_seconds, excerpt)| {
-                    PersonMeeting {
+                    let excerpt = fields::open_opt(fields::TRANSCRIPT_TEXT, excerpt)?;
+                    Ok(PersonMeeting {
                         meeting_id,
-                        title,
+                        title: fields::open(fields::MEETING_TITLE, &title)?,
                         created_at,
                         message_count,
                         speaking_seconds,
                         excerpt: excerpt.map(|text| truncate_chars(&text, 240)),
-                    }
+                    })
                 },
             )
-            .collect();
+            .collect::<Result<Vec<_>, sqlx::Error>>()?;
         let message_count = meetings.iter().map(|meeting| meeting.message_count).sum();
         let total_speaking_seconds = meetings
             .iter()
@@ -382,8 +392,8 @@ impl PeopleRepository {
 
         Ok(PersonProfile {
             id: person.0,
-            display_name: person.1,
-            notes: person.2,
+            display_name: fields::open(fields::PERSON_NAME, &person.1)?,
+            notes: fields::open_opt(fields::PERSON_NOTES, person.2)?,
             meeting_count: meetings.len() as i64,
             message_count,
             total_speaking_seconds,
@@ -404,7 +414,7 @@ impl PeopleRepository {
         });
         let result =
             sqlx::query("UPDATE people SET notes = ?, updated_at = datetime('now') WHERE id = ?")
-                .bind(notes)
+                .bind(fields::seal_opt(fields::PERSON_NOTES, notes.as_deref()))
                 .bind(person_id)
                 .execute(pool)
                 .await?;
@@ -433,9 +443,12 @@ impl PeopleRepository {
         };
         let result =
             sqlx::query("UPDATE transcripts SET speaker = ? WHERE meeting_id = ? AND speaker = ?")
-                .bind(&resolved_to)
+                .bind(fields::seal_joinable(
+                    fields::TRANSCRIPT_SPEAKER,
+                    &resolved_to,
+                ))
                 .bind(meeting_id)
-                .bind(from)
+                .bind(fields::seal_joinable(fields::TRANSCRIPT_SPEAKER, from))
                 .execute(&mut *tx)
                 .await?;
         let count = result.rows_affected();
@@ -443,7 +456,7 @@ impl PeopleRepository {
         if removed_name {
             sqlx::query("DELETE FROM person_speakers WHERE meeting_id = ? AND speaker_label = ?")
                 .bind(meeting_id)
-                .bind(from)
+                .bind(fields::seal_joinable(fields::SPEAKER_LABEL, from))
                 .execute(&mut *tx)
                 .await?;
             delete_orphan_people(&mut tx).await?;
@@ -468,13 +481,13 @@ impl PeopleRepository {
             "SELECT person_id FROM person_speakers WHERE meeting_id = ? AND speaker_label = ?",
         )
         .bind(meeting_id)
-        .bind(from)
+        .bind(fields::seal_joinable(fields::SPEAKER_LABEL, from))
         .fetch_optional(&mut **tx)
         .await?;
 
         sqlx::query("DELETE FROM person_speakers WHERE meeting_id = ? AND speaker_label = ?")
             .bind(meeting_id)
-            .bind(from)
+            .bind(fields::seal_joinable(fields::SPEAKER_LABEL, from))
             .execute(&mut **tx)
             .await?;
 
@@ -511,8 +524,8 @@ impl PeopleRepository {
                     "UPDATE people SET display_name = ?, normalized_name = ?, \
                      updated_at = datetime('now') WHERE id = ?",
                 )
-                .bind(to)
-                .bind(&normalized)
+                .bind(fields::seal(fields::PERSON_NAME, to))
+                .bind(fields::lookup(fields::PERSON_LOOKUP, &normalized))
                 .bind(current)
                 .execute(&mut **tx)
                 .await?;
@@ -528,8 +541,8 @@ impl PeopleRepository {
                      VALUES (?, ?, ?, NULL, datetime('now'), datetime('now'))",
                 )
                 .bind(&id)
-                .bind(to)
-                .bind(&normalized)
+                .bind(fields::seal(fields::PERSON_NAME, to))
+                .bind(fields::lookup(fields::PERSON_LOOKUP, &normalized))
                 .execute(&mut **tx)
                 .await?;
                 id
@@ -543,7 +556,7 @@ impl PeopleRepository {
         )
         .bind(person_id)
         .bind(meeting_id)
-        .bind(to)
+        .bind(fields::seal_joinable(fields::SPEAKER_LABEL, to))
         .execute(&mut **tx)
         .await?;
         delete_orphan_people(tx).await?;
@@ -560,6 +573,7 @@ impl PeopleRepository {
                 .fetch_optional(pool)
                 .await?
                 .ok_or(sqlx::Error::RowNotFound)?;
+        let display_name = fields::open(fields::PERSON_NAME, &display_name)?;
 
         let meeting_rows = sqlx::query_as::<_, (String, String, String, Option<String>)>(
             "SELECT DISTINCT m.id, m.title, m.created_at, s.result \
@@ -589,6 +603,7 @@ impl PeopleRepository {
 
         let mut messages: HashMap<String, Vec<PersonContextMessage>> = HashMap::new();
         for (meeting_id, text, timestamp, audio_start_time) in message_rows {
+            let text = fields::open(fields::TRANSCRIPT_TEXT, &text)?;
             messages
                 .entry(meeting_id)
                 .or_default()
@@ -601,16 +616,17 @@ impl PeopleRepository {
 
         let meetings = meeting_rows
             .into_iter()
-            .map(
-                |(meeting_id, title, created_at, raw_summary)| PersonContextMeeting {
+            .map(|(meeting_id, title, created_at, raw_summary)| {
+                let raw_summary = fields::open_opt(fields::SUMMARY_RESULT, raw_summary)?;
+                Ok(PersonContextMeeting {
                     messages: messages.remove(&meeting_id).unwrap_or_default(),
                     summary: raw_summary.and_then(|raw| visible_summary_text(&raw)),
                     meeting_id,
-                    title,
+                    title: fields::open(fields::MEETING_TITLE, &title)?,
                     created_at,
-                },
-            )
-            .collect();
+                })
+            })
+            .collect::<Result<Vec<_>, sqlx::Error>>()?;
         Ok((display_name, meetings))
     }
 }
@@ -677,7 +693,7 @@ async fn next_available_speaker_label(
     tx: &mut Transaction<'_, Sqlite>,
     meeting_id: &str,
 ) -> Result<String, sqlx::Error> {
-    let labels: Vec<String> = sqlx::query_scalar(
+    let stored: Vec<String> = sqlx::query_scalar(
         "SELECT speaker FROM transcripts WHERE meeting_id = ? AND speaker IS NOT NULL \
          UNION SELECT speaker_label FROM person_speakers WHERE meeting_id = ?",
     )
@@ -685,6 +701,11 @@ async fn next_available_speaker_label(
     .bind(meeting_id)
     .fetch_all(&mut **tx)
     .await?;
+
+    let labels = stored
+        .iter()
+        .map(|label| fields::open(fields::TRANSCRIPT_SPEAKER, label))
+        .collect::<Result<Vec<_>, sqlx::Error>>()?;
 
     for index in 1_u64.. {
         let candidate = format!("Speaker {}", index);
@@ -969,7 +990,7 @@ async fn find_person_by_normalized_name(
     normalized: &str,
 ) -> Result<Option<String>, sqlx::Error> {
     if let Some(id) = sqlx::query_scalar("SELECT id FROM people WHERE normalized_name = ?")
-        .bind(normalized)
+        .bind(fields::lookup(fields::PERSON_LOOKUP, normalized))
         .fetch_optional(&mut **tx)
         .await?
     {
@@ -981,13 +1002,19 @@ async fn find_person_by_normalized_name(
     )
     .fetch_all(&mut **tx)
     .await?;
-    Ok(candidates
-        .into_iter()
-        .find(|(_, display_name, stored_normalized)| {
-            normalize_person_name(display_name) == normalized
-                || normalize_person_name(stored_normalized) == normalized
-        })
-        .map(|(id, _, _)| id))
+    for (id, display_name, stored_normalized) in candidates {
+        let display_name = fields::open(fields::PERSON_NAME, &display_name)?;
+        // The lookup column is a blind index once the archive has a key, so
+        // only the name itself can be compared here. A blinded value never
+        // normalizes to a name, so the second test simply never fires then —
+        // and the exact-match query above has already covered that case.
+        if normalize_person_name(&display_name) == normalized
+            || normalize_person_name(&stored_normalized) == normalized
+        {
+            return Ok(Some(id));
+        }
+    }
+    Ok(None)
 }
 
 #[cfg(test)]

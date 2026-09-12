@@ -13,6 +13,7 @@ use serde::Serialize;
 use sqlx::{Error as SqlxError, SqlitePool};
 use uuid::Uuid;
 
+use crate::database::fields;
 use crate::state::AppState;
 
 /// A client row plus the two numbers the tree needs to render and sort itself.
@@ -44,24 +45,42 @@ impl ClientsRepository {
             FROM clients c
             LEFT JOIN meetings m ON m.client_id = c.id
             GROUP BY c.id, c.display_name, c.notes
-            ORDER BY last_meeting_at IS NULL, last_meeting_at DESC, c.normalized_name
+            ORDER BY last_meeting_at IS NULL, last_meeting_at DESC
             "#,
         )
         .fetch_all(pool)
         .await?;
 
-        Ok(rows
+        let mut clients = rows
             .into_iter()
             .map(
-                |(id, display_name, notes, meeting_count, last_meeting_at)| ClientSummary {
-                    id,
-                    display_name,
-                    notes,
-                    meeting_count,
-                    last_meeting_at,
+                |(id, display_name, notes, meeting_count, last_meeting_at)| {
+                    Ok(ClientSummary {
+                        id,
+                        display_name: fields::open(fields::CLIENT_DISPLAY_NAME, &display_name)?,
+                        notes: fields::open_opt(fields::CLIENT_NOTES, notes)?,
+                        meeting_count,
+                        last_meeting_at,
+                    })
                 },
             )
-            .collect())
+            .collect::<Result<Vec<_>, SqlxError>>()?;
+
+        // The name is the last tiebreaker, and SQL can no longer sort by it:
+        // the lookup column it used to order on is a blind index once the
+        // archive has a password, and hashes sort in no useful order.
+        clients.sort_by(|a, b| {
+            a.last_meeting_at
+                .is_none()
+                .cmp(&b.last_meeting_at.is_none())
+                .then_with(|| b.last_meeting_at.cmp(&a.last_meeting_at))
+                .then_with(|| {
+                    a.display_name
+                        .to_lowercase()
+                        .cmp(&b.display_name.to_lowercase())
+                })
+        });
+        Ok(clients)
     }
 
     pub async fn create(pool: &SqlitePool, display_name: &str) -> Result<ClientSummary, SqlxError> {
@@ -79,8 +98,11 @@ impl ClientsRepository {
              VALUES (?, ?, ?, NULL, ?, ?)",
         )
         .bind(&id)
-        .bind(display_name)
-        .bind(normalize_display_name(display_name))
+        .bind(fields::seal(fields::CLIENT_DISPLAY_NAME, display_name))
+        .bind(fields::lookup(
+            fields::CLIENT_LOOKUP,
+            &normalize_display_name(display_name),
+        ))
         .bind(&now)
         .bind(&now)
         .execute(pool)
@@ -110,8 +132,11 @@ impl ClientsRepository {
         let result = sqlx::query(
             "UPDATE clients SET display_name = ?, normalized_name = ?, updated_at = ? WHERE id = ?",
         )
-        .bind(display_name)
-        .bind(normalize_display_name(display_name))
+        .bind(fields::seal(fields::CLIENT_DISPLAY_NAME, display_name))
+        .bind(fields::lookup(
+            fields::CLIENT_LOOKUP,
+            &normalize_display_name(display_name),
+        ))
         .bind(Utc::now().to_rfc3339())
         .bind(client_id)
         .execute(pool)
@@ -130,7 +155,7 @@ impl ClientsRepository {
     ) -> Result<(), SqlxError> {
         let notes = notes.map(str::trim).filter(|value| !value.is_empty());
         let result = sqlx::query("UPDATE clients SET notes = ?, updated_at = ? WHERE id = ?")
-            .bind(notes)
+            .bind(fields::seal_opt(fields::CLIENT_NOTES, notes))
             .bind(Utc::now().to_rfc3339())
             .bind(client_id)
             .execute(pool)

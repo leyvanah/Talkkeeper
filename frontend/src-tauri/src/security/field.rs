@@ -114,6 +114,37 @@ pub enum FieldError {
     },
 }
 
+/// Seals `plaintext` so that the same text always produces the same
+/// ciphertext under the same key.
+///
+/// Needed by exactly two columns: `transcripts.speaker` and
+/// `person_speakers.speaker_label`. They are joined on
+/// (`t.speaker = ps.speaker_label`), matched on (`WHERE speaker = ?`) and made
+/// unique together with the meeting id, so a random nonce would break the
+/// schema rather than the reader.
+///
+/// What it gives up is equality — the file shows which lines share a speaker.
+/// That is not a loss in practice: any scheme that keeps those joins working
+/// leaks the same fact, including storing a blind index in a second column,
+/// and the count of distinct speakers is legible from the row structure
+/// anyway. What stays hidden is the one thing that matters, the name itself.
+///
+/// The nonce is derived from the plaintext through a keyed hash rather than
+/// drawn at random (the SIV construction). Repeating a nonce under one key is
+/// fatal for GCM when the messages differ — here an equal nonce means an equal
+/// message, which is the property being asked for.
+pub fn seal_deterministic(key: &[u8], field: Field, plaintext: &str) -> String {
+    let mut mac = <Hmac<Sha256> as Mac>::new_from_slice(&nonce_key(key))
+        .expect("HMAC accepts a key of any length");
+    mac.update(field.aad().as_slice());
+    mac.update(b"\0");
+    mac.update(plaintext.as_bytes());
+    let digest = mac.finalize().into_bytes();
+    let mut nonce = [0u8; NONCE_LEN];
+    nonce.copy_from_slice(&digest[..NONCE_LEN]);
+    seal_with_nonce(key, field, plaintext, nonce)
+}
+
 /// Seals `plaintext` for `field`.
 ///
 /// An empty string is sealed like any other: leaving it alone would say "this
@@ -122,7 +153,10 @@ pub enum FieldError {
 pub fn seal(key: &[u8], field: Field, plaintext: &str) -> String {
     let mut nonce = [0u8; NONCE_LEN];
     rand::thread_rng().fill_bytes(&mut nonce);
+    seal_with_nonce(key, field, plaintext, nonce)
+}
 
+fn seal_with_nonce(key: &[u8], field: Field, plaintext: &str, nonce: [u8; NONCE_LEN]) -> String {
     let cipher = Aes256Gcm::new(Key::<Aes256Gcm>::from_slice(key));
     let sealed = cipher
         .encrypt(
@@ -241,6 +275,18 @@ pub fn lookup_value(key: Option<&[u8]>, field: Field, normalized: &str) -> Strin
         Some(key) => blind_index(key, field, normalized),
         None => normalized.to_string(),
     }
+}
+
+/// Separates the deterministic-nonce key from the sealing key, for the same
+/// reason [`index_key`] does: a value derived with one must not be usable
+/// against the other.
+fn nonce_key(key: &[u8]) -> [u8; 32] {
+    let mut mac = <Hmac<Sha256> as Mac>::new_from_slice(key).expect("HMAC accepts any key length");
+    mac.update(b"talkkeeper/deterministic-nonce/v1");
+    let digest = mac.finalize().into_bytes();
+    let mut out = [0u8; 32];
+    out.copy_from_slice(&digest);
+    out
 }
 
 /// Separates the blind-index key from the sealing key. One HMAC, not argon2:
@@ -392,5 +438,44 @@ mod tests {
     fn without_a_key_the_lookup_value_stays_the_normalized_name() {
         let field = Field::new("clients", "normalized_name");
         assert_eq!(lookup_value(None, field, "иванов иван"), "иванов иван");
+    }
+
+    #[test]
+    fn a_deterministic_value_is_stable_and_still_opens() {
+        // What the speaker columns need: two rows written at different times
+        // must compare equal in SQL, and still read back as the name.
+        let field = Field::new("transcripts", "speaker");
+        let first = seal_deterministic(&key(), field, "Анна");
+        let second = seal_deterministic(&key(), field, "Анна");
+        assert_eq!(first, second);
+        assert_eq!(open(&key(), field, &first).unwrap(), "Анна");
+        assert!(!first.contains("Анна"));
+    }
+
+    #[test]
+    fn deterministic_values_differ_by_name_column_and_key() {
+        let speaker = Field::new("transcripts", "speaker");
+        let label = Field::new("person_speakers", "speaker_label");
+        assert_ne!(
+            seal_deterministic(&key(), speaker, "Анна"),
+            seal_deterministic(&key(), speaker, "Борис")
+        );
+        assert_ne!(
+            seal_deterministic(&key(), speaker, "Анна"),
+            seal_deterministic(&key(), label, "Анна")
+        );
+        assert_ne!(
+            seal_deterministic(&key(), speaker, "Анна"),
+            seal_deterministic(&[5u8; 32], speaker, "Анна")
+        );
+    }
+
+    #[test]
+    fn the_deterministic_nonce_key_is_neither_the_archive_key_nor_the_index_key() {
+        // Three keys are derived from one; a refactor that collapses any two of
+        // them would let a value derived for one purpose be tested against
+        // another.
+        assert_ne!(nonce_key(&key()), key());
+        assert_ne!(nonce_key(&key()), index_key(&key()));
     }
 }
