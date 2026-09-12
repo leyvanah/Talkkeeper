@@ -81,7 +81,7 @@ pub async fn show_notification(
     notification: Notification,
     manager_state: State<'_, NotificationManagerState<Wry>>
 ) -> Result<(), String> {
-    log_info!("Showing custom notification: {}", notification.title);
+    log_info!("Showing custom notification: {:?}", notification.notification_type);
 
     let manager_lock = manager_state.read().await;
     if let Some(manager) = manager_lock.as_ref() {
@@ -321,7 +321,7 @@ pub async fn show_recording_started_notification<R: Runtime>(
     manager_state: &NotificationManagerState<R>,
     meeting_name: Option<String>,
 ) -> Result<()> {
-    log_info!("Attempting to show recording started notification for meeting: {:?}", meeting_name);
+    log_info!("Attempting to show the recording-started notification");
 
     // Check if manager is initialized
     let manager_lock = manager_state.read().await;
@@ -371,7 +371,8 @@ pub async fn show_recording_started_notification<R: Runtime>(
                     None => "Recording has started. Please inform others in the meeting that you are recording.".to_string(),
                 };
 
-                log_info!("Using direct Tauri notification fallback: {} - {}", title, body);
+                // The body can name the meeting, so only the fact is logged.
+                log_info!("Using direct Tauri notification fallback for a recording start");
 
                 match app_handle.notification().builder()
                     .title(title)
@@ -379,7 +380,7 @@ pub async fn show_recording_started_notification<R: Runtime>(
                     .show()
                 {
                     Ok(_) => {
-                        log_info!("Successfully showed fallback notification: {}", title);
+                        log_info!("Showed the fallback notification");
                         Ok(())
                     }
                     Err(e) => {
@@ -418,7 +419,7 @@ pub async fn show_recording_stopped_notification<R: Runtime>(
         let title = "Talkkeeper";
         let body = "Recording has stopped";
 
-        log_info!("Using direct Tauri notification fallback: {} - {}", title, body);
+        log_info!("Using direct Tauri notification fallback for a recording stop");
 
         match app_handle.notification().builder()
             .title(title)
@@ -426,7 +427,7 @@ pub async fn show_recording_stopped_notification<R: Runtime>(
             .show()
         {
             Ok(_) => {
-                log_info!("Successfully showed fallback notification: {}", title);
+                log_info!("Showed the fallback notification");
                 Ok(())
             }
             Err(e) => {

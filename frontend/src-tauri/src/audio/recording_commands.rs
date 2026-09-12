@@ -1147,7 +1147,9 @@ async fn stop_recording_inner<R: Runtime>(
 
     info!("ðŸ“¤ Preparing recording metadata for frontend save");
     info!("   folder_path: {:?}", folder_path_str);
-    info!("   meeting_name: {:?}", meeting_name_str);
+    // The name is not logged: it is the meeting's title, which B4 seals in the
+    // database, and whether one was given is all this line ever needed to say.
+    info!("   meeting_name given: {}", meeting_name_str.is_some());
 
     // Database save removed - frontend will handle this after receiving all transcripts
     info!("â„¹ï¸ Skipping database save in Rust - frontend will save after all transcripts received");

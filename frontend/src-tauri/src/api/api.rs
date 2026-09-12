@@ -1188,12 +1188,14 @@ pub async fn api_save_transcript<R: Runtime>(
 
     // Log parsed segments count and first segment details
     if let Some(first_seg) = transcripts_to_save.first() {
-        log_debug!("First parsed segment: text='{}', audio_start_time={:?}, audio_end_time={:?}, duration={:?}, speaker={:?}",
-                   first_seg.text.chars().take(50).collect::<String>(),
+        // The timings are what this line was ever useful for. The text and
+        // the speaker are what B4 seals in the database, and a log file is
+        // not sealed.
+        log_debug!("First parsed segment: {} characters, audio_start_time={:?}, audio_end_time={:?}, duration={:?}",
+                   first_seg.text.chars().count(),
                    first_seg.audio_start_time,
                    first_seg.audio_end_time,
-                   first_seg.duration,
-                   first_seg.speaker);
+                   first_seg.duration);
     }
     let with_speaker = transcripts_to_save.iter().filter(|s| s.speaker.as_ref().map(|x| !x.is_empty()).unwrap_or(false)).count();
     log_info!(

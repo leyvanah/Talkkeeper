@@ -394,7 +394,7 @@ impl RecordingSaver {
         // The encoders themselves are opened by the writing thread, which owns
         // them; here we only know whether there will be any.
         if create_checkpoints {
-            info!("✅ Meeting folder ready for three tracks (audio/mic/system): {meeting_name}");
+            info!("✅ Meeting folder ready for three tracks (audio/mic/system)");
         } else {
             info!("⚠️  Recording without saving audio (auto-save disabled)");
         }

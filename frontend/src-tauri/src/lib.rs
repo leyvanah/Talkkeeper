@@ -114,12 +114,12 @@ async fn start_recording<R: Runtime>(
     system_device_name: Option<String>,
     meeting_name: Option<String>,
 ) -> Result<(), String> {
-    log_info!("ðŸ”¥ CALLED start_recording with meeting: {:?}", meeting_name);
+    log_info!("ðŸ”¥ CALLED start_recording");
     log_info!(
-        "ðŸ“‹ Backend received parameters - mic: {:?}, system: {:?}, meeting: {:?}",
+        "ðŸ“‹ Backend received parameters - mic: {:?}, system: {:?}, meeting given: {}",
         mic_device_name,
         system_device_name,
-        meeting_name
+        meeting_name.is_some()
     );
 
     if is_recording().await {
