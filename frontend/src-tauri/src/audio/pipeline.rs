@@ -2505,3 +2505,191 @@ mod ring_buffer_tests {
         assert_eq!(samples[2], 0.0);
     }
 }
+
+/// A bench, not a test: it runs real speech through the mixing buffer under a
+/// delivery profile taken from the owner's own logs, and prints what came out
+/// the other side.
+///
+/// It exists because the alternative was the owner recording himself, playing
+/// it back and counting clicks by ear after every change. His ear was right
+/// every time — the counts matched the log to within one — but it is not a
+/// thing to spend a person on.
+///
+/// Marked `#[ignore]` and run on demand:
+///
+/// ```text
+/// frontend/src-tauri/scripts/make-bench-speech.ps1      # once
+/// cargo test --lib audio_bench -- --ignored --nocapture
+/// ```
+///
+/// What it cannot do: produce the jitter itself. That is born in the capture
+/// callback on a real device. The profile here is modelled on what the logs
+/// measured — blocks arriving up to ~350ms late and then in a burst that more
+/// than catches up — so the bench measures how the pipeline answers that, not
+/// whether the device does it.
+#[cfg(test)]
+mod audio_bench {
+    use super::*;
+    use std::path::{Path, PathBuf};
+
+    fn bench_dir() -> PathBuf {
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../target/audio-bench")
+            .canonicalize()
+            .expect("run scripts/make-bench-speech.ps1 first")
+    }
+
+    /// The bench files are 48 kHz mono 16-bit PCM, written by our own script,
+    /// so the header is read positionally rather than with a decoder.
+    fn read_wav(path: &Path) -> Vec<f32> {
+        let bytes = std::fs::read(path).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
+        assert_eq!(&bytes[0..4], b"RIFF", "{} is not a WAV", path.display());
+        assert_eq!(bytes.len() % 2, 0);
+        bytes[44..]
+            .chunks_exact(2)
+            .map(|pair| i16::from_le_bytes([pair[0], pair[1]]) as f32 / 32768.0)
+            .collect()
+    }
+
+    fn write_wav(path: &Path, samples: &[f32], sample_rate: u32) {
+        let data_len = samples.len() * 2;
+        let mut out = Vec::with_capacity(44 + data_len);
+        out.extend_from_slice(b"RIFF");
+        out.extend_from_slice(&((36 + data_len) as u32).to_le_bytes());
+        out.extend_from_slice(b"WAVEfmt ");
+        out.extend_from_slice(&16u32.to_le_bytes());
+        out.extend_from_slice(&1u16.to_le_bytes());
+        out.extend_from_slice(&1u16.to_le_bytes());
+        out.extend_from_slice(&sample_rate.to_le_bytes());
+        out.extend_from_slice(&(sample_rate * 2).to_le_bytes());
+        out.extend_from_slice(&2u16.to_le_bytes());
+        out.extend_from_slice(&16u16.to_le_bytes());
+        out.extend_from_slice(b"data");
+        out.extend_from_slice(&(data_len as u32).to_le_bytes());
+        for sample in samples {
+            let clamped = (sample.clamp(-1.0, 1.0) * 32767.0) as i16;
+            out.extend_from_slice(&clamped.to_le_bytes());
+        }
+        std::fs::write(path, out).unwrap();
+    }
+
+    /// How rough the waveform is: the largest step between neighbouring samples
+    /// against the average step. A splice shows up here long before it is
+    /// audible, and this is the same measure used when the capture chain was
+    /// compared against ffmpeg recording the same microphone.
+    fn spikiness(samples: &[f32]) -> f32 {
+        let steps: Vec<f32> = samples.windows(2).map(|w| (w[1] - w[0]).abs()).collect();
+        if steps.is_empty() {
+            return 0.0;
+        }
+        let mean = steps.iter().sum::<f32>() / steps.len() as f32;
+        let max = steps.iter().cloned().fold(0.0f32, f32::max);
+        if mean == 0.0 {
+            0.0
+        } else {
+            max / mean
+        }
+    }
+
+    /// Steps far larger than the signal's own average — one per audible click.
+    /// Counting them is what turns "I think I heard a few" into a number.
+    fn click_count(samples: &[f32]) -> usize {
+        let steps: Vec<f32> = samples.windows(2).map(|w| (w[1] - w[0]).abs()).collect();
+        if steps.is_empty() {
+            return 0;
+        }
+        let mean = steps.iter().sum::<f32>() / steps.len() as f32;
+        let threshold = (mean * 25.0).max(0.02);
+        steps.iter().filter(|step| **step > threshold).count()
+    }
+
+    /// Arrival times modelled on the measured recordings: mostly on time, with
+    /// stretches where the handler falls behind by up to `peak` and then
+    /// delivers in a burst. Deterministic, so two runs compare.
+    /// A plateau, not a sawtooth, because that is what the logs showed: the
+    /// handler falls behind and *stays* behind for seconds at a time, which is
+    /// exactly what defeats a smoothing window that takes the minimum over one.
+    /// A sawtooth dips back to zero every cycle and the minimum never rises.
+    ///
+    /// Seven seconds on time, three seconds behind — the rhythm that produced
+    /// a repair roughly every 6.7s in the owner's 74-second recording.
+    fn jittered_arrival(block_index: usize, block_seconds: f64, peak: f64) -> f64 {
+        let ideal = block_index as f64 * block_seconds;
+        let phase = ideal % 10.0;
+        let behind = if phase >= 7.0 {
+            // Ramp on over 300ms so the plateau starts like a handler getting
+            // busy rather than like a cut.
+            let into = phase - 7.0;
+            peak * (into / 0.3).min(1.0)
+        } else {
+            0.0
+        };
+        ideal + behind
+    }
+
+    #[test]
+    #[ignore = "audio bench: run scripts/make-bench-speech.ps1 first"]
+    fn speech_through_the_mixer_under_measured_jitter() {
+        let dir = bench_dir();
+        let sample_rate = 48_000u32;
+        let mic_source = read_wav(&dir.join("speaker-ru.wav"));
+        let far_source = read_wav(&dir.join("farend-ru.wav"));
+
+        let block = sample_rate as usize / 100; // 10ms, as the device delivers
+        let block_seconds = block as f64 / sample_rate as f64;
+
+        let mut ring = AudioMixerRingBuffer::new(sample_rate, true, true);
+        let mut mixed_mic = Vec::new();
+
+        let blocks = mic_source.len() / block;
+        for index in 0..blocks {
+            let from = index * block;
+            let mic_block = mic_source[from..from + block].to_vec();
+            // The far end plays continuously; it runs out before the near end,
+            // so it repeats rather than falling silent halfway.
+            let far_block: Vec<f32> = (0..block)
+                .map(|offset| far_source[(from + offset) % far_source.len()])
+                .collect();
+
+            // The microphone is the jittered one, as in the logs; the system
+            // capture arrives on time.
+            ring.add_samples(
+                DeviceType::Microphone,
+                mic_block,
+                jittered_arrival(index, block_seconds, 0.35) + block_seconds,
+            );
+            ring.add_samples(
+                DeviceType::System,
+                far_block,
+                (index as f64 + 1.0) * block_seconds,
+            );
+
+            while let Some((mic_window, _system_window)) = ring.extract_window() {
+                mixed_mic.extend_from_slice(&mic_window);
+            }
+        }
+        if let Some((mic_window, _)) = ring.extract_remaining() {
+            mixed_mic.extend_from_slice(&mic_window);
+        }
+
+        write_wav(&dir.join("out-mic.wav"), &mixed_mic, sample_rate);
+
+        let delivered = mic_source.len() as f64 / sample_rate as f64;
+        let produced = mixed_mic.len() as f64 / sample_rate as f64;
+        println!("\n=== speech through the mixer, jitter peaking at 350ms ===");
+        println!("  fed in            {delivered:.3}s");
+        println!("  came out          {produced:.3}s  ({:+.3}s)", produced - delivered);
+        println!("  {}", ring.seam_report());
+        println!("  spikiness  source {:.1}  ->  output {:.1}", spikiness(&mic_source), spikiness(&mixed_mic));
+        println!("  hard steps source {}  ->  output {}", click_count(&mic_source), click_count(&mixed_mic));
+        println!("  written to {}", dir.join("out-mic.wav").display());
+
+        // The bench prints for a person to read, but one thing is worth failing
+        // on: audio must not be invented or lost wholesale.
+        assert!(
+            (produced - delivered).abs() < 1.0,
+            "the pipeline changed the recording's length by {:.3}s",
+            produced - delivered
+        );
+    }
+}
