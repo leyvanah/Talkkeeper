@@ -1192,6 +1192,41 @@ impl AudioCapture {
     }
 }
 
+/// How long the owner was audible under a microphone segment, and how long the
+/// speakers were playing under it.
+///
+/// The two unanswered-window rules are opposites on purpose, and both lean the
+/// same way in the end: an unobserved window counts as the owner speaking and
+/// as the speakers being silent, so a gap in either timeline can only keep a
+/// segment, never lose one. Losing a word he actually said is the one failure
+/// this whole arrangement is not allowed to have.
+fn measure_segment(
+    own_speech: &super::own_speech::WindowTimeline,
+    far_end: &super::own_speech::WindowTimeline,
+    from_ms: f64,
+    to_ms: f64,
+) -> (f64, f64) {
+    (
+        own_speech.active_ms_between(from_ms, to_ms, true),
+        far_end.active_ms_between(from_ms, to_ms, false),
+    )
+}
+
+/// Whether the speakers were playing during this window.
+///
+/// Plain loudness rather than voice detection on purpose: an echo can come
+/// back from anything the machine played, and the only thing this answers is
+/// whether there was anything at all for the microphone to have heard. System
+/// audio arrives as digital loopback, where silence is an exact zero, so the
+/// floor only has to sit above the noise a codec leaves behind.
+fn far_end_is_playing(sys_window: &[f32]) -> bool {
+    if sys_window.is_empty() {
+        return false;
+    }
+    let sum_squares: f64 = sys_window.iter().map(|s| (*s as f64) * (*s as f64)).sum();
+    (sum_squares / sys_window.len() as f64).sqrt() >= 0.005
+}
+
 /// Take the speakers' echo out of one microphone window — unless Windows has
 /// already done it.
 ///
@@ -1255,6 +1290,17 @@ pub struct AudioPipeline {
     /// Who cancelled the echo when the last window went through, so a change
     /// of hands is said once instead of every window. None until the first.
     echo_left_to_windows: Option<bool>,
+    /// The second microphone stream, read only for whether the owner is the
+    /// one speaking. Closed unless he asked for it; see `own_speech`.
+    own_speech: super::own_speech::OwnSpeechGate,
+    /// What that detector said about each window, along the recording's clock.
+    own_speech_timeline: super::own_speech::WindowTimeline,
+    /// Whether the speakers were playing in each window. Without this the
+    /// detector would be free to throw away speech recorded in a silent room,
+    /// where there was never an echo to mistake it for.
+    far_end_timeline: super::own_speech::WindowTimeline,
+    /// Microphone segments dropped as nothing but the speakers coming back.
+    echo_segments_dropped: u64,
     // Recording sender for pre-mixed audio
     recording_sender_for_mixed: Option<mpsc::UnboundedSender<AudioChunk>>,
     // Live per-source level meter output (mic + system) for the frontend visualizer
@@ -1347,6 +1393,10 @@ impl AudioPipeline {
         let ring_buffer = AudioMixerRingBuffer::new(sample_rate, mic_enabled, system_enabled);
         let mixer = ProfessionalAudioMixer::new(sample_rate);
 
+        // Both detector timelines are laid out in the same windows the mixer
+        // hands over, so a slot index is a timestamp.
+        let window_ms = MIXING_WINDOW_MS as f64;
+
         // Echo can only exist when the speakers and the microphone are both
         // live. Whether *we* are the ones to cancel it is a second question,
         // and it cannot be answered here: the pipeline is built before the
@@ -1386,6 +1436,10 @@ impl AudioPipeline {
             mixer,
             echo_canceller,
             echo_left_to_windows: None,
+            own_speech: super::own_speech::OwnSpeechGate::shared(),
+            own_speech_timeline: super::own_speech::WindowTimeline::new(window_ms),
+            far_end_timeline: super::own_speech::WindowTimeline::new(window_ms),
+            echo_segments_dropped: 0,
             recording_sender_for_mixed: None,  // Will be set by manager
             // Live level meter (set by manager); default to no output
             level_sender: None,
@@ -1636,8 +1690,13 @@ impl AudioPipeline {
                             completed.push((DeviceType::System, segment));
                         }
                         for (device_type, segment) in completed {
+                            let segments = if matches!(device_type, DeviceType::Microphone) {
+                                self.without_the_speakers(vec![segment])
+                            } else {
+                                vec![segment]
+                            };
                             Self::enqueue_source_speech(
-                                vec![segment],
+                                segments,
                                 device_type,
                                 &self.transcription_sender,
                                 &mut self.chunk_id_counter,
@@ -1645,6 +1704,12 @@ impl AudioPipeline {
                         }
                         self.mic_vad.advance_inactive_timeline_to(start_seconds);
                         self.system_vad.advance_inactive_timeline_to(start_seconds);
+                        // The recording clock jumped over a break. Leave the
+                        // skipped span unanswered rather than let it read as
+                        // silence from either the owner or the speakers.
+                        let skipped_to_ms = start_seconds * 1000.0;
+                        self.own_speech_timeline.skip_to(skipped_to_ms);
+                        self.far_end_timeline.skip_to(skipped_to_ms);
                     }
 
                     // STEP 2: Mix audio in fixed windows when both streams have sufficient data
@@ -1654,6 +1719,7 @@ impl AudioPipeline {
                             // sees the microphone, so neither the live transcript
                             // nor a later retranscription of mic.mp4 repeats what
                             // the remote person said.
+                            self.observe_window(&sys_window);
                             let mic_window = self.cancel_echo(mic_window, &sys_window);
                             // STEP 3: Convert each source to the working rate,
                             // once, and store it. Everything that reads this
@@ -1667,13 +1733,7 @@ impl AudioPipeline {
                             // separate sample streams + VAD state — so when both
                             // sides talk at once neither is soft-limited into the
                             // other before Whisper, and device_type is exact.
-                            Self::emit_source_speech(
-                                &mut self.mic_vad,
-                                &mic_16k,
-                                DeviceType::Microphone,
-                                &self.transcription_sender,
-                                &mut self.chunk_id_counter,
-                            );
+                            self.emit_microphone_speech(&mic_16k);
                             Self::emit_source_speech(
                                 &mut self.system_vad,
                                 &sys_16k,
@@ -1748,8 +1808,78 @@ impl AudioPipeline {
             "🧵 Capture seams for this recording - {}",
             self.ring_buffer.seam_report()
         );
+        if self.own_speech.is_open() {
+            info!(
+                "🔇 Own-speech detector: {} microphone segments dropped as the speakers coming back, {} detector samples let go",
+                self.echo_segments_dropped,
+                self.own_speech.dropped_samples()
+            );
+        }
         info!("VAD-driven audio pipeline ended");
         Ok(())
+    }
+
+    /// Write down what this window held, for both detectors.
+    ///
+    /// Called once per mixing window, in order, so the two timelines and the
+    /// microphone VAD share one clock without any of them having to read it.
+    fn observe_window(&mut self, sys_window: &[f32]) {
+        self.far_end_timeline
+            .push(Some(far_end_is_playing(sys_window)));
+        let window_ms = MIXING_WINDOW_MS as f64;
+        self.own_speech_timeline
+            .push(self.own_speech.take_window(window_ms));
+    }
+
+    /// Microphone speech, minus whatever was only the speakers coming back.
+    fn emit_microphone_speech(&mut self, samples: &[f32]) {
+        let segments = match self.mic_vad.process_audio(samples) {
+            Ok(segments) => segments,
+            Err(e) => {
+                warn!("⚠️ Microphone VAD error: {}", e);
+                return;
+            }
+        };
+        let segments = self.without_the_speakers(segments);
+        Self::enqueue_source_speech(
+            segments,
+            DeviceType::Microphone,
+            &self.transcription_sender,
+            &mut self.chunk_id_counter,
+        );
+    }
+
+    /// Drop the microphone segments that are nothing but the speakers.
+    ///
+    /// Only the detector can tell the difference, so with it closed nothing is
+    /// dropped: without a second opinion, the safe answer is that everything
+    /// the microphone heard is the owner.
+    fn without_the_speakers(&mut self, segments: Vec<SpeechSegment>) -> Vec<SpeechSegment> {
+        if !self.own_speech.is_open() {
+            return segments;
+        }
+
+        let mut kept = Vec::with_capacity(segments.len());
+        for segment in segments {
+            let from = segment.start_timestamp_ms;
+            let to = segment.end_timestamp_ms;
+            let (own_speech_ms, far_end_ms) =
+                measure_segment(&self.own_speech_timeline, &self.far_end_timeline, from, to);
+
+            if super::own_speech::is_only_the_speakers(own_speech_ms, far_end_ms) {
+                self.echo_segments_dropped += 1;
+                info!(
+                    "🔇 Dropped {:.1}s of microphone at {:.1}s: the speakers played under it for {:.0}ms and the owner was audible for {:.0}ms",
+                    (to - from) / 1000.0,
+                    from / 1000.0,
+                    far_end_ms,
+                    own_speech_ms
+                );
+                continue;
+            }
+            kept.push(segment);
+        }
+        kept
     }
 
     /// The microphone window with the speakers' echo taken out of it.
@@ -1786,16 +1916,11 @@ impl AudioPipeline {
 
         while let Some((mic_window, sys_window)) = self.ring_buffer.extract_remaining() {
             // Same treatment as the live path for the trailing partial window
+            self.observe_window(&sys_window);
             let mic_window = self.cancel_echo(mic_window, &sys_window);
             let mic_16k = self.mic_work.push(&mic_window);
             let sys_16k = self.system_work.push(&sys_window);
-            Self::emit_source_speech(
-                &mut self.mic_vad,
-                &mic_16k,
-                DeviceType::Microphone,
-                &self.transcription_sender,
-                &mut self.chunk_id_counter,
-            );
+            self.emit_microphone_speech(&mic_16k);
             Self::emit_source_speech(
                 &mut self.system_vad,
                 &sys_16k,
@@ -2991,3 +3116,98 @@ mod echo_ownership_tests {
     }
 }
 
+
+#[cfg(test)]
+mod own_speech_gate_tests {
+    use super::*;
+    use crate::audio::own_speech::{is_only_the_speakers, WindowTimeline};
+
+    const WINDOW_MS: f64 = MIXING_WINDOW_MS as f64;
+
+    /// Build the two timelines a stretch of recording would leave behind.
+    /// Each entry covers one 50 ms window.
+    fn timelines(
+        own: &[Option<bool>],
+        far: &[Option<bool>],
+    ) -> (WindowTimeline, WindowTimeline) {
+        let mut own_timeline = WindowTimeline::new(WINDOW_MS);
+        let mut far_timeline = WindowTimeline::new(WINDOW_MS);
+        for value in own {
+            own_timeline.push(*value);
+        }
+        for value in far {
+            far_timeline.push(*value);
+        }
+        (own_timeline, far_timeline)
+    }
+
+    fn verdict(own: &[Option<bool>], far: &[Option<bool>]) -> bool {
+        let (own_timeline, far_timeline) = timelines(own, far);
+        let span_ms = own.len().max(far.len()) as f64 * WINDOW_MS;
+        let (own_ms, far_ms) = measure_segment(&own_timeline, &far_timeline, 0.0, span_ms);
+        is_only_the_speakers(own_ms, far_ms)
+    }
+
+    /// The complaint: a video played through the speakers, came back into the
+    /// microphone, and was written down as the owner talking.
+    #[test]
+    fn four_seconds_of_speakers_with_a_silent_detector_is_echo() {
+        let windows = 80;
+        assert!(verdict(&vec![Some(false); windows], &vec![Some(true); windows]));
+    }
+
+    /// And the case that made the detector necessary: he says a short word
+    /// while the other person is still talking. The driver's canceller takes
+    /// his voice down, but the detector still heard him, and the segment stays.
+    #[test]
+    fn a_word_over_the_speakers_is_his_and_is_kept() {
+        let windows = 80;
+        let mut own = vec![Some(false); windows];
+        for slot in own.iter_mut().skip(20).take(6) {
+            *slot = Some(true);
+        }
+        assert!(!verdict(&own, &vec![Some(true); windows]));
+    }
+
+    /// With nothing playing there is no echo to mistake anything for, however
+    /// quiet the detector was. This is the failure that would cost him words
+    /// in an ordinary session, where the speakers are silent the whole hour.
+    #[test]
+    fn speech_in_a_silent_room_is_kept_however_quiet_the_detector_was() {
+        let windows = 80;
+        assert!(!verdict(&vec![Some(false); windows], &vec![Some(false); windows]));
+    }
+
+    /// A detector that fell behind must not cost him a segment either.
+    #[test]
+    fn a_segment_the_detector_never_saw_is_kept() {
+        let windows = 80;
+        assert!(!verdict(&vec![None; windows], &vec![Some(true); windows]));
+    }
+
+    /// Nor may a gap in what the speakers were doing turn into a drop: an
+    /// unobserved window says the speakers were silent, and silence keeps.
+    #[test]
+    fn a_gap_in_the_far_end_timeline_keeps_the_segment() {
+        let windows = 80;
+        assert!(!verdict(&vec![Some(false); windows], &vec![None; windows]));
+    }
+
+    /// A cough or a chair with the speakers quiet is kept — it is his room.
+    #[test]
+    fn a_short_noise_with_the_speakers_quiet_is_kept() {
+        assert!(!verdict(&vec![Some(false); 8], &vec![Some(false); 8]));
+    }
+
+    #[test]
+    fn a_window_of_playing_audio_is_seen_and_a_silent_one_is_not() {
+        let samples = mixing_window_samples(48_000);
+        let playing: Vec<f32> = (0..samples)
+            .map(|index| (index as f32 / 48_000.0 * 220.0 * std::f32::consts::TAU).sin() * 0.3)
+            .collect();
+
+        assert!(far_end_is_playing(&playing));
+        assert!(!far_end_is_playing(&vec![0.0; samples]));
+        assert!(!far_end_is_playing(&[]));
+    }
+}

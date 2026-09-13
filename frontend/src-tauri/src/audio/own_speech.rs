@@ -166,6 +166,16 @@ impl OwnSpeechGate {
         Self::default()
     }
 
+    /// The one detector this process records through.
+    ///
+    /// A handle rather than a global read: the capture thread pushes into it
+    /// and the pipeline asks it questions, and only one recording runs at a
+    /// time. Tests build their own with `new` and touch nothing shared.
+    pub fn shared() -> Self {
+        static SHARED: std::sync::OnceLock<OwnSpeechGate> = std::sync::OnceLock::new();
+        SHARED.get_or_init(OwnSpeechGate::new).clone()
+    }
+
     /// Say the detector stream has opened, and at what rate.
     ///
     /// Windows picks the rate for this mode itself, and it is not promised to
