@@ -72,6 +72,19 @@ const FORMAT_EXTENSIBLE: u16 = 0xFFFE;
 /// costs nothing next to a recording pipeline and cannot fail that way.
 const POLL_INTERVAL: std::time::Duration = std::time::Duration::from_millis(10);
 
+/// Whether a communications-mode capture is running right now.
+///
+/// Not the same question as the setting: the setting can be on while the mode
+/// is unavailable and capture fell back to the ordinary path. Our own echo
+/// canceller asks this one, because running it on top of the system's would
+/// mean subtracting an echo that has already been subtracted.
+static ACTIVE: AtomicBool = AtomicBool::new(false);
+
+/// Whether Windows is currently cancelling the echo for us.
+pub fn is_active() -> bool {
+    ACTIVE.load(Ordering::Relaxed)
+}
+
 /// A microphone stream Windows has already cleaned.
 pub struct CommsCapture {
     running: Arc<AtomicBool>,
@@ -111,6 +124,7 @@ impl CommsCapture {
 
         match rx.recv_timeout(std::time::Duration::from_secs(5)) {
             Ok(Ok(sample_rate)) => {
+                ACTIVE.store(true, Ordering::Relaxed);
                 info!("🎙️ Microphone opened in communications mode at {sample_rate} Hz — Windows is cancelling the echo");
                 Ok(Self {
                     running,
@@ -139,6 +153,7 @@ impl CommsCapture {
     }
 
     fn shutdown(&mut self) {
+        ACTIVE.store(false, Ordering::Relaxed);
         self.running.store(false, Ordering::Relaxed);
         if let Some(worker) = self.worker.take() {
             let _ = worker.join();

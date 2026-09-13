@@ -46,6 +46,9 @@ static ECHO_CANCELLATION: AtomicBool = AtomicBool::new(true);
 static ECHO_TEXT_FILTER: AtomicBool = AtomicBool::new(false);
 /// Whether everything heard through the speakers is one and the same person.
 static SINGLE_REMOTE_SPEAKER: AtomicBool = AtomicBool::new(true);
+/// Whether the microphone is opened the way a voice call opens it, so
+/// Windows removes the speakers' echo before the samples reach us.
+static SYSTEM_ECHO_CANCELLATION: AtomicBool = AtomicBool::new(true);
 
 /// Current mic gain multiplier (0.5–3.0). Applied after mic loudness normalize.
 pub fn mic_gain() -> f32 {
@@ -72,6 +75,26 @@ pub fn echo_cancellation() -> bool {
 
 fn set_echo_cancellation_runtime(enabled: bool) {
     ECHO_CANCELLATION.store(enabled, Ordering::Relaxed);
+}
+
+/// Whether to let Windows cancel the echo, by opening the microphone in the
+/// communications category — the same request a browser makes for a video
+/// call, and the reason nobody hears themselves echoed back on one.
+///
+/// Measured against our own canceller on the owner's machine: correlation
+/// with what the speakers were playing fell from 0.094 to 0.000, while his
+/// own voice came through louder. The system sits close enough to the
+/// hardware to know the delay exactly; an application never does.
+///
+/// Costs what it is worth knowing about: Windows also applies noise
+/// suppression and automatic gain in this mode, so the recording is cleaner
+/// and more even but less faithful to the room.
+pub fn system_echo_cancellation() -> bool {
+    SYSTEM_ECHO_CANCELLATION.load(Ordering::Relaxed)
+}
+
+fn set_system_echo_cancellation_runtime(enabled: bool) {
+    SYSTEM_ECHO_CANCELLATION.store(enabled, Ordering::Relaxed);
 }
 
 /// Whether to drop microphone text that repeats a recent system phrase.
@@ -126,6 +149,11 @@ pub struct RecordingPreferences {
     /// (default on). Turn it off for calls with several remote participants.
     #[serde(default = "default_single_remote_speaker")]
     pub single_remote_speaker: bool,
+    /// Let Windows cancel the echo instead of doing it ourselves (default
+    /// on, Windows only). Turn it off to record the room as it sounds,
+    /// without the noise suppression and gain that come with the mode.
+    #[serde(default = "default_system_echo_cancellation")]
+    pub system_echo_cancellation: bool,
     #[cfg(target_os = "macos")]
     #[serde(default)]
     pub system_audio_backend: Option<String>,
@@ -147,6 +175,10 @@ fn default_single_remote_speaker() -> bool {
     true
 }
 
+fn default_system_echo_cancellation() -> bool {
+    true
+}
+
 impl Default for RecordingPreferences {
     fn default() -> Self {
         Self {
@@ -160,6 +192,7 @@ impl Default for RecordingPreferences {
             echo_cancellation: true,
             echo_text_filter: false,
             single_remote_speaker: true,
+            system_echo_cancellation: true,
             #[cfg(target_os = "macos")]
             system_audio_backend: Some("coreaudio".to_string()),
         }
@@ -382,6 +415,7 @@ pub async fn load_recording_preferences<R: Runtime>(
     set_echo_cancellation_runtime(prefs.echo_cancellation);
     set_echo_text_filter_runtime(prefs.echo_text_filter);
     set_single_remote_speaker_runtime(prefs.single_remote_speaker);
+    set_system_echo_cancellation_runtime(prefs.system_echo_cancellation);
     info!("Loaded recording preferences: save_folder={:?}, auto_save={}, format={}, mic={:?}, system={:?}, mic_gain={:.2}, system_gain={:.2}",
           prefs.save_folder, prefs.auto_save, prefs.file_format,
            prefs.preferred_mic_device, prefs.preferred_system_device, prefs.mic_gain,
@@ -432,6 +466,7 @@ pub async fn save_recording_preferences<R: Runtime>(
     set_echo_cancellation_runtime(preferences.echo_cancellation);
     set_echo_text_filter_runtime(preferences.echo_text_filter);
     set_single_remote_speaker_runtime(preferences.single_remote_speaker);
+    set_system_echo_cancellation_runtime(preferences.system_echo_cancellation);
     info!("Successfully persisted recording preferences to disk");
 
     // Save backend preference to global config

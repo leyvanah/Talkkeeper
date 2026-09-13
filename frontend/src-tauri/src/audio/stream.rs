@@ -24,6 +24,13 @@ pub enum StreamBackend {
     CoreAudio {
         task: Option<tokio::task::JoinHandle<()>>,
     },
+    /// The microphone as a voice call opens it, with Windows cancelling the
+    /// speakers' echo before we see the samples (Windows only).
+    #[cfg(target_os = "windows")]
+    WasapiComms {
+        capture: Option<super::capture::CommsCapture>,
+        task: Option<tokio::task::JoinHandle<()>>,
+    },
 }
 
 // SAFETY: While Stream doesn't implement Send, we ensure it's only accessed
@@ -100,8 +107,85 @@ impl AudioStream {
         #[cfg(not(target_os = "macos"))]
         let backend_name = "CPAL";
 
+        // The microphone, and only the microphone, can come from Windows
+        // already cleaned of echo. The system channel must stay raw: it is
+        // the other person's voice, and cancelling it would be cancelling
+        // the recording.
+        #[cfg(target_os = "windows")]
+        if device_type == DeviceType::Microphone
+            && super::recording_preferences::system_echo_cancellation()
+        {
+            match Self::create_comms_stream(
+                device.clone(),
+                state.clone(),
+                device_type.clone(),
+                recording_sender.clone(),
+            )
+            .await
+            {
+                Ok(stream) => return Ok(stream),
+                // Falling back rather than failing: an older Windows, a
+                // driver without the mode, or a device in use elsewhere
+                // should cost echo cancellation, not the recording.
+                Err(error) => warn!(
+                    "Communications capture unavailable, falling back to ordinary capture: {}",
+                    error
+                ),
+            }
+        }
+
         info!("🎵 Stream: Using CPAL backend ({}) for device: {}", backend_name, device.name);
         Self::create_cpal_stream(device, state, device_type, recording_sender).await
+    }
+
+    /// Open the microphone the way a voice call does (Windows only).
+    ///
+    /// Samples cross a channel on their way to the shared capture
+    /// processor, for a plain reason: the rate Windows picks for this mode
+    /// is only known once the stream is open, and the processor has to be
+    /// built with it. One copy per 10ms packet is not worth designing
+    /// around.
+    #[cfg(target_os = "windows")]
+    async fn create_comms_stream(
+        device: Arc<AudioDevice>,
+        state: Arc<RecordingState>,
+        device_type: DeviceType,
+        recording_sender: Option<mpsc::UnboundedSender<super::recording_state::AudioChunk>>,
+    ) -> Result<Self> {
+        let (tx, mut rx) = mpsc::unbounded_channel::<Vec<f32>>();
+        let comms = super::capture::CommsCapture::start(move |samples| {
+            let _ = tx.send(samples.to_vec());
+        })?;
+
+        let sample_rate = comms.sample_rate();
+        // Windows hands this mode over already mixed to one channel.
+        let capture = AudioCapture::new(
+            device.clone(),
+            state.clone(),
+            sample_rate,
+            1,
+            device_type,
+            recording_sender,
+        );
+
+        let task = tokio::spawn(async move {
+            while let Some(chunk) = rx.recv().await {
+                capture.process_audio_data(&chunk);
+            }
+        });
+
+        info!(
+            "✅ Stream: microphone opened in communications mode at {} Hz for {}",
+            sample_rate, device.name
+        );
+
+        Ok(Self {
+            device,
+            backend: StreamBackend::WasapiComms {
+                capture: Some(comms),
+                task: Some(task),
+            },
+        })
     }
 
     /// Create a CPAL-based stream (ScreenCaptureKit on macOS)
@@ -367,6 +451,19 @@ impl AudioStream {
                 }
                 info!("Stream paused, now dropping to release callbacks");
                 drop(stream);
+            }
+            #[cfg(target_os = "windows")]
+            StreamBackend::WasapiComms { capture, task } => {
+                // The capture thread first: it owns the channel's sender,
+                // so dropping it ends the forwarding task on its own rather
+                // than by abort, and no packet is lost on the way out.
+                if let Some(capture) = capture {
+                    capture.stop();
+                }
+                if let Some(task) = task {
+                    task.abort();
+                }
+                info!("Communications capture stopped");
             }
             #[cfg(target_os = "macos")]
             StreamBackend::CoreAudio { task } => {

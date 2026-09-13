@@ -1314,13 +1314,27 @@ impl AudioPipeline {
         let ring_buffer = AudioMixerRingBuffer::new(sample_rate, mic_enabled, system_enabled);
         let mixer = ProfessionalAudioMixer::new(sample_rate);
 
+        // Windows may already have done this, and far better: when the
+        // microphone is opened the way a voice call opens it, the driver
+        // cancels the echo with access to the played signal and the exact
+        // delay. Running ours on top would subtract an echo that is no longer
+        // there, taking some of the owner's voice with it.
+        #[cfg(target_os = "windows")]
+        let system_is_cancelling = super::capture::wasapi_comms::is_active();
+        #[cfg(not(target_os = "windows"))]
+        let system_is_cancelling = false;
+
         // Echo can only exist when the speakers and the microphone are both live
         let echo_canceller = if mic_enabled
             && system_enabled
+            && !system_is_cancelling
             && super::recording_preferences::echo_cancellation()
         {
             super::echo_cancel::EchoCanceller::new(sample_rate)
         } else {
+            if system_is_cancelling {
+                info!("🔇 Echo cancellation left to Windows; the built-in canceller stays out of the way");
+            }
             None
         };
 
