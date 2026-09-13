@@ -3009,6 +3009,155 @@ mod audio_bench {
         );
     }
 
+    /// The whole hybrid, end to end, on the scene it exists for.
+    ///
+    /// The owner is talking over a far end coming out of his speakers. The
+    /// microphone we record is the ordinary one, so his voice is all there and
+    /// so is the echo; the detector stream is what Windows hands a video call,
+    /// which holds his voice and nothing of the far end. What has to come out
+    /// of it: the stretch where only the speakers were playing survives as no
+    /// microphone speech at all, and the stretch where he spoke over them
+    /// survives whole.
+    ///
+    /// This is the case a plain canceller cannot settle. 35 dB of suppression
+    /// still leaves something, and something is enough for a recognizer to
+    /// make words out of and hand to the wrong speaker.
+    #[test]
+    #[ignore = "audio bench: run scripts/make-bench-speech.ps1 first"]
+    fn the_speakers_do_not_become_the_owners_words() {
+        let dir = bench_dir();
+        let sample_rate = 48_000u32;
+        let near = read_wav(&dir.join("speaker-ru.wav"));
+        let far = read_wav(&dir.join("farend-ru.wav"));
+
+        let block = sample_rate as usize / 100;
+        let block_seconds = block as f64 / sample_rate as f64;
+        let echo_delay = (0.120 * sample_rate as f64) as usize;
+        let echo_gain = 0.35f32;
+        // Nothing but the speakers for the first stretch, so the two halves of
+        // the claim can be measured apart from each other.
+        let near_starts = sample_rate as usize * 8;
+        let near_starts_ms = near_starts as f64 / sample_rate as f64 * 1000.0;
+
+        let mut ring = AudioMixerRingBuffer::new(sample_rate, true, true);
+        let mut canceller = EchoCanceller::new(sample_rate).expect("canceller for 48 kHz");
+        let gate = crate::audio::own_speech::OwnSpeechGate::new();
+        gate.opened(sample_rate);
+
+        let mut own_timeline =
+            crate::audio::own_speech::WindowTimeline::new(MIXING_WINDOW_MS as f64);
+        let mut far_timeline =
+            crate::audio::own_speech::WindowTimeline::new(MIXING_WINDOW_MS as f64);
+        let mut mic_work = WorkingTrack::new(
+            "microphone",
+            sample_rate,
+            mixing_window_samples(sample_rate),
+            None,
+        )
+        .expect("working track");
+        let mut vad = ContinuousVadProcessor::new_with_thresholds(WORKING_SAMPLE_RATE, 800, 0.20, 0.10)
+            .expect("VAD");
+
+        let mut segments = Vec::new();
+        let blocks = near.len() / block;
+        for index in 0..blocks {
+            let from = index * block;
+            let arrival = (index + 1) as f64 * block_seconds;
+
+            let far_block: Vec<f32> = (0..block)
+                .map(|offset| far[(from + offset) % far.len()])
+                .collect();
+            // The owner's own voice, as the detector stream carries it: the
+            // far end is not in there at all, by construction.
+            let own_block: Vec<f32> = (0..block)
+                .map(|offset| {
+                    let at = from + offset;
+                    if at >= near_starts {
+                        near[at]
+                    } else {
+                        0.0
+                    }
+                })
+                .collect();
+            let mic_block: Vec<f32> = (0..block)
+                .map(|offset| {
+                    let at = from + offset;
+                    let echo = if at >= echo_delay {
+                        far[(at - echo_delay) % far.len()] * echo_gain
+                    } else {
+                        0.0
+                    };
+                    echo + own_block[offset]
+                })
+                .collect();
+
+            gate.push(&own_block);
+            ring.add_samples(DeviceType::Microphone, mic_block, arrival);
+            ring.add_samples(DeviceType::System, far_block, arrival);
+
+            while let Some((mic_window, sys_window)) = ring.extract_window() {
+                far_timeline.push(Some(far_end_is_playing(&sys_window)));
+                own_timeline.push(gate.take_window(MIXING_WINDOW_MS as f64));
+
+                let cleaned = canceller.process(&mic_window, &sys_window);
+                let mic_16k = mic_work.push(&cleaned);
+                if let Ok(found) = vad.process_audio(&mic_16k) {
+                    segments.extend(found);
+                }
+            }
+        }
+        if let Ok(found) = vad.flush() {
+            segments.extend(found);
+        }
+
+        let mut echo_kept_ms = 0.0;
+        let mut own_kept_ms = 0.0;
+        // What the recording would have carried without the detector, so the
+        // bench says whether it caught anything at all rather than passing
+        // because there was nothing to catch.
+        let mut echo_without_detector_ms = 0.0;
+        let mut dropped = 0usize;
+        for segment in &segments {
+            let from = segment.start_timestamp_ms;
+            let to = segment.end_timestamp_ms;
+            if to <= near_starts_ms {
+                echo_without_detector_ms += to - from;
+            }
+            let (own_ms, far_ms) = measure_segment(&own_timeline, &far_timeline, from, to);
+            let is_echo = crate::audio::own_speech::is_only_the_speakers(own_ms, far_ms);
+            if is_echo {
+                dropped += 1;
+                continue;
+            }
+            if to <= near_starts_ms {
+                echo_kept_ms += to - from;
+            } else {
+                own_kept_ms += to - from;
+            }
+        }
+
+        println!("\n=== the speakers, and the owner talking over them ===");
+        println!("  {}", ring.seam_report());
+        println!("  microphone segments found:  {}", segments.len());
+        println!("  dropped as the speakers:    {dropped}");
+        println!("  echo the canceller left:    {echo_without_detector_ms:.0} ms");
+        println!("  echo kept as his speech:    {echo_kept_ms:.0} ms");
+        println!("  his own speech kept:        {own_kept_ms:.0} ms");
+
+        assert!(
+            echo_without_detector_ms > 500.0,
+            "the canceller left nothing for the detector to catch, so this bench proves nothing"
+        );
+        assert!(
+            echo_kept_ms < 500.0,
+            "{echo_kept_ms:.0} ms of the speakers survived as the owner's own speech"
+        );
+        assert!(
+            own_kept_ms > 3_000.0,
+            "only {own_kept_ms:.0} ms of his own speech was kept; the detector is eating him"
+        );
+    }
+
 }
 
 #[cfg(test)]
