@@ -78,27 +78,19 @@ pub struct AudioLevels {
 /// break is repaired while it is still the current one.
 const TIMELINE_OBSERVATION_SECONDS: f64 = 2.0;
 
-/// The smallest sustained shortfall worth repairing. Below this the streams
-/// stay aligned closely enough that filling would cost more than it fixes.
+/// The smallest sustained shortfall worth reporting at all.
 ///
-/// Raised from 100ms after measuring what the old value actually caught. The
-/// clock is read at the end of the capture handler, so a handler held up for
-/// longer than the observation window is indistinguishable from a device that
-/// stopped: both show blocks arriving late and no audio in between. The two
-/// were told apart by size instead. In two recordings every false repair came
-/// in at 102, 104 and 142ms — barely over the old threshold — while the audio
-/// itself arrived complete, 100.1% and 101.4% of the recording's own length,
-/// with zero windows short on the way out. A device that genuinely stops does
-/// not stop for a tenth of a second. Three hundred milliseconds is twice the
-/// largest false repair measured and still well inside the 400ms the buffer
-/// holds, which matters: a fill larger than the buffer is partly dropped again
-/// at the overflow check below.
+/// No longer a repair threshold — nothing between this and
+/// [`TIMELINE_RESET_SECONDS`] is filled any more (see the fill decision in
+/// `add_samples`). It is what a shortfall has to reach before it counts as a
+/// reading rather than noise, which is how a real break grows to the point of
+/// resetting the timelines.
 ///
-/// What this gives up: a real dropout shorter than 300ms is no longer filled,
-/// so the two channels stay that much apart until the next reset. That is the
-/// right way round — the owner hears every unnecessary repair as a click in
-/// their own voice, and hears nothing at all from channels a fifth of a second
-/// out of step.
+/// Raised from 100ms because the clock is read at the end of the capture
+/// handler: anything that holds the handler up makes a block look late, and at
+/// 100ms the delivery jitter of an ordinary recording cleared that line
+/// constantly. Measured false readings ran to 142ms, so the line sits at twice
+/// that.
 const TIMELINE_GAP_SECONDS: f64 = 0.3;
 
 /// A sustained shortfall this large is no longer a gap to fill but a stream
@@ -312,7 +304,8 @@ impl AudioMixerRingBuffer {
             DeviceType::Microphone => &mut self.mic_timeline,
             _ => &mut self.system_timeline,
         };
-        let gap_seconds = if timeline.started {
+        let already_running = timeline.started;
+        let gap_seconds = if already_running {
             timeline.sustained_gap(timestamp, lag_seconds)
         } else {
             // The very first block of a source is where the two streams are
@@ -338,7 +331,32 @@ impl AudioMixerRingBuffer {
             discontinuity_start = Some(start);
         }
 
-        let fill = if discontinuity_start.is_some() {
+        // Silence is written into a source's timeline for exactly one reason:
+        // to line its first block up against the other source, which starts at
+        // its own moment. Nothing after that is repaired.
+        //
+        // What used to be repaired here was a shortfall measured against the
+        // clock, and three recordings showed there is no shortfall to repair.
+        // Each delivered *more* audio than it had running time — 100.1%, 101.4%
+        // and 104% — with no samples dropped and not one window short on the way
+        // out. Blocks simply arrive unevenly: a third of a second late, then in
+        // a burst that more than catches up. A jitter that deep is not
+        // distinguishable from a device that stopped, so repairing it meant
+        // splicing silence into speech every time the delivery bunched up, and
+        // the owner heard every splice as a click in his own voice. Raising the
+        // threshold only made the splices bigger: the shortfall accumulates
+        // until whatever the threshold is cuts it off.
+        //
+        // The two things the repair existed for are still handled. A source
+        // starting late is lined up on its first block, above. A break large
+        // enough to matter — five seconds — resets both timelines instead,
+        // which is the honest response to a stream that has to be picked up
+        // again rather than patched.
+        //
+        // What is given up: a genuine dropout between 0.3s and 5s leaves the
+        // channels that far apart until the next reset. Across three recordings
+        // that never once happened, while the jitter happened in all of them.
+        let fill = if discontinuity_start.is_some() || already_running {
             0
         } else {
             (gap_seconds.max(0.0) * sample_rate).round() as usize
@@ -2155,11 +2173,18 @@ mod ring_buffer_tests {
         received
     }
 
-    /// A source that really stops still has to line up afterwards, otherwise
-    /// the two channels drift apart. The stall shows in every reading that
-    /// follows it, which is what tells it apart from a late thread.
+    /// A stall in the middle of a recording is no longer patched, and this is
+    /// the test that says so on purpose rather than by omission.
+    ///
+    /// It used to be: a sustained shortfall was filled with silence so the two
+    /// channels stayed lined up. Three measured recordings showed the shortfall
+    /// was almost never real — every one of them delivered more audio than it
+    /// had running time — so the patch fired on delivery jitter and the owner
+    /// heard each patch as a click. Jitter of that depth cannot be told from a
+    /// real stall, so the choice is which mistake to make, and silence spliced
+    /// into speech is the one that is audible.
     #[test]
-    fn a_sustained_gap_is_still_padded() {
+    fn a_stall_in_the_middle_is_left_alone() {
         let sample_rate = 48_000u32;
         let mut buffer = AudioMixerRingBuffer::new(sample_rate, true, false);
         let mut clock = 0.0;
@@ -2170,12 +2195,33 @@ mod ring_buffer_tests {
         received.extend(run_blocks(&mut buffer, sample_rate, &mut clock, 300, 0.0));
 
         let silence = received.iter().filter(|value| **value == 0.0).count();
-        let expected = (0.4 * sample_rate as f64) as usize;
-        assert!(
-            silence >= expected * 9 / 10,
-            "expected about {} silent samples for the stall, found {}",
-            expected,
+        assert_eq!(
+            silence, 0,
+            "{} samples of silence spliced in for a stall that is no longer patched",
             silence
+        );
+    }
+
+    /// The break that is still acted on: large enough that the stream has to be
+    /// picked up again rather than patched. Both timelines reset, and the audio
+    /// after it is kept.
+    #[test]
+    fn a_break_of_seconds_resets_the_timelines() {
+        let sample_rate = 48_000u32;
+        let mut buffer = AudioMixerRingBuffer::new(sample_rate, true, false);
+        let mut clock = 0.0;
+
+        let mut received = run_blocks(&mut buffer, sample_rate, &mut clock, 200, 0.0);
+        clock += 6.0;
+        received.extend(run_blocks(&mut buffer, sample_rate, &mut clock, 300, 0.0));
+
+        assert_eq!(buffer.timeline_resets, 1, "the break should have reset once");
+        let silence = received.iter().filter(|value| **value == 0.0).count();
+        assert_eq!(silence, 0, "a reset picks the stream up, it does not pad it");
+        assert!(
+            received.len() >= sample_rate as usize * 4,
+            "the audio on both sides of the break should survive, got {} samples",
+            received.len()
         );
     }
 
