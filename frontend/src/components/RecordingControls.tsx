@@ -52,6 +52,19 @@ interface RecordingControlsProps {
   meetingName?: string;
 }
 
+/** Removes a Tauri listener without letting a failed removal take the app
+ *  down. Nothing useful can be done about it — the listener is either gone
+ *  already or will go with the window — and an exception here surfaces as an
+ *  unhandled runtime error over the whole interface. */
+function safelyUnsubscribe(unsubscribe: (() => void) | undefined) {
+  if (typeof unsubscribe !== 'function') return;
+  try {
+    unsubscribe();
+  } catch (error) {
+    console.warn('Failed to remove a recording event listener:', error);
+  }
+}
+
 export const RecordingControls: React.FC<RecordingControlsProps> = ({
   isRecording,
   barHeights,
@@ -376,6 +389,13 @@ export const RecordingControls: React.FC<RecordingControlsProps> = ({
   useEffect(() => {
     console.log('Setting up recording event listeners');
     let unsubscribes: (() => void)[] = [];
+    // Subscribing is asynchronous and unmounting is not, so the cleanup can
+    // run while the three listens are still in flight. Without this flag
+    // those listeners were registered after the component was gone and
+    // never removed, and a later unsubscribe reached into an entry Tauri no
+    // longer had — the `handlerId` of undefined the owner kept seeing when
+    // stopping a recording.
+    let cancelled = false;
 
     const setupListeners = async () => {
       try {
@@ -446,6 +466,17 @@ export const RecordingControls: React.FC<RecordingControlsProps> = ({
           setSpeechDetected(true);
         });
 
+        if (cancelled) {
+          // Unmounted while we were subscribing: undo it here, because the
+          // cleanup has already been and gone.
+          [
+            transcriptErrorUnsubscribe,
+            transcriptionErrorUnsubscribe,
+            speechDetectedUnsubscribe
+          ].forEach(safelyUnsubscribe);
+          return;
+        }
+
         unsubscribes = [
           transcriptErrorUnsubscribe,
           transcriptionErrorUnsubscribe,
@@ -461,11 +492,12 @@ export const RecordingControls: React.FC<RecordingControlsProps> = ({
 
     return () => {
       console.log('Cleaning up recording event listeners');
-      unsubscribes.forEach(unsubscribe => {
-        if (unsubscribe && typeof unsubscribe === 'function') {
-          unsubscribe();
-        }
-      });
+      cancelled = true;
+      // Emptied before unsubscribing, so a second cleanup cannot remove the
+      // same listener twice.
+      const pending = unsubscribes;
+      unsubscribes = [];
+      pending.forEach(safelyUnsubscribe);
     };
   }, [onRecordingStop, onTranscriptionError]);
 
