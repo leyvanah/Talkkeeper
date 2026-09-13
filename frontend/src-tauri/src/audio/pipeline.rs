@@ -1192,6 +1192,36 @@ impl AudioCapture {
     }
 }
 
+/// Take the speakers' echo out of one microphone window — unless Windows has
+/// already done it.
+///
+/// Separated from the pipeline so the choice can be tested on its own: the
+/// defect this guards against is not in the arithmetic but in *when* the
+/// question is asked. `system_is_cancelling` is a live fact about the capture
+/// stream, and the stream opens after the pipeline is built.
+fn cancel_echo_window(
+    canceller: Option<&mut super::echo_cancel::EchoCanceller>,
+    left_to_windows: &mut Option<bool>,
+    system_is_cancelling: bool,
+    mic_window: Vec<f32>,
+    sys_window: &[f32],
+) -> Vec<f32> {
+    // Said once, when the answer changes, rather than twenty times a second.
+    if *left_to_windows != Some(system_is_cancelling) {
+        *left_to_windows = Some(system_is_cancelling);
+        if system_is_cancelling {
+            info!("🔇 Echo cancellation left to Windows; the built-in canceller stays out of the way");
+        } else if canceller.is_some() {
+            info!("🔇 Cancelling the speakers' echo out of the microphone ourselves");
+        }
+    }
+
+    match canceller {
+        Some(canceller) if !system_is_cancelling => canceller.process(&mic_window, sys_window),
+        _ => mic_window,
+    }
+}
+
 /// VAD-driven audio processing pipeline
 /// Uses Voice Activity Detection to segment speech in real-time and send only speech to Whisper
 pub struct AudioPipeline {
@@ -1222,6 +1252,9 @@ pub struct AudioPipeline {
     /// and the saved tracks. None when only one source is recording, when the
     /// owner turned it off, or when the canceller could not start.
     echo_canceller: Option<super::echo_cancel::EchoCanceller>,
+    /// Who cancelled the echo when the last window went through, so a change
+    /// of hands is said once instead of every window. None until the first.
+    echo_left_to_windows: Option<bool>,
     // Recording sender for pre-mixed audio
     recording_sender_for_mixed: Option<mpsc::UnboundedSender<AudioChunk>>,
     // Live per-source level meter output (mic + system) for the frontend visualizer
@@ -1314,27 +1347,19 @@ impl AudioPipeline {
         let ring_buffer = AudioMixerRingBuffer::new(sample_rate, mic_enabled, system_enabled);
         let mixer = ProfessionalAudioMixer::new(sample_rate);
 
-        // Windows may already have done this, and far better: when the
-        // microphone is opened the way a voice call opens it, the driver
-        // cancels the echo with access to the played signal and the exact
-        // delay. Running ours on top would subtract an echo that is no longer
-        // there, taking some of the owner's voice with it.
-        #[cfg(target_os = "windows")]
-        let system_is_cancelling = super::capture::wasapi_comms::is_active();
-        #[cfg(not(target_os = "windows"))]
-        let system_is_cancelling = false;
-
-        // Echo can only exist when the speakers and the microphone are both live
+        // Echo can only exist when the speakers and the microphone are both
+        // live. Whether *we* are the ones to cancel it is a second question,
+        // and it cannot be answered here: the pipeline is built before the
+        // capture streams open, so asking whether Windows is cancelling gets
+        // the answer from before this recording started - which is always
+        // "no". Build the canceller whenever the owner asked for one, and ask
+        // the live question once per window instead. See `cancel_echo`.
         let echo_canceller = if mic_enabled
             && system_enabled
-            && !system_is_cancelling
             && super::recording_preferences::echo_cancellation()
         {
             super::echo_cancel::EchoCanceller::new(sample_rate)
         } else {
-            if system_is_cancelling {
-                info!("🔇 Echo cancellation left to Windows; the built-in canceller stays out of the way");
-            }
             None
         };
 
@@ -1360,6 +1385,7 @@ impl AudioPipeline {
             ring_buffer,
             mixer,
             echo_canceller,
+            echo_left_to_windows: None,
             recording_sender_for_mixed: None,  // Will be set by manager
             // Live level meter (set by manager); default to no output
             level_sender: None,
@@ -1628,10 +1654,7 @@ impl AudioPipeline {
                             // sees the microphone, so neither the live transcript
                             // nor a later retranscription of mic.mp4 repeats what
                             // the remote person said.
-                            let mic_window = match self.echo_canceller.as_mut() {
-                                Some(canceller) => canceller.process(&mic_window, &sys_window),
-                                None => mic_window,
-                            };
+                            let mic_window = self.cancel_echo(mic_window, &sys_window);
                             // STEP 3: Convert each source to the working rate,
                             // once, and store it. Everything that reads this
                             // recording later — VAD now, recognition and
@@ -1729,6 +1752,32 @@ impl AudioPipeline {
         Ok(())
     }
 
+    /// The microphone window with the speakers' echo taken out of it.
+    ///
+    /// Windows does this far better than we can when the microphone was opened
+    /// the way a voice call opens it: the driver has the signal that was played
+    /// and the exact delay it came back with, and an application has neither.
+    /// So while Windows is doing the job ours stands aside — subtracting an
+    /// echo that is already gone takes some of the owner's voice with it.
+    ///
+    /// The question is asked here, once per window, rather than when the
+    /// pipeline is built: the capture stream opens afterwards, and until it
+    /// has, the answer is always the stale "no" from before the recording.
+    fn cancel_echo(&mut self, mic_window: Vec<f32>, sys_window: &[f32]) -> Vec<f32> {
+        #[cfg(target_os = "windows")]
+        let system_is_cancelling = super::capture::wasapi_comms::is_active();
+        #[cfg(not(target_os = "windows"))]
+        let system_is_cancelling = false;
+
+        cancel_echo_window(
+            self.echo_canceller.as_mut(),
+            &mut self.echo_left_to_windows,
+            system_is_cancelling,
+            mic_window,
+            sys_window,
+        )
+    }
+
     fn flush_remaining_audio(&mut self) -> Result<()> {
         info!(
             "Flushing remaining audio from pipeline (processed {} chunks)",
@@ -1737,10 +1786,7 @@ impl AudioPipeline {
 
         while let Some((mic_window, sys_window)) = self.ring_buffer.extract_remaining() {
             // Same treatment as the live path for the trailing partial window
-            let mic_window = match self.echo_canceller.as_mut() {
-                Some(canceller) => canceller.process(&mic_window, &sys_window),
-                None => mic_window,
-            };
+            let mic_window = self.cancel_echo(mic_window, &sys_window);
             let mic_16k = self.mic_work.push(&mic_window);
             let sys_16k = self.system_work.push(&sys_window);
             Self::emit_source_speech(
@@ -2839,3 +2885,109 @@ mod audio_bench {
     }
 
 }
+
+#[cfg(test)]
+mod echo_ownership_tests {
+    use super::*;
+    use crate::audio::echo_cancel::EchoCanceller;
+
+    const SAMPLE_RATE: u32 = 48_000;
+
+    /// One 50 ms window of far-end sound and the echo it leaves in the mic.
+    fn window(index: usize) -> (Vec<f32>, Vec<f32>) {
+        let samples = mixing_window_samples(SAMPLE_RATE);
+        let start = index * samples;
+        let far: Vec<f32> = (0..samples)
+            .map(|offset| {
+                let t = (start + offset) as f32 / SAMPLE_RATE as f32;
+                (t * 440.0 * std::f32::consts::TAU).sin() * 0.5
+            })
+            .collect();
+        // What comes back through the room: quieter, and later.
+        let mic: Vec<f32> = far.iter().map(|s| s * 0.35).collect();
+        (mic, far)
+    }
+
+    /// While Windows is cancelling, our canceller must not touch a sample.
+    ///
+    /// Subtracting an echo that is already gone is not free: it takes some of
+    /// the owner's voice with it, and worst of all exactly when he talks over
+    /// the speakers.
+    #[test]
+    fn windows_cancelling_leaves_the_microphone_untouched() {
+        let mut canceller = EchoCanceller::new(SAMPLE_RATE).expect("canceller for 48 kHz");
+        let mut left_to_windows = None;
+
+        for index in 0..10 {
+            let (mic, far) = window(index);
+            let out = cancel_echo_window(
+                Some(&mut canceller),
+                &mut left_to_windows,
+                true,
+                mic.clone(),
+                &far,
+            );
+            assert_eq!(out, mic, "window {index} came back changed");
+        }
+    }
+
+    /// And when Windows is not, ours is the only one left to do it.
+    #[test]
+    fn our_canceller_runs_when_windows_does_not() {
+        let mut canceller = EchoCanceller::new(SAMPLE_RATE).expect("canceller for 48 kHz");
+        let mut left_to_windows = None;
+        let mut changed = false;
+
+        for index in 0..10 {
+            let (mic, far) = window(index);
+            let out = cancel_echo_window(
+                Some(&mut canceller),
+                &mut left_to_windows,
+                false,
+                mic.clone(),
+                &far,
+            );
+            changed |= out != mic;
+        }
+
+        assert!(changed, "the microphone came back untouched with nobody else cancelling");
+    }
+
+    /// The defect this guards against: the answer used to be frozen when the
+    /// pipeline was built, and the pipeline is built *before* the capture
+    /// stream opens. Whatever Windows was doing by the time audio arrived, the
+    /// frozen answer was always the stale "no" from before the recording.
+    #[test]
+    fn the_answer_is_taken_per_window_not_once_at_the_start() {
+        let mut canceller = EchoCanceller::new(SAMPLE_RATE).expect("canceller for 48 kHz");
+        let mut left_to_windows = None;
+
+        // The stream has not opened yet: nobody else is cancelling.
+        for index in 0..4 {
+            let (mic, far) = window(index);
+            let _ = cancel_echo_window(
+                Some(&mut canceller),
+                &mut left_to_windows,
+                false,
+                mic,
+                &far,
+            );
+        }
+        assert_eq!(left_to_windows, Some(false));
+
+        // It opens in communications mode, and from here Windows has it.
+        for index in 4..8 {
+            let (mic, far) = window(index);
+            let out = cancel_echo_window(
+                Some(&mut canceller),
+                &mut left_to_windows,
+                true,
+                mic.clone(),
+                &far,
+            );
+            assert_eq!(out, mic, "window {index} was cancelled twice");
+        }
+        assert_eq!(left_to_windows, Some(true));
+    }
+}
+
