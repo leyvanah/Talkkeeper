@@ -888,7 +888,9 @@
     "echoTextFilterDescription": "If a microphone phrase repeats what just came out of the speakers word for word, it is left out of the transcript. Only needed when echo cancellation is unavailable: it cannot tell an echo from a deliberate repetition, so it is off by default.",
     "singleRemoteSpeakerTitle": "One-to-one conversation",
     "singleRemoteSpeakerDescription": "The microphone is you and the speakers are the other person. Voices are not clustered: the two capture channels already know who is who, and clustering tends to split one person into several “Speakers”. Turn this off for calls with several remote participants.",
-    "tabSecurity": "Security"
+    "tabSecurity": "Security",
+    "systemEchoCancellationTitle": "Let Windows cancel the echo",
+    "systemEchoCancellationDescription": "Opens the microphone the way a browser opens it for a video call: Windows removes the speakers' echo before the sound reaches this app. That is why the other person on a call never hears themselves echoed back. It also turns on noise suppression and automatic levelling, so the recording is cleaner and more even but less faithful to the room. Turn it off to record the sound as it is."
   },
   "person": {
     "overviewPrompt": "Create a concise profile overview of this person based only on their meeting records. Cover recurring topics, decisions, commitments, collaboration patterns, and recent changes. Cite the relevant meeting title and date for every substantive point, and clearly distinguish recorded facts from inference. Answer in English.",
