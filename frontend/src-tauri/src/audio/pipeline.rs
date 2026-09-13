@@ -182,6 +182,14 @@ struct AudioMixerRingBuffer {
     system_received_samples: u64,
     mic_inserted_samples: u64,
     system_inserted_samples: u64,
+    /// How many separate repairs those inserted samples were spread across.
+    ///
+    /// The total alone cannot be acted on: a second of silence appended once at
+    /// the end is inaudible, while the same second split into ten fills lands in
+    /// the middle of speech ten times. Counting the events is what tells those
+    /// apart, and it is what the owner hears.
+    mic_fill_events: u64,
+    system_fill_events: u64,
     timeline_resets: u64,
 }
 
@@ -231,6 +239,8 @@ impl AudioMixerRingBuffer {
             system_received_samples: 0,
             mic_inserted_samples: 0,
             system_inserted_samples: 0,
+            mic_fill_events: 0,
+            system_fill_events: 0,
             timeline_resets: 0,
         }
     }
@@ -318,9 +328,33 @@ impl AudioMixerRingBuffer {
         if is_mic {
             self.mic_inserted_samples += fill as u64;
             self.mic_received_samples += samples.len() as u64;
+            if fill > 0 {
+                self.mic_fill_events += 1;
+            }
         } else {
             self.system_inserted_samples += fill as u64;
             self.system_received_samples += samples.len() as u64;
+            if fill > 0 {
+                self.system_fill_events += 1;
+            }
+        }
+
+        // One line per repair, at info, because the owner hears each one of
+        // these as a break in their own voice and debug is not written to the
+        // log file. Eleven lines for a minute of recording is a diagnosis; it
+        // says whether the shortfall grows steadily (a rate mismatch) or comes
+        // in bursts (a handler that was held up), which have different cures.
+        if fill > 0 {
+            info!(
+                "🔇 Filled a {:.0}ms gap in the {} timeline at {:.1}s of the recording \
+                 (shortfall {:.0}ms, raw lag {:.0}ms, {} samples buffered)",
+                fill as f64 / sample_rate * 1000.0,
+                if is_mic { "microphone" } else { "system" },
+                timestamp,
+                gap_seconds * 1000.0,
+                lag_seconds * 1000.0,
+                buffered_end,
+            );
         }
 
         let buffer = match device_type {
@@ -432,14 +466,16 @@ impl AudioMixerRingBuffer {
     fn seam_report(&self) -> String {
         let seconds = |samples: u64| samples as f64 / self.sample_rate;
         format!(
-            "mic delivered {:.3}s (+{:.3}s silence inserted, {} windows padded), \
-             system delivered {:.3}s (+{:.3}s silence inserted, {} windows padded), \
+            "mic delivered {:.3}s (+{:.3}s silence inserted over {} fills, {} windows padded), \
+             system delivered {:.3}s (+{:.3}s silence inserted over {} fills, {} windows padded), \
              samples dropped: {}, timeline resets: {}",
             seconds(self.mic_received_samples),
             seconds(self.mic_inserted_samples),
+            self.mic_fill_events,
             self.padded_mic_windows,
             seconds(self.system_received_samples),
             seconds(self.system_inserted_samples),
+            self.system_fill_events,
             self.padded_system_windows,
             self.dropped_samples,
             self.timeline_resets
