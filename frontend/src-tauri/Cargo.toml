@@ -194,6 +194,15 @@ windows = { version = "0.61", features = [
     "Win32_Foundation",
     "Win32_Security_Cryptography",
     "Win32_System_WinRT",
+    # Capturing the microphone the way a voice call does, so Windows applies
+    # its own echo cancellation before we ever see the samples. Measured on
+    # this machine: the far end drops from clearly audible to nothing.
+    "Win32_Devices_FunctionDiscovery",
+    "Win32_Media_Audio",
+    "Win32_Media_Audio_Endpoints",
+    "Win32_System_Com",
+    "Win32_System_Com_StructuredStorage",
+    "Win32_System_Variant",
 ] }
 # The async-operation type the Hello call returns. `windows` depends on it but
 # does not re-export it, so naming the type needs the crate directly.
