@@ -76,11 +76,30 @@ pub struct AudioLevels {
 /// stream rather than a late thread. Long enough that no burst of work inside
 /// the app can hold every reading in the window high, short enough that a real
 /// break is repaired while it is still the current one.
-const TIMELINE_OBSERVATION_SECONDS: f64 = 1.0;
+const TIMELINE_OBSERVATION_SECONDS: f64 = 2.0;
 
 /// The smallest sustained shortfall worth repairing. Below this the streams
 /// stay aligned closely enough that filling would cost more than it fixes.
-const TIMELINE_GAP_SECONDS: f64 = 0.1;
+///
+/// Raised from 100ms after measuring what the old value actually caught. The
+/// clock is read at the end of the capture handler, so a handler held up for
+/// longer than the observation window is indistinguishable from a device that
+/// stopped: both show blocks arriving late and no audio in between. The two
+/// were told apart by size instead. In two recordings every false repair came
+/// in at 102, 104 and 142ms — barely over the old threshold — while the audio
+/// itself arrived complete, 100.1% and 101.4% of the recording's own length,
+/// with zero windows short on the way out. A device that genuinely stops does
+/// not stop for a tenth of a second. Three hundred milliseconds is twice the
+/// largest false repair measured and still well inside the 400ms the buffer
+/// holds, which matters: a fill larger than the buffer is partly dropped again
+/// at the overflow check below.
+///
+/// What this gives up: a real dropout shorter than 300ms is no longer filled,
+/// so the two channels stay that much apart until the next reset. That is the
+/// right way round — the owner hears every unnecessary repair as a click in
+/// their own voice, and hears nothing at all from channels a fifth of a second
+/// out of step.
+const TIMELINE_GAP_SECONDS: f64 = 0.3;
 
 /// A sustained shortfall this large is no longer a gap to fill but a stream
 /// that has to be picked up again from where it now is.
@@ -2145,13 +2164,13 @@ mod ring_buffer_tests {
         let mut buffer = AudioMixerRingBuffer::new(sample_rate, true, false);
         let mut clock = 0.0;
 
-        // The device stalls for 200 ms, and keeps delivering afterwards.
+        // The device stalls for 400 ms, and keeps delivering afterwards.
         let mut received = run_blocks(&mut buffer, sample_rate, &mut clock, 1, 0.0);
-        clock += 0.2;
-        received.extend(run_blocks(&mut buffer, sample_rate, &mut clock, 150, 0.0));
+        clock += 0.4;
+        received.extend(run_blocks(&mut buffer, sample_rate, &mut clock, 300, 0.0));
 
         let silence = received.iter().filter(|value| **value == 0.0).count();
-        let expected = (0.2 * sample_rate as f64) as usize;
+        let expected = (0.4 * sample_rate as f64) as usize;
         assert!(
             silence >= expected * 9 / 10,
             "expected about {} silent samples for the stall, found {}",
@@ -2178,6 +2197,39 @@ mod ring_buffer_tests {
 
         let silence = received.iter().filter(|value| **value == 0.0).count();
         assert_eq!(silence, 0, "{} samples of silence spliced into the stream", silence);
+    }
+
+    /// The failure the owner actually heard: not one late block, but a handler
+    /// held up again and again for longer than the observation window, so every
+    /// reading in it agreed on a shortfall that was never in the audio.
+    ///
+    /// Modelled on the measured recording — blocks arriving 120ms late for two
+    /// and a half seconds, twice, with the stream itself continuous throughout.
+    /// Under the old 100ms threshold this spliced silence into the middle of
+    /// speech; the recording it came from delivered 101.4% of its own length
+    /// with nothing dropped, so there was nothing to repair.
+    #[test]
+    fn a_handler_held_up_for_seconds_is_not_mistaken_for_a_gap() {
+        let sample_rate = 48_000u32;
+        let mut buffer = AudioMixerRingBuffer::new(sample_rate, true, false);
+        let mut clock = 0.0;
+
+        let mut received = run_blocks(&mut buffer, sample_rate, &mut clock, 200, 0.0);
+        for _ in 0..2 {
+            // 250 blocks of 10ms, each reading pushed 120ms late by the work
+            // ahead of it. No audio is missing: every block is delivered whole.
+            for _ in 0..250 {
+                received.extend(run_blocks(&mut buffer, sample_rate, &mut clock, 1, 0.12));
+            }
+            received.extend(run_blocks(&mut buffer, sample_rate, &mut clock, 200, 0.0));
+        }
+
+        let silence = received.iter().filter(|value| **value == 0.0).count();
+        assert_eq!(
+            silence, 0,
+            "{} samples of silence spliced into a stream that never broke",
+            silence
+        );
     }
 
     #[test]
