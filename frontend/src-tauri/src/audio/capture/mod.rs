@@ -23,7 +23,7 @@ pub use system::{
 pub use core_audio::{CoreAudioCapture, CoreAudioStream};
 
 #[cfg(target_os = "windows")]
-pub use wasapi_comms::CommsCapture;
+pub use wasapi_comms::{CommsCapture, CommsRole};
 
 // Re-export backend configuration
 pub use backend_config::{

@@ -85,10 +85,28 @@ pub fn is_active() -> bool {
     ACTIVE.load(Ordering::Relaxed)
 }
 
+/// What a communications stream was opened for.
+///
+/// The same capture serves two jobs that must not be confused. Opened to *be*
+/// the microphone, it means Windows is cleaning what gets recorded, and our
+/// own canceller has to stand down. Opened as a detector, the recorded
+/// microphone is the ordinary one and still has the echo in it, so our
+/// canceller is the only one working on it and must keep running.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum CommsRole {
+    /// This stream is the microphone the recording is made from.
+    Recorded,
+    /// This stream is read only for whether the owner is speaking.
+    Detector,
+}
+
 /// A microphone stream Windows has already cleaned.
 pub struct CommsCapture {
     running: Arc<AtomicBool>,
     worker: Option<JoinHandle<()>>,
+    /// Set only by the stream that claimed `ACTIVE`, so a detector closing
+    /// down cannot announce that Windows stopped cleaning the microphone.
+    holds_active: bool,
     /// The rate Windows chose. The caller has to know: it is not guaranteed to
     /// be the rate the ordinary path would have used.
     sample_rate: u32,
@@ -101,6 +119,14 @@ impl CommsCapture {
     /// caller falls back to the ordinary capture path, and a silent downgrade
     /// would leave the owner with echo and no idea why.
     pub fn start<F>(on_samples: F) -> Result<Self>
+    where
+        F: FnMut(&[f32]) + Send + 'static,
+    {
+        Self::start_as(CommsRole::Recorded, on_samples)
+    }
+
+    /// The same capture, opened for a stated purpose. See `CommsRole`.
+    pub fn start_as<F>(role: CommsRole, on_samples: F) -> Result<Self>
     where
         F: FnMut(&[f32]) + Send + 'static,
     {
@@ -124,11 +150,15 @@ impl CommsCapture {
 
         match rx.recv_timeout(std::time::Duration::from_secs(5)) {
             Ok(Ok(sample_rate)) => {
-                ACTIVE.store(true, Ordering::Relaxed);
-                info!("🎙️ Microphone opened in communications mode at {sample_rate} Hz — Windows is cancelling the echo");
+                let holds_active = role == CommsRole::Recorded;
+                if holds_active {
+                    ACTIVE.store(true, Ordering::Relaxed);
+                    info!("🎙️ Microphone opened in communications mode at {sample_rate} Hz — Windows is cancelling the echo");
+                }
                 Ok(Self {
                     running,
                     worker: Some(worker),
+                    holds_active,
                     sample_rate,
                 })
             }
@@ -153,7 +183,9 @@ impl CommsCapture {
     }
 
     fn shutdown(&mut self) {
-        ACTIVE.store(false, Ordering::Relaxed);
+        if self.holds_active {
+            ACTIVE.store(false, Ordering::Relaxed);
+        }
         self.running.store(false, Ordering::Relaxed);
         if let Some(worker) = self.worker.take() {
             let _ = worker.join();

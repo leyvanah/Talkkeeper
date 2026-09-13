@@ -4,6 +4,9 @@ pub mod audio_processing;
 pub mod decoder;
 pub mod echo_cancel;
 pub mod echo_filter;
+// Telling the owner apart from the speakers with a second microphone stream
+// that is read but never recorded.
+pub mod own_speech;
 pub mod encode;
 pub mod encrypted_audio;
 pub mod ffmpeg;
