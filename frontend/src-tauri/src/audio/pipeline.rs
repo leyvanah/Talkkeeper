@@ -217,11 +217,16 @@ impl AudioMixerRingBuffer {
     ) -> Self {
         let window_size_samples = ((sample_rate as f32 * window_ms / 1000.0) as usize).max(1);
 
-        // CRITICAL FIX: Increase max buffer to 400ms for system audio stability
-        // System audio (especially Core Audio on macOS) can have significant jitter
-        // due to sample-by-sample streaming → batching → channel transmission
-        // Accounts for: RNNoise buffering + Core Audio jitter + processing delays
-        let max_buffer_size = window_size_samples * 8;  // 400ms (was 200ms)
+        // Holds a second, and it has to outlast the patience in `can_mix`.
+        //
+        // A source is waited on for twelve windows before its partner is mixed
+        // without it; a cap below that would throw away the very samples being
+        // waited for, at the overflow check, and count them as dropped. The cap
+        // is what a source may run ahead by while the other catches up, so it
+        // is set well clear of the 600ms of waiting: jitter this deep is
+        // ordinary here, and a recording is not a live monitor — latency costs
+        // nothing, discarded audio cannot be recovered.
+        let max_buffer_size = window_size_samples * 20;  // 1s (was 400ms)
 
         info!(
             "🔊 Ring buffer initialized: window={}ms ({} samples), max={}ms ({} samples)",
@@ -438,8 +443,20 @@ impl AudioMixerRingBuffer {
         // Mixing without one of the sources fills its window with silence, so
         // the lead has to be long enough that only a source which has really
         // stopped can reach it - not one whose blocks are momentarily late.
+        //
+        // Six windows was 300ms, and the measured delivery jitter reaches
+        // 346ms. While the timeline still padded a late source, its buffer was
+        // topped up with silence and this line was never reached; with that
+        // padding gone the jitter walked straight past it — 57 windows in one
+        // recording came out half empty, against none before. A half-empty
+        // microphone window paired with a full system one is worse than a late
+        // one: the echo canceller subtracts the far end from the wrong place,
+        // and the other speaker's voice stays in the owner's channel.
+        //
+        // Twelve windows is 600ms: past the jitter with room to spare, and
+        // still far short of the five seconds that count as a real break.
         let surviving_source_ahead =
-            self.mic_buffer.len().max(self.system_buffer.len()) >= self.window_size_samples * 6;
+            self.mic_buffer.len().max(self.system_buffer.len()) >= self.window_size_samples * 12;
         all_ready || surviving_source_ahead
     }
 
@@ -2340,7 +2357,10 @@ mod ring_buffer_tests {
         let ring = AudioMixerRingBuffer::new(48_000, true, true);
 
         assert_eq!(ring.window_size_samples, 2_400);
-        assert_eq!(ring.max_buffer_size, 19_200);
+        // A second, and deliberately more than the twelve windows `can_mix`
+        // waits before mixing a source's partner without it: a cap below that
+        // would discard the samples being waited for.
+        assert_eq!(ring.max_buffer_size, 48_000);
     }
 
     #[test]
