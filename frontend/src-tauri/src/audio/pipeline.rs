@@ -485,7 +485,11 @@ impl AudioMixerRingBuffer {
 
             padded
         } else {
-            // No mic data - return silence
+            // A window with no microphone data at all is the same silence as
+            // a half-filled one, only more of it, so it counts the same way.
+            // It did not use to be counted, which made `windows padded: 0`
+            // read as "nothing was substituted" when whole windows were.
+            self.padded_mic_windows += 1;
             vec![0.0; self.window_size_samples]
         };
 
@@ -508,7 +512,8 @@ impl AudioMixerRingBuffer {
 
             padded
         } else {
-            // No system data - return silence
+            // Counted for the same reason as the microphone side above.
+            self.padded_system_windows += 1;
             vec![0.0; self.window_size_samples]
         };
 
@@ -2530,6 +2535,7 @@ mod ring_buffer_tests {
 #[cfg(test)]
 mod audio_bench {
     use super::*;
+    use crate::audio::echo_cancel::EchoCanceller;
     use std::path::{Path, PathBuf};
 
     fn bench_dir() -> PathBuf {
@@ -2692,4 +2698,130 @@ mod audio_bench {
             produced - delivered
         );
     }
+
+    /// Energy of a span, for comparing what is left of the far end.
+    fn energy(samples: &[f32]) -> f64 {
+        samples.iter().map(|s| (*s as f64) * (*s as f64)).sum()
+    }
+
+    /// The complaint this bench exists for: a video playing through the
+    /// speakers was transcribed as the owner's own speech.
+    ///
+    /// The scene is the one he made by hand — the far end plays, its echo
+    /// reaches the microphone, and he talks over it — under the delivery jitter
+    /// the logs measured. What it checks is not the canceller in isolation
+    /// (there is a unit test for that) but the canceller fed by the mixer:
+    /// echo suppression works on *aligned* pairs, and alignment is exactly what
+    /// broke. A window of microphone half filled with silence against a full
+    /// window of system audio puts the two out of step, and the far end's voice
+    /// survives in the near channel.
+    #[test]
+    #[ignore = "audio bench: run scripts/make-bench-speech.ps1 first"]
+    fn the_far_end_does_not_survive_in_the_near_channel() {
+        let dir = bench_dir();
+        let sample_rate = 48_000u32;
+        let near = read_wav(&dir.join("speaker-ru.wav"));
+        let far = read_wav(&dir.join("farend-ru.wav"));
+
+        let block = sample_rate as usize / 100;
+        let block_seconds = block as f64 / sample_rate as f64;
+        // The speakers are about 120ms away through the air and the room, and
+        // what returns is far quieter than what was played.
+        let echo_delay = (0.120 * sample_rate as f64) as usize;
+        let echo_gain = 0.35f32;
+        // The owner stays quiet for the first stretch, so what is left of the
+        // far end there can be measured on its own.
+        let near_starts = sample_rate as usize * 8;
+
+        let mut ring = AudioMixerRingBuffer::new(sample_rate, true, true);
+        let mut canceller = EchoCanceller::new(sample_rate).expect("canceller for 48 kHz");
+
+        let mut cleaned = Vec::new();
+        let mut echo_only = Vec::new();
+        let mut held: Vec<(Vec<f32>, f64)> = Vec::new();
+
+        let blocks = near.len() / block;
+        for index in 0..blocks {
+            let from = index * block;
+
+            let far_block: Vec<f32> = (0..block)
+                .map(|offset| far[(from + offset) % far.len()])
+                .collect();
+            let mic_block: Vec<f32> = (0..block)
+                .map(|offset| {
+                    let at = from + offset;
+                    let echo = if at >= echo_delay {
+                        far[(at - echo_delay) % far.len()] * echo_gain
+                    } else {
+                        0.0
+                    };
+                    let own = if at >= near_starts { near[at] } else { 0.0 };
+                    echo + own
+                })
+                .collect();
+
+            echo_only.extend(mic_block.iter().take(if from < near_starts { block } else { 0 }));
+
+            // A busy handler does not deliver late, it does not deliver at all
+            // and then delivers everything at once. Holding the blocks back and
+            // releasing them in a burst is what empties the buffer on the other
+            // side — modelling only the timestamp leaves the buffer full and
+            // misses the failure entirely.
+            held.push((mic_block, jittered_arrival(index, block_seconds, 0.35) + block_seconds));
+            // 350ms of held blocks every three seconds: the measured lag,
+            // delivered the way a busy handler delivers it.
+            let busy = (index as f64 * block_seconds) % 3.0 >= 2.65;
+            if !busy {
+                for (block, arrival) in held.drain(..) {
+                    ring.add_samples(DeviceType::Microphone, block, arrival);
+                }
+            }
+
+            ring.add_samples(
+                DeviceType::System,
+                far_block,
+                (index as f64 + 1.0) * block_seconds,
+            );
+
+            while let Some((mic_window, system_window)) = ring.extract_window() {
+                cleaned.extend_from_slice(&canceller.process(&mic_window, &system_window));
+            }
+        }
+        for (block, arrival) in held.drain(..) {
+            ring.add_samples(DeviceType::Microphone, block, arrival);
+        }
+        while let Some((mic_window, system_window)) = ring.extract_window() {
+            cleaned.extend_from_slice(&canceller.process(&mic_window, &system_window));
+        }
+
+        write_wav(&dir.join("out-aec.wav"), &cleaned, sample_rate);
+
+        // Measure over the stretch where only the far end was playing: whatever
+        // is left there is echo the canceller did not remove.
+        let quiet = near_starts.min(cleaned.len());
+        let before = energy(&echo_only[..quiet.min(echo_only.len())]);
+        let after = energy(&cleaned[..quiet]);
+        let erle = 10.0 * (before / after.max(1e-12)).log10();
+
+        // And the owner's own voice has to still be there afterwards.
+        let own_after = energy(&cleaned[quiet..]);
+        let own_before = energy(&near[near_starts..near.len().min(cleaned.len())]);
+        let kept = 10.0 * (own_after / own_before.max(1e-12)).log10();
+
+        println!("\n=== far end through the speakers, owner talking over it ===");
+        println!("  {}", ring.seam_report());
+        println!("  echo left in the near channel: ERLE {erle:.1} dB");
+        println!("  owner's own voice afterwards:  {kept:+.1} dB against the source");
+        println!("  written to {}", dir.join("out-aec.wav").display());
+
+        assert!(
+            erle > 10.0,
+            "only {erle:.1} dB of the far end was removed; it would be transcribed as the owner"
+        );
+        assert!(
+            kept > -6.0,
+            "the owner's own voice lost {kept:.1} dB, the canceller is eating the near end"
+        );
+    }
+
 }
