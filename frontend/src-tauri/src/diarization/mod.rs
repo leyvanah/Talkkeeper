@@ -21,6 +21,7 @@ pub mod models;
 pub mod online;
 pub mod voiceprint;
 
+use crate::database::fields;
 use anyhow::{anyhow, Result};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
@@ -772,7 +773,13 @@ pub async fn diarize_meeting(
             .map_err(|e| format!("Failed to read meeting: {}", e))?;
 
     let (folder_path, title) = match meeting {
-        Some((f, t)) => (f, Some(t)),
+        Some((f, t)) => (
+            f,
+            Some(
+                fields::open(fields::MEETING_TITLE, &t)
+                    .map_err(|e| format!("Failed to read meeting: {}", e))?,
+            ),
+        ),
         None => (None, None),
     };
 
@@ -945,6 +952,21 @@ pub async fn diarize_meeting(
     .await
     .map_err(|e| format!("Failed to read transcripts: {}", e))?;
 
+    // The live label is compared against "you" below and written back as a
+    // name, so it has to be read in the clear here.
+    let rows: Vec<(String, Option<f64>, Option<f64>, Option<String>)> = rows
+        .into_iter()
+        .map(|(id, start, end, speaker)| {
+            Ok((
+                id,
+                start,
+                end,
+                fields::open_opt(fields::TRANSCRIPT_SPEAKER, speaker)?,
+            ))
+        })
+        .collect::<Result<Vec<_>, sqlx::Error>>()
+        .map_err(|e| format!("Failed to read transcripts: {}", e))?;
+
     // Work out which of the freshly-clustered speakers is the local user.
     //
     // Live diarization could tell, because it saw mic-vs-system levels before
@@ -1114,7 +1136,10 @@ pub async fn diarize_meeting(
         .map_err(|e| format!("Failed to begin speaker update: {e}"))?;
     for (id, label) in updates {
         sqlx::query("UPDATE transcripts SET speaker = ? WHERE id = ?")
-            .bind(label)
+            .bind(fields::seal_joinable_opt(
+                fields::TRANSCRIPT_SPEAKER,
+                label.as_deref(),
+            ))
             .bind(id)
             .execute(&mut *tx)
             .await

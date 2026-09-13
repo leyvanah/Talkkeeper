@@ -1312,7 +1312,7 @@
     "print": "Print",
     "settingsTitle": "Password and keys",
     "settingsDescription": "A password locks the archive of recordings and transcripts. The encryption key is stored wrapped in the password, so changing the password does not rewrite the archive.",
-    "scopeNotice": "The password gates access through the app, and the recording files on disk are encrypted: without the password no player or anything else will open them. Meeting titles, client names and transcript text in the database are still stored in the clear — encrypting those comes in the next stage.",
+    "scopeNotice": "The password closes the way in through the application, the recordings on disk are encrypted, and so are the meeting titles, names, transcripts and summaries in the database. Without the password not a word can be read out of the files. What stays visible is the shape of the archive: how many meetings, when each was recorded, how long it ran and who it is filed under.",
     "enableProtection": "Turn protection on",
     "protectionOn": "The archive is protected by a password",
     "wantRecoveryCode": "Issue a recovery code",
@@ -1372,6 +1372,14 @@
     "errorQuickDeclined": "Windows Hello did not recognise you.",
     "errorQuickUnavailable": "Windows Hello is not set up on this computer.",
     "errorQuickKeyUnusable": "Quick unlock no longer works - your Windows account has probably changed. Sign in with your password and turn it on again.",
-    "errorQuickKeySetupFailed": "Windows would not tie a key to this account, so quick unlock was not turned on. Your password and recovery code still work as before; the details are in the application log."
+    "errorQuickKeySetupFailed": "Windows would not tie a key to this account, so quick unlock was not turned on. Your password and recovery code still work as before; the details are in the application log.",
+    "fieldsTitle": "Entries in the database",
+    "fieldsCounting": "Counting values…",
+    "fieldsNone": "There is nothing in the database to encrypt yet.",
+    "fieldsAllSealed": "Everything is encrypted: {count, plural, one {# value} other {# values}}.",
+    "fieldsPartly": "Encrypted: {sealed}. Not yet encrypted: {plaintext}.",
+    "encryptFields": "Encrypt the entries in the database",
+    "encryptFieldsHint": "A copy of the database is saved next to it first (meeting_minutes.before-encryption.sqlite) — once, and never overwritten. The conversion itself is a single transaction: it either finishes or the database is left exactly as it was.",
+    "noticeFieldsEncrypted": "The entries in the database are encrypted."
   }
 }

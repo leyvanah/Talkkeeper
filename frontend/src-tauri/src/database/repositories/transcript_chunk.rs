@@ -1,5 +1,6 @@
 // src/database/repo/transcript_chunks.rs
 
+use crate::database::fields;
 use chrono::Utc;
 use log::info as log_info;
 use sqlx::SqlitePool;
@@ -35,7 +36,7 @@ impl TranscriptChunksRepository {
             "#
         )
         .bind(meeting_id)
-        .bind(text)
+        .bind(fields::seal(fields::CHUNK_TEXT, text))
         .bind(model)
         .bind(model_name)
         .bind(chunk_size)

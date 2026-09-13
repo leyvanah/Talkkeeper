@@ -1,4 +1,6 @@
 use crate::api::{TranscriptSearchResult, TranscriptSegment};
+use crate::database::fields;
+use futures_util::TryStreamExt;
 use chrono::{DateTime, Duration, SecondsFormat, Utc};
 use sqlx::{Connection, Error as SqlxError, SqlitePool};
 use tracing::{error, info};
@@ -33,7 +35,7 @@ impl TranscriptsRepository {
              VALUES (?, ?, ?, ?, ?, ?)",
         )
         .bind(&meeting_id)
-        .bind(meeting_title)
+        .bind(fields::seal(fields::MEETING_TITLE, meeting_title))
         .bind(recording_started_at)
         .bind(now)
         .bind(&folder_path)
@@ -42,7 +44,9 @@ impl TranscriptsRepository {
         .await;
 
         if let Err(e) = result {
-            error!("Failed to create meeting '{}': {}", meeting_title, e);
+            // The title is not logged: from B4 on it is sealed in the
+            // database, and a log file is not.
+            error!("Failed to create meeting {}: {}", meeting_id, e);
             transaction.rollback().await?;
             return Err(e);
         }
@@ -66,12 +70,15 @@ impl TranscriptsRepository {
             )
             .bind(&transcript_id)
             .bind(&meeting_id)
-            .bind(&segment.text)
+            .bind(fields::seal(fields::TRANSCRIPT_TEXT, &segment.text))
             .bind(timestamp)
             .bind(segment.audio_start_time)
             .bind(segment.audio_end_time)
             .bind(segment.duration)
-            .bind(&segment.speaker)
+            .bind(fields::seal_joinable_opt(
+                fields::TRANSCRIPT_SPEAKER,
+                segment.speaker.as_deref(),
+            ))
             .execute(&mut *transaction)
             .await;
 
@@ -101,87 +108,107 @@ impl TranscriptsRepository {
     /// generated summary, and its title. Returns one result per matching
     /// meeting (deduplicated), preferring a transcript snippet for context,
     /// then a summary snippet, then the title.
+    ///
+    /// Matched in Rust rather than by `LIKE`, for the two reasons written up
+    /// over [`PeopleRepository::global_search`](super::person::PeopleRepository::global_search):
+    /// the columns are sealed from B4 on, and SQLite's `lower()` only folds
+    /// ASCII, so this is also the first version that matches a Russian word
+    /// typed in a different case. Rows are streamed, so the whole archive is
+    /// never held in memory at once.
     pub async fn search_transcripts(
         pool: &SqlitePool,
         query: &str,
     ) -> Result<Vec<TranscriptSearchResult>, SqlxError> {
-        if query.trim().is_empty() {
+        let query = query.trim();
+        if query.is_empty() {
             return Ok(Vec::new());
         }
 
-        let search_query = format!("%{}%", query.to_lowercase());
+        let needle = query.to_lowercase();
 
         let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
         let mut results: Vec<TranscriptSearchResult> = Vec::new();
 
         // 1. Transcript text matches — richest context (a snippet around the hit).
-        let transcript_rows = sqlx::query_as::<_, (String, String, String, String)>(
-            "SELECT m.id, m.title, t.transcript, t.timestamp
-             FROM meetings m
-             JOIN transcripts t ON m.id = t.meeting_id
-             WHERE LOWER(t.transcript) LIKE ?
-             ORDER BY m.updated_at DESC",
-        )
-        .bind(&search_query)
-        .fetch_all(pool)
-        .await?;
+        {
+            let mut rows = sqlx::query_as::<_, (String, String, String, String)>(
+                "SELECT m.id, m.title, t.transcript, t.timestamp
+                 FROM meetings m
+                 JOIN transcripts t ON m.id = t.meeting_id
+                 ORDER BY m.updated_at DESC",
+            )
+            .fetch(pool);
 
-        for (id, title, transcript, timestamp) in transcript_rows {
-            if seen.insert(id.clone()) {
-                let match_context = Self::get_match_context(&transcript, query);
-                results.push(TranscriptSearchResult {
-                    id,
-                    title,
-                    match_context,
-                    timestamp,
-                });
+            while let Some((id, title, transcript, timestamp)) = rows.try_next().await? {
+                let transcript = fields::open(fields::TRANSCRIPT_TEXT, &transcript)?;
+                if !transcript.to_lowercase().contains(&needle) {
+                    continue;
+                }
+                if seen.insert(id.clone()) {
+                    let title = fields::open(fields::MEETING_TITLE, &title)?;
+                    let match_context = Self::get_match_context(&transcript, query);
+                    results.push(TranscriptSearchResult {
+                        id,
+                        title,
+                        match_context,
+                        timestamp,
+                    });
+                }
             }
         }
 
         // 2. Summary matches — for meetings not already matched via transcript.
-        let summary_rows = sqlx::query_as::<_, (String, String, String, String)>(
-            "SELECT m.id, m.title, s.result, m.updated_at
-             FROM meetings m
-             JOIN summary_processes s ON m.id = s.meeting_id
-             WHERE s.result IS NOT NULL AND LOWER(s.result) LIKE ?
-             ORDER BY m.updated_at DESC",
-        )
-        .bind(&search_query)
-        .fetch_all(pool)
-        .await?;
+        {
+            let mut rows = sqlx::query_as::<_, (String, String, String, String)>(
+                "SELECT m.id, m.title, s.result, m.updated_at
+                 FROM meetings m
+                 JOIN summary_processes s ON m.id = s.meeting_id
+                 WHERE s.result IS NOT NULL
+                 ORDER BY m.updated_at DESC",
+            )
+            .fetch(pool);
 
-        for (id, title, result, timestamp) in summary_rows {
-            if seen.insert(id.clone()) {
-                let match_context = Self::get_match_context(&result, query);
-                results.push(TranscriptSearchResult {
-                    id,
-                    title,
-                    match_context,
-                    timestamp,
-                });
+            while let Some((id, title, result, timestamp)) = rows.try_next().await? {
+                let result = fields::open(fields::SUMMARY_RESULT, &result)?;
+                if !result.to_lowercase().contains(&needle) {
+                    continue;
+                }
+                if seen.insert(id.clone()) {
+                    let title = fields::open(fields::MEETING_TITLE, &title)?;
+                    let match_context = Self::get_match_context(&result, query);
+                    results.push(TranscriptSearchResult {
+                        id,
+                        title,
+                        match_context,
+                        timestamp,
+                    });
+                }
             }
         }
 
         // 3. Title matches — catch meetings found purely by name.
-        let title_rows = sqlx::query_as::<_, (String, String, String)>(
-            "SELECT id, title, updated_at
-             FROM meetings
-             WHERE LOWER(title) LIKE ?
-             ORDER BY updated_at DESC",
-        )
-        .bind(&search_query)
-        .fetch_all(pool)
-        .await?;
+        {
+            let mut rows = sqlx::query_as::<_, (String, String, String)>(
+                "SELECT id, title, updated_at
+                 FROM meetings
+                 ORDER BY updated_at DESC",
+            )
+            .fetch(pool);
 
-        for (id, title, timestamp) in title_rows {
-            if seen.insert(id.clone()) {
-                let match_context = format!("Title match: {}", title);
-                results.push(TranscriptSearchResult {
-                    id,
-                    title,
-                    match_context,
-                    timestamp,
-                });
+            while let Some((id, title, timestamp)) = rows.try_next().await? {
+                let title = fields::open(fields::MEETING_TITLE, &title)?;
+                if !title.to_lowercase().contains(&needle) {
+                    continue;
+                }
+                if seen.insert(id.clone()) {
+                    let match_context = format!("Title match: {}", title);
+                    results.push(TranscriptSearchResult {
+                        id,
+                        title,
+                        match_context,
+                        timestamp,
+                    });
+                }
             }
         }
 

@@ -176,14 +176,43 @@ be reordered, and one lifted from another recording will not verify.
 - An archive with no password writes plaintext: there is nothing to encrypt
   with, and the settings screen says so.
 
-**What is not yet covered.** Meeting titles, client names and transcript text
-are still stored in the clear in the database — that is the next step. The
-recordings themselves, which are the bulk of what a session is, are not.
+### What the database holds
 
-**Boundaries that will remain after that step.** The key sits in the memory of a
-running process: cold-boot attacks, swap files, crash dumps and a live operating
-system already unlocked by you are outside what this protects against. It
-defends the disk, not the machine while you are using it.
+**The text is encrypted too.** Meeting titles, every line of transcript, speaker
+names, generated summaries, and the names and notes of the people a recording is
+filed under are sealed with the same key, value by value, with a fresh nonce for
+each write — so the same word written twice does not look the same twice, and the
+file cannot be read for which meetings share a title.
+
+The database itself is still an ordinary SQLite file, which is a deliberate
+choice over encrypting the whole thing: the schema, the indexes, the foreign keys
+and every query that does not touch text are unchanged, and no patched copy of
+SQLite has to be shipped underneath.
+
+- **Setting a password seals what is already there**, and removing it unseals
+  everything before the key is deleted. Both run as one transaction, so a failure
+  leaves the database exactly as it was.
+- A copy of the database is written beside it once, before the first conversion
+  (`meeting_minutes.before-encryption.sqlite`), and never overwritten.
+- **Searching happens in the application, not in SQL**, because `LIKE` cannot read
+  a sealed column. A side effect worth having: SQLite's `lower()` folds ASCII
+  only, so this is also the first version where a Russian word typed in a
+  different case matches.
+- Two columns are deliberately readable *as equal*: the speaker label is sealed so
+  that the same name always gives the same value, because the database joins on
+  it. Two lookup columns hold a keyed hash of a name instead of the name, so
+  "is this one already here?" can still be answered.
+- The log files no longer print titles, transcript text or speaker names either.
+
+**What stays visible in the file.** How many meetings there are, when each was
+recorded, how long it ran, which client it is filed under, and how many lines of
+transcript it has. What was said is not. That is the trade for keeping an
+ordinary database.
+
+**Boundaries.** The key sits in the memory of a running process: cold-boot
+attacks, swap files, crash dumps and a live operating system already unlocked by
+you are outside what this protects against. It defends the disk, not the machine
+while you are using it.
 
 ## Build
 

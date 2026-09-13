@@ -1,8 +1,11 @@
 use chrono::{DateTime, NaiveDateTime, Utc};
 use serde::{Deserialize, Serialize};
-use sqlx::FromRow;
+use sqlx::sqlite::SqliteRow;
+use sqlx::{FromRow, Row};
 
-#[derive(Debug, Clone, FromRow, Serialize, Deserialize)]
+use crate::database::fields;
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MeetingModel {
     pub id: String,
     pub title: String,
@@ -24,7 +27,7 @@ impl From<NaiveDateTime> for DateTimeUtc {
 }
 
 // Renamed from TranscriptSegment to Transcript to match the table name
-#[derive(Debug, Clone, FromRow, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Transcript {
     pub id: String,
     pub meeting_id: String,
@@ -41,7 +44,7 @@ pub struct Transcript {
     pub speaker: Option<String>,
 }
 
-#[derive(Debug, Clone, FromRow, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SummaryProcess {
     pub meeting_id: String,
     pub status: String,
@@ -58,7 +61,7 @@ pub struct SummaryProcess {
     pub result_backup_timestamp: Option<chrono::DateTime<chrono::Utc>>, // When backup was created
 }
 
-#[derive(Debug, Clone, FromRow, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TranscriptChunk {
     pub meeting_id: String,
     pub meeting_name: Option<String>,
@@ -131,4 +134,102 @@ pub struct TranscriptSetting {
     #[sqlx(rename = "openaiApiKey")]
     #[serde(rename = "openaiApiKey")]
     pub openai_api_key: Option<String>,
+}
+
+// ---------------------------------------------------------------------------
+// Reading sealed columns back
+//
+// These four structures are how the rest of the application receives a row, so
+// implementing `FromRow` by hand — instead of deriving it — makes the archive
+// key part of loading a row rather than something each query has to remember.
+// A query written next year that selects a meeting gets the title in the clear
+// without knowing that B4 exists; one that forgets would not compile, because
+// there is no other way to build the struct.
+//
+// The reverse direction cannot be centralised the same way: sqlx binds values,
+// not structs, so writes call `fields::seal` at each `bind`.
+// ---------------------------------------------------------------------------
+
+impl<'r> FromRow<'r, SqliteRow> for MeetingModel {
+    fn from_row(row: &'r SqliteRow) -> Result<Self, sqlx::Error> {
+        Ok(Self {
+            id: row.try_get("id")?,
+            title: fields::open(fields::MEETING_TITLE, &row.try_get::<String, _>("title")?)?,
+            created_at: row.try_get("created_at")?,
+            updated_at: row.try_get("updated_at")?,
+            folder_path: row.try_get("folder_path")?,
+            client_id: row.try_get("client_id")?,
+        })
+    }
+}
+
+impl<'r> FromRow<'r, SqliteRow> for Transcript {
+    fn from_row(row: &'r SqliteRow) -> Result<Self, sqlx::Error> {
+        Ok(Self {
+            id: row.try_get("id")?,
+            meeting_id: row.try_get("meeting_id")?,
+            transcript: fields::open(
+                fields::TRANSCRIPT_TEXT,
+                &row.try_get::<String, _>("transcript")?,
+            )?,
+            timestamp: row.try_get("timestamp")?,
+            summary: fields::open_opt(fields::TRANSCRIPT_SUMMARY, row.try_get("summary")?)?,
+            action_items: fields::open_opt(
+                fields::TRANSCRIPT_ACTION_ITEMS,
+                row.try_get("action_items")?,
+            )?,
+            key_points: fields::open_opt(
+                fields::TRANSCRIPT_KEY_POINTS,
+                row.try_get("key_points")?,
+            )?,
+            audio_start_time: row.try_get("audio_start_time")?,
+            audio_end_time: row.try_get("audio_end_time")?,
+            duration: row.try_get("duration")?,
+            speaker: fields::open_opt(fields::TRANSCRIPT_SPEAKER, row.try_get("speaker")?)?,
+        })
+    }
+}
+
+impl<'r> FromRow<'r, SqliteRow> for SummaryProcess {
+    fn from_row(row: &'r SqliteRow) -> Result<Self, sqlx::Error> {
+        Ok(Self {
+            meeting_id: row.try_get("meeting_id")?,
+            status: row.try_get("status")?,
+            created_at: row.try_get("created_at")?,
+            updated_at: row.try_get("updated_at")?,
+            error: row.try_get("error")?,
+            result: fields::open_opt(fields::SUMMARY_RESULT, row.try_get("result")?)?,
+            start_time: row.try_get("start_time")?,
+            end_time: row.try_get("end_time")?,
+            chunk_count: row.try_get("chunk_count")?,
+            processing_time: row.try_get("processing_time")?,
+            metadata: row.try_get("metadata")?,
+            result_backup: fields::open_opt(
+                fields::SUMMARY_RESULT_BACKUP,
+                row.try_get("result_backup")?,
+            )?,
+            result_backup_timestamp: row.try_get("result_backup_timestamp")?,
+        })
+    }
+}
+
+impl<'r> FromRow<'r, SqliteRow> for TranscriptChunk {
+    fn from_row(row: &'r SqliteRow) -> Result<Self, sqlx::Error> {
+        Ok(Self {
+            meeting_id: row.try_get("meeting_id")?,
+            meeting_name: fields::open_opt(
+                fields::CHUNK_MEETING_NAME,
+                row.try_get("meeting_name")?,
+            )?,
+            transcript_text: fields::open(
+                fields::CHUNK_TEXT,
+                &row.try_get::<String, _>("transcript_text")?,
+            )?,
+            model: row.try_get("model")?,
+            model_name: row.try_get("model_name")?,
+            chunk_size: row.try_get("chunk_size")?,
+            overlap: row.try_get("overlap")?,
+            created_at: row.try_get("created_at")?,
+        })
+    }
 }

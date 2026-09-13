@@ -6,12 +6,14 @@
 //! normalized custom names intentionally auto-link across meetings. All profile
 //! and AI queries join through that mapping instead of guessing from label text.
 
+use futures_util::TryStreamExt;
 use serde::Serialize;
 use sqlx::{Sqlite, SqlitePool, Transaction};
 use std::cmp::Ordering;
 use std::collections::HashMap;
 use uuid::Uuid;
 
+use crate::database::fields;
 use crate::state::AppState;
 
 const DEFAULT_SEARCH_LIMIT: i64 = 40;
@@ -107,6 +109,19 @@ pub(crate) struct SpeakerRenameOutcome {
 }
 
 impl PeopleRepository {
+    /// Searches people, meeting titles, transcript lines and summaries.
+    ///
+    /// The matching happens here rather than in SQL, and that is not a matter
+    /// of taste: `LIKE` has to read the column, and from B4 on the column holds
+    /// ciphertext. Moving it also fixes something that was wrong all along —
+    /// SQLite's `lower()` folds ASCII and nothing else, so a query typed in
+    /// Russian never matched a Russian title unless the case happened to agree.
+    /// Rust's `to_lowercase` knows the rest of the alphabet.
+    ///
+    /// What it costs is a scan. Transcripts are the one table where that could
+    /// be felt, so they are streamed a row at a time and the scan stops as soon
+    /// as `limit` matches are in hand — in the same order the database used to
+    /// apply its own `LIMIT`, so the results are the ones that came back before.
     pub async fn global_search(
         pool: &SqlitePool,
         query: &str,
@@ -120,27 +135,34 @@ impl PeopleRepository {
         let limit = limit
             .unwrap_or(DEFAULT_SEARCH_LIMIT)
             .clamp(1, MAX_SEARCH_LIMIT);
-        let normalized_query = normalize_person_name(query);
-        let like_query = format!("%{}%", escape_like(&normalized_query));
+        let wanted = limit as usize;
+        let needle = normalize_person_name(query);
         let mut ranked = Vec::new();
 
         let people = sqlx::query_as::<_, (String, String, Option<String>, i64)>(
             "SELECT p.id, p.display_name, p.notes, COUNT(DISTINCT ps.meeting_id) \
              FROM people p \
              LEFT JOIN person_speakers ps ON ps.person_id = p.id \
-             WHERE p.normalized_name LIKE ? ESCAPE '\\' \
              GROUP BY p.id, p.display_name, p.notes, p.updated_at \
-             ORDER BY p.updated_at DESC LIMIT ?",
+             ORDER BY p.updated_at DESC",
         )
-        .bind(&like_query)
-        .bind(limit)
         .fetch_all(pool)
         .await?;
 
+        let mut taken = 0usize;
         for (id, display_name, notes, meeting_count) in people {
-            let score = match_quality(&normalize_person_name(&display_name), &normalized_query);
+            if taken == wanted {
+                break;
+            }
+            let display_name = fields::open(fields::PERSON_NAME, &display_name)?;
+            let notes = fields::open_opt(fields::PERSON_NOTES, notes)?;
+            let normalized = normalize_person_name(&display_name);
+            if !normalized.contains(&needle) {
+                continue;
+            }
+            taken += 1;
             ranked.push(RankedResult {
-                score,
+                score: match_quality(&normalized, &needle),
                 sort_time: String::new(),
                 result: GlobalSearchResult {
                     kind: "person".to_string(),
@@ -159,18 +181,24 @@ impl PeopleRepository {
         }
 
         let meetings = sqlx::query_as::<_, (String, String, String)>(
-            "SELECT id, title, created_at FROM meetings \
-             WHERE lower(title) LIKE ? ESCAPE '\\' \
-             ORDER BY created_at DESC LIMIT ?",
+            "SELECT id, title, created_at FROM meetings ORDER BY created_at DESC",
         )
-        .bind(&like_query)
-        .bind(limit)
         .fetch_all(pool)
         .await?;
 
+        let mut taken = 0usize;
         for (id, title, created_at) in meetings {
+            if taken == wanted {
+                break;
+            }
+            let title = fields::open(fields::MEETING_TITLE, &title)?;
+            let lowered = title.to_lowercase();
+            if !lowered.contains(&needle) {
+                continue;
+            }
+            taken += 1;
             ranked.push(RankedResult {
-                score: match_quality(&title.to_lowercase(), &normalized_query),
+                score: match_quality(&lowered, &needle),
                 sort_time: created_at.clone(),
                 result: GlobalSearchResult {
                     kind: "meeting".to_string(),
@@ -188,88 +216,109 @@ impl PeopleRepository {
             });
         }
 
-        let transcripts = sqlx::query_as::<
-            _,
-            (
-                String,
-                String,
-                String,
-                String,
-                String,
-                Option<String>,
-                Option<f64>,
-            ),
-        >(
-            "SELECT t.id, m.id, m.title, t.transcript, t.timestamp, t.speaker, t.audio_start_time \
-             FROM transcripts t JOIN meetings m ON m.id = t.meeting_id \
-             WHERE lower(t.transcript) LIKE ? ESCAPE '\\' \
-                OR lower(COALESCE(t.speaker, '')) LIKE ? ESCAPE '\\' \
-             ORDER BY m.created_at DESC, t.audio_start_time ASC LIMIT ?",
-        )
-        .bind(&like_query)
-        .bind(&like_query)
-        .bind(limit)
-        .fetch_all(pool)
-        .await?;
+        // Scoped so the streamed rows let go of their pool connection before
+        // the next query asks for one.
+        {
+            let mut rows = sqlx::query_as::<
+                _,
+                (
+                    String,
+                    String,
+                    String,
+                    String,
+                    String,
+                    Option<String>,
+                    Option<f64>,
+                ),
+            >(
+                "SELECT t.id, m.id, m.title, t.transcript, t.timestamp, t.speaker, \
+                        t.audio_start_time \
+                 FROM transcripts t JOIN meetings m ON m.id = t.meeting_id \
+                 ORDER BY m.created_at DESC, t.audio_start_time ASC",
+            )
+            .fetch(pool);
 
-        for (id, meeting_id, title, text, timestamp, speaker, audio_start_time) in transcripts {
-            let speaker_match = speaker
-                .as_deref()
-                .map(|value| value.to_lowercase().contains(&normalized_query))
-                .unwrap_or(false);
-            ranked.push(RankedResult {
-                score: if speaker_match { 5 } else { 20 },
-                sort_time: timestamp.clone(),
-                result: GlobalSearchResult {
-                    kind: "transcript".to_string(),
-                    id: id.clone(),
-                    meeting_id: Some(meeting_id),
-                    person_id: None,
-                    transcript_id: Some(id),
-                    title,
-                    snippet: snippet_around(&text, query, 180),
-                    timestamp: Some(timestamp),
-                    speaker,
-                    audio_start_time,
-                    meeting_count: None,
-                },
-            });
+            let mut taken = 0usize;
+            while taken < wanted {
+                let Some((id, meeting_id, title, text, timestamp, speaker, audio_start_time)) =
+                    rows.try_next().await?
+                else {
+                    break;
+                };
+
+                let title = fields::open(fields::MEETING_TITLE, &title)?;
+                let text = fields::open(fields::TRANSCRIPT_TEXT, &text)?;
+                let speaker = fields::open_opt(fields::TRANSCRIPT_SPEAKER, speaker)?;
+                let speaker_match = speaker
+                    .as_deref()
+                    .map(|value| value.to_lowercase().contains(&needle))
+                    .unwrap_or(false);
+                if !speaker_match && !text.to_lowercase().contains(&needle) {
+                    continue;
+                }
+                taken += 1;
+                ranked.push(RankedResult {
+                    score: if speaker_match { 5 } else { 20 },
+                    sort_time: timestamp.clone(),
+                    result: GlobalSearchResult {
+                        kind: "transcript".to_string(),
+                        id: id.clone(),
+                        meeting_id: Some(meeting_id),
+                        person_id: None,
+                        transcript_id: Some(id),
+                        title,
+                        snippet: snippet_around(&text, query, 180),
+                        timestamp: Some(timestamp),
+                        speaker,
+                        audio_start_time,
+                        meeting_count: None,
+                    },
+                });
+            }
         }
 
-        // Summary JSON contains caches and editor structure, so only parsed,
-        // user-visible text is searched. Never use a LIKE against the raw blob.
-        let summaries = sqlx::query_as::<_, (String, String, String, String)>(
-            "SELECT m.id, m.title, m.created_at, s.result \
-             FROM summary_processes s JOIN meetings m ON m.id = s.meeting_id \
-             WHERE s.result IS NOT NULL ORDER BY m.created_at DESC",
-        )
-        .fetch_all(pool)
-        .await?;
+        // Summary JSON carries caches and editor structure, so only parsed,
+        // user-visible text is searched. Never match against the raw blob.
+        {
+            let mut rows = sqlx::query_as::<_, (String, String, String, String)>(
+                "SELECT m.id, m.title, m.created_at, s.result \
+                 FROM summary_processes s JOIN meetings m ON m.id = s.meeting_id \
+                 WHERE s.result IS NOT NULL ORDER BY m.created_at DESC",
+            )
+            .fetch(pool);
 
-        for (meeting_id, title, created_at, raw) in summaries {
-            let Some(visible) = visible_summary_text(&raw) else {
-                continue;
-            };
-            if !visible.to_lowercase().contains(&normalized_query) {
-                continue;
+            let mut taken = 0usize;
+            while taken < wanted {
+                let Some((meeting_id, title, created_at, raw)) = rows.try_next().await? else {
+                    break;
+                };
+                let title = fields::open(fields::MEETING_TITLE, &title)?;
+                let raw = fields::open(fields::SUMMARY_RESULT, &raw)?;
+                let Some(visible) = visible_summary_text(&raw) else {
+                    continue;
+                };
+                if !visible.to_lowercase().contains(&needle) {
+                    continue;
+                }
+                taken += 1;
+                ranked.push(RankedResult {
+                    score: 25,
+                    sort_time: created_at.clone(),
+                    result: GlobalSearchResult {
+                        kind: "summary".to_string(),
+                        id: format!("summary-{}", meeting_id),
+                        meeting_id: Some(meeting_id),
+                        person_id: None,
+                        transcript_id: None,
+                        title,
+                        snippet: snippet_around(&visible, query, 220),
+                        timestamp: Some(created_at),
+                        speaker: None,
+                        audio_start_time: None,
+                        meeting_count: None,
+                    },
+                });
             }
-            ranked.push(RankedResult {
-                score: 25,
-                sort_time: created_at.clone(),
-                result: GlobalSearchResult {
-                    kind: "summary".to_string(),
-                    id: format!("summary-{}", meeting_id),
-                    meeting_id: Some(meeting_id),
-                    person_id: None,
-                    transcript_id: None,
-                    title,
-                    snippet: snippet_around(&visible, query, 220),
-                    timestamp: Some(created_at),
-                    speaker: None,
-                    audio_start_time: None,
-                    meeting_count: None,
-                },
-            });
         }
 
         ranked.sort_by(|a, b| {
@@ -301,7 +350,7 @@ impl PeopleRepository {
                         WHEN t.audio_end_time IS NOT NULL AND t.audio_start_time IS NOT NULL \
                              AND t.audio_end_time > t.audio_start_time \
                             THEN t.audio_end_time - t.audio_start_time \
-                        ELSE 0 END), 0.0), \
+                        ELSE 0.0 END), 0.0), \
                     (SELECT tx.transcript FROM transcripts tx \
                      JOIN person_speakers px ON px.meeting_id = tx.meeting_id \
                                              AND px.speaker_label = tx.speaker \
@@ -323,17 +372,18 @@ impl PeopleRepository {
             .into_iter()
             .map(
                 |(meeting_id, title, created_at, message_count, speaking_seconds, excerpt)| {
-                    PersonMeeting {
+                    let excerpt = fields::open_opt(fields::TRANSCRIPT_TEXT, excerpt)?;
+                    Ok(PersonMeeting {
                         meeting_id,
-                        title,
+                        title: fields::open(fields::MEETING_TITLE, &title)?,
                         created_at,
                         message_count,
                         speaking_seconds,
                         excerpt: excerpt.map(|text| truncate_chars(&text, 240)),
-                    }
+                    })
                 },
             )
-            .collect();
+            .collect::<Result<Vec<_>, sqlx::Error>>()?;
         let message_count = meetings.iter().map(|meeting| meeting.message_count).sum();
         let total_speaking_seconds = meetings
             .iter()
@@ -342,8 +392,8 @@ impl PeopleRepository {
 
         Ok(PersonProfile {
             id: person.0,
-            display_name: person.1,
-            notes: person.2,
+            display_name: fields::open(fields::PERSON_NAME, &person.1)?,
+            notes: fields::open_opt(fields::PERSON_NOTES, person.2)?,
             meeting_count: meetings.len() as i64,
             message_count,
             total_speaking_seconds,
@@ -364,7 +414,7 @@ impl PeopleRepository {
         });
         let result =
             sqlx::query("UPDATE people SET notes = ?, updated_at = datetime('now') WHERE id = ?")
-                .bind(notes)
+                .bind(fields::seal_opt(fields::PERSON_NOTES, notes.as_deref()))
                 .bind(person_id)
                 .execute(pool)
                 .await?;
@@ -393,9 +443,12 @@ impl PeopleRepository {
         };
         let result =
             sqlx::query("UPDATE transcripts SET speaker = ? WHERE meeting_id = ? AND speaker = ?")
-                .bind(&resolved_to)
+                .bind(fields::seal_joinable(
+                    fields::TRANSCRIPT_SPEAKER,
+                    &resolved_to,
+                ))
                 .bind(meeting_id)
-                .bind(from)
+                .bind(fields::seal_joinable(fields::TRANSCRIPT_SPEAKER, from))
                 .execute(&mut *tx)
                 .await?;
         let count = result.rows_affected();
@@ -403,7 +456,7 @@ impl PeopleRepository {
         if removed_name {
             sqlx::query("DELETE FROM person_speakers WHERE meeting_id = ? AND speaker_label = ?")
                 .bind(meeting_id)
-                .bind(from)
+                .bind(fields::seal_joinable(fields::SPEAKER_LABEL, from))
                 .execute(&mut *tx)
                 .await?;
             delete_orphan_people(&mut tx).await?;
@@ -428,13 +481,13 @@ impl PeopleRepository {
             "SELECT person_id FROM person_speakers WHERE meeting_id = ? AND speaker_label = ?",
         )
         .bind(meeting_id)
-        .bind(from)
+        .bind(fields::seal_joinable(fields::SPEAKER_LABEL, from))
         .fetch_optional(&mut **tx)
         .await?;
 
         sqlx::query("DELETE FROM person_speakers WHERE meeting_id = ? AND speaker_label = ?")
             .bind(meeting_id)
-            .bind(from)
+            .bind(fields::seal_joinable(fields::SPEAKER_LABEL, from))
             .execute(&mut **tx)
             .await?;
 
@@ -471,8 +524,8 @@ impl PeopleRepository {
                     "UPDATE people SET display_name = ?, normalized_name = ?, \
                      updated_at = datetime('now') WHERE id = ?",
                 )
-                .bind(to)
-                .bind(&normalized)
+                .bind(fields::seal(fields::PERSON_NAME, to))
+                .bind(fields::lookup(fields::PERSON_LOOKUP, &normalized))
                 .bind(current)
                 .execute(&mut **tx)
                 .await?;
@@ -488,8 +541,8 @@ impl PeopleRepository {
                      VALUES (?, ?, ?, NULL, datetime('now'), datetime('now'))",
                 )
                 .bind(&id)
-                .bind(to)
-                .bind(&normalized)
+                .bind(fields::seal(fields::PERSON_NAME, to))
+                .bind(fields::lookup(fields::PERSON_LOOKUP, &normalized))
                 .execute(&mut **tx)
                 .await?;
                 id
@@ -503,7 +556,7 @@ impl PeopleRepository {
         )
         .bind(person_id)
         .bind(meeting_id)
-        .bind(to)
+        .bind(fields::seal_joinable(fields::SPEAKER_LABEL, to))
         .execute(&mut **tx)
         .await?;
         delete_orphan_people(tx).await?;
@@ -520,6 +573,7 @@ impl PeopleRepository {
                 .fetch_optional(pool)
                 .await?
                 .ok_or(sqlx::Error::RowNotFound)?;
+        let display_name = fields::open(fields::PERSON_NAME, &display_name)?;
 
         let meeting_rows = sqlx::query_as::<_, (String, String, String, Option<String>)>(
             "SELECT DISTINCT m.id, m.title, m.created_at, s.result \
@@ -549,6 +603,7 @@ impl PeopleRepository {
 
         let mut messages: HashMap<String, Vec<PersonContextMessage>> = HashMap::new();
         for (meeting_id, text, timestamp, audio_start_time) in message_rows {
+            let text = fields::open(fields::TRANSCRIPT_TEXT, &text)?;
             messages
                 .entry(meeting_id)
                 .or_default()
@@ -561,16 +616,17 @@ impl PeopleRepository {
 
         let meetings = meeting_rows
             .into_iter()
-            .map(
-                |(meeting_id, title, created_at, raw_summary)| PersonContextMeeting {
+            .map(|(meeting_id, title, created_at, raw_summary)| {
+                let raw_summary = fields::open_opt(fields::SUMMARY_RESULT, raw_summary)?;
+                Ok(PersonContextMeeting {
                     messages: messages.remove(&meeting_id).unwrap_or_default(),
                     summary: raw_summary.and_then(|raw| visible_summary_text(&raw)),
                     meeting_id,
-                    title,
+                    title: fields::open(fields::MEETING_TITLE, &title)?,
                     created_at,
-                },
-            )
-            .collect();
+                })
+            })
+            .collect::<Result<Vec<_>, sqlx::Error>>()?;
         Ok((display_name, meetings))
     }
 }
@@ -637,7 +693,7 @@ async fn next_available_speaker_label(
     tx: &mut Transaction<'_, Sqlite>,
     meeting_id: &str,
 ) -> Result<String, sqlx::Error> {
-    let labels: Vec<String> = sqlx::query_scalar(
+    let stored: Vec<String> = sqlx::query_scalar(
         "SELECT speaker FROM transcripts WHERE meeting_id = ? AND speaker IS NOT NULL \
          UNION SELECT speaker_label FROM person_speakers WHERE meeting_id = ?",
     )
@@ -645,6 +701,11 @@ async fn next_available_speaker_label(
     .bind(meeting_id)
     .fetch_all(&mut **tx)
     .await?;
+
+    let labels = stored
+        .iter()
+        .map(|label| fields::open(fields::TRANSCRIPT_SPEAKER, label))
+        .collect::<Result<Vec<_>, sqlx::Error>>()?;
 
     for index in 1_u64.. {
         let candidate = format!("Speaker {}", index);
@@ -780,13 +841,6 @@ fn inline_text(value: &serde_json::Value) -> String {
         }
         _ => String::new(),
     }
-}
-
-fn escape_like(value: &str) -> String {
-    value
-        .replace('\\', "\\\\")
-        .replace('%', "\\%")
-        .replace('_', "\\_")
 }
 
 fn match_quality(value: &str, query: &str) -> i32 {
@@ -936,7 +990,7 @@ async fn find_person_by_normalized_name(
     normalized: &str,
 ) -> Result<Option<String>, sqlx::Error> {
     if let Some(id) = sqlx::query_scalar("SELECT id FROM people WHERE normalized_name = ?")
-        .bind(normalized)
+        .bind(fields::lookup(fields::PERSON_LOOKUP, normalized))
         .fetch_optional(&mut **tx)
         .await?
     {
@@ -948,19 +1002,25 @@ async fn find_person_by_normalized_name(
     )
     .fetch_all(&mut **tx)
     .await?;
-    Ok(candidates
-        .into_iter()
-        .find(|(_, display_name, stored_normalized)| {
-            normalize_person_name(display_name) == normalized
-                || normalize_person_name(stored_normalized) == normalized
-        })
-        .map(|(id, _, _)| id))
+    for (id, display_name, stored_normalized) in candidates {
+        let display_name = fields::open(fields::PERSON_NAME, &display_name)?;
+        // The lookup column is a blind index once the archive has a key, so
+        // only the name itself can be compared here. A blinded value never
+        // normalizes to a name, so the second test simply never fires then —
+        // and the exact-match query above has already covered that case.
+        if normalize_person_name(&display_name) == normalized
+            || normalize_person_name(&stored_normalized) == normalized
+        {
+            return Ok(Some(id));
+        }
+    }
+    Ok(None)
 }
 
 #[cfg(test)]
 mod tests {
     use super::{
-        build_person_context, clear_meeting_speaker_mappings, escape_like, is_person_name,
+        build_person_context, clear_meeting_speaker_mappings, is_person_name,
         normalize_person_name, visible_summary_text, PeopleRepository, PersonContextMeeting,
         PersonContextMessage, PERSON_CONTEXT_CHARS,
     };
@@ -968,7 +1028,6 @@ mod tests {
     #[test]
     fn normalizes_and_filters_identity_labels() {
         assert_eq!(normalize_person_name("  Alice SMITH  "), "alice smith");
-        assert_eq!(escape_like(r"50%_off\today"), r"50\%\_off\\today");
         assert!(is_person_name("Alice Smith"));
         for label in [
             "",
@@ -1323,5 +1382,139 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(people_count, 1);
+    }
+
+    /// Every table `global_search` touches, in the shape its queries expect.
+    async fn search_pool() -> sqlx::SqlitePool {
+        let pool = sqlx::SqlitePool::connect(":memory:").await.unwrap();
+        sqlx::raw_sql(
+            "CREATE TABLE people (id TEXT PRIMARY KEY, display_name TEXT NOT NULL, \
+                 normalized_name TEXT NOT NULL UNIQUE, notes TEXT, created_at TEXT NOT NULL, \
+                 updated_at TEXT NOT NULL); \
+             CREATE TABLE person_speakers (person_id TEXT NOT NULL, meeting_id TEXT NOT NULL, \
+                 speaker_label TEXT NOT NULL, UNIQUE(meeting_id, speaker_label)); \
+             CREATE TABLE meetings (id TEXT PRIMARY KEY, title TEXT NOT NULL, \
+                 created_at TEXT NOT NULL, updated_at TEXT NOT NULL); \
+             CREATE TABLE transcripts (id TEXT PRIMARY KEY, meeting_id TEXT NOT NULL, \
+                 transcript TEXT NOT NULL, timestamp TEXT NOT NULL, speaker TEXT, \
+                 audio_start_time REAL); \
+             CREATE TABLE summary_processes (meeting_id TEXT PRIMARY KEY, result TEXT);",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        pool
+    }
+
+    #[tokio::test]
+    async fn a_russian_query_matches_a_russian_title_typed_in_another_case() {
+        // The regression this move repairs. SQLite's lower() folds ASCII only,
+        // so `lower(title) LIKE '%встреча%'` never matched a title written
+        // "Встреча" — the whole Russian interface searched case-sensitively and
+        // nobody could see why.
+        let pool = search_pool().await;
+        sqlx::raw_sql(
+            "INSERT INTO meetings VALUES ('m1', 'Встреча в четверг', '2026-09-01', '2026-09-01');",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let results = PeopleRepository::global_search(&pool, "встреча", None)
+            .await
+            .unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].kind, "meeting");
+        assert_eq!(results[0].title, "Встреча в четверг");
+    }
+
+    #[tokio::test]
+    async fn a_transcript_line_is_found_and_carries_its_meeting() {
+        let pool = search_pool().await;
+        sqlx::raw_sql(
+            "INSERT INTO meetings VALUES ('m1', 'Первая', '2026-09-01', '2026-09-01'); \
+             INSERT INTO transcripts VALUES \
+                 ('t1', 'm1', 'мы обсудили смету и сроки поставки', '00:00', 'You', 0.0);",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let results = PeopleRepository::global_search(&pool, "ПОСТАВКИ", None)
+            .await
+            .unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].kind, "transcript");
+        assert_eq!(results[0].meeting_id.as_deref(), Some("m1"));
+        assert!(results[0].snippet.contains("поставки"));
+    }
+
+    #[tokio::test]
+    async fn only_the_visible_part_of_a_summary_is_searched() {
+        // The cached English translation and the editor's own structure are not
+        // what the owner reads, so a hit inside them is not a hit.
+        let pool = search_pool().await;
+        sqlx::raw_sql(
+            "INSERT INTO meetings VALUES ('m1', 'Первая', '2026-09-01', '2026-09-01'); \
+             INSERT INTO summary_processes VALUES \
+                 ('m1', '{\"markdown\":\"видимый вывод\",\
+                           \"english_cache\":{\"markdown\":\"hidden cache\"}}');",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let visible = PeopleRepository::global_search(&pool, "видимый", None)
+            .await
+            .unwrap();
+        assert_eq!(visible.len(), 1);
+        assert_eq!(visible[0].kind, "summary");
+
+        let cached = PeopleRepository::global_search(&pool, "hidden", None)
+            .await
+            .unwrap();
+        assert!(cached.is_empty());
+    }
+
+    #[tokio::test]
+    async fn the_scan_stops_at_the_limit_instead_of_reading_the_archive() {
+        // The streamed scan replaced SQL's LIMIT, so the limit has to still
+        // hold — otherwise a one-letter query would walk every transcript ever
+        // recorded before throwing the surplus away.
+        let pool = search_pool().await;
+        let mut sql = String::new();
+        for index in 0..50 {
+            sql.push_str(&format!(
+                "INSERT INTO meetings VALUES ('m{index}', 'Встреча {index}', \
+                 '2026-09-{:02}', '2026-09-01'); ",
+                (index % 28) + 1
+            ));
+        }
+        sqlx::raw_sql(&sql).execute(&pool).await.unwrap();
+
+        let results = PeopleRepository::global_search(&pool, "встреча", Some(5))
+            .await
+            .unwrap();
+        assert_eq!(results.len(), 5);
+    }
+
+    #[tokio::test]
+    async fn a_speaker_name_outranks_the_line_it_was_said_in() {
+        let pool = search_pool().await;
+        sqlx::raw_sql(
+            "INSERT INTO meetings VALUES ('m1', 'Первая', '2026-09-01', '2026-09-01'); \
+             INSERT INTO transcripts VALUES \
+                 ('t1', 'm1', 'анна не пришла', '00:01', 'You', 1.0), \
+                 ('t2', 'm1', 'обычная реплика', '00:02', 'Анна', 2.0);",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let results = PeopleRepository::global_search(&pool, "анна", None)
+            .await
+            .unwrap();
+        assert_eq!(results.len(), 2);
+        assert_eq!(results[0].speaker.as_deref(), Some("Анна"));
     }
 }

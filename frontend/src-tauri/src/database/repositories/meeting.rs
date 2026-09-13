@@ -1,4 +1,5 @@
 use crate::api::{MeetingDetails, MeetingTranscript};
+use crate::database::fields;
 use crate::database::models::{MeetingModel, Transcript};
 use crate::database::repositories::transcript::timestamp_from_offset;
 use chrono::{DateTime, Utc};
@@ -232,7 +233,7 @@ impl MeetingsRepository {
              SET title = ?, title_is_manual = 1, updated_at = ?
              WHERE id = ?",
         )
-                .bind(new_title)
+                .bind(fields::seal(fields::MEETING_TITLE, new_title))
                 .bind(now)
                 .bind(meeting_id)
                 .execute(&mut *transaction)
@@ -242,7 +243,7 @@ impl MeetingsRepository {
             return Ok(false);
         }
         sqlx::query("UPDATE transcript_chunks SET meeting_name = ? WHERE meeting_id = ?")
-            .bind(new_title)
+            .bind(fields::seal_opt(fields::CHUNK_MEETING_NAME, Some(new_title)))
             .bind(meeting_id)
             .execute(&mut *transaction)
             .await?;
@@ -266,7 +267,7 @@ impl MeetingsRepository {
              SET title = ?, updated_at = ?
              WHERE id = ? AND title_is_manual = 0",
         )
-                .bind(new_title)
+                .bind(fields::seal(fields::MEETING_TITLE, new_title))
                 .bind(now)
                 .bind(meeting_id)
                 .execute(&mut *transaction)
@@ -279,7 +280,7 @@ impl MeetingsRepository {
 
         // Update transcript_chunks table
         sqlx::query("UPDATE transcript_chunks SET meeting_name = ? WHERE meeting_id = ?")
-            .bind(new_title)
+            .bind(fields::seal_opt(fields::CHUNK_MEETING_NAME, Some(new_title)))
             .bind(meeting_id)
             .execute(&mut *transaction)
             .await?;
