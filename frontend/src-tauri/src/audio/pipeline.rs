@@ -76,11 +76,22 @@ pub struct AudioLevels {
 /// stream rather than a late thread. Long enough that no burst of work inside
 /// the app can hold every reading in the window high, short enough that a real
 /// break is repaired while it is still the current one.
-const TIMELINE_OBSERVATION_SECONDS: f64 = 1.0;
+const TIMELINE_OBSERVATION_SECONDS: f64 = 2.0;
 
-/// The smallest sustained shortfall worth repairing. Below this the streams
-/// stay aligned closely enough that filling would cost more than it fixes.
-const TIMELINE_GAP_SECONDS: f64 = 0.1;
+/// The smallest sustained shortfall worth reporting at all.
+///
+/// No longer a repair threshold — nothing between this and
+/// [`TIMELINE_RESET_SECONDS`] is filled any more (see the fill decision in
+/// `add_samples`). It is what a shortfall has to reach before it counts as a
+/// reading rather than noise, which is how a real break grows to the point of
+/// resetting the timelines.
+///
+/// Raised from 100ms because the clock is read at the end of the capture
+/// handler: anything that holds the handler up makes a block look late, and at
+/// 100ms the delivery jitter of an ordinary recording cleared that line
+/// constantly. Measured false readings ran to 142ms, so the line sits at twice
+/// that.
+const TIMELINE_GAP_SECONDS: f64 = 0.3;
 
 /// A sustained shortfall this large is no longer a gap to fill but a stream
 /// that has to be picked up again from where it now is.
@@ -182,6 +193,14 @@ struct AudioMixerRingBuffer {
     system_received_samples: u64,
     mic_inserted_samples: u64,
     system_inserted_samples: u64,
+    /// How many separate repairs those inserted samples were spread across.
+    ///
+    /// The total alone cannot be acted on: a second of silence appended once at
+    /// the end is inaudible, while the same second split into ten fills lands in
+    /// the middle of speech ten times. Counting the events is what tells those
+    /// apart, and it is what the owner hears.
+    mic_fill_events: u64,
+    system_fill_events: u64,
     timeline_resets: u64,
 }
 
@@ -198,11 +217,16 @@ impl AudioMixerRingBuffer {
     ) -> Self {
         let window_size_samples = ((sample_rate as f32 * window_ms / 1000.0) as usize).max(1);
 
-        // CRITICAL FIX: Increase max buffer to 400ms for system audio stability
-        // System audio (especially Core Audio on macOS) can have significant jitter
-        // due to sample-by-sample streaming → batching → channel transmission
-        // Accounts for: RNNoise buffering + Core Audio jitter + processing delays
-        let max_buffer_size = window_size_samples * 8;  // 400ms (was 200ms)
+        // Holds a second, and it has to outlast the patience in `can_mix`.
+        //
+        // A source is waited on for twelve windows before its partner is mixed
+        // without it; a cap below that would throw away the very samples being
+        // waited for, at the overflow check, and count them as dropped. The cap
+        // is what a source may run ahead by while the other catches up, so it
+        // is set well clear of the 600ms of waiting: jitter this deep is
+        // ordinary here, and a recording is not a live monitor — latency costs
+        // nothing, discarded audio cannot be recovered.
+        let max_buffer_size = window_size_samples * 20;  // 1s (was 400ms)
 
         info!(
             "🔊 Ring buffer initialized: window={}ms ({} samples), max={}ms ({} samples)",
@@ -231,6 +255,8 @@ impl AudioMixerRingBuffer {
             system_received_samples: 0,
             mic_inserted_samples: 0,
             system_inserted_samples: 0,
+            mic_fill_events: 0,
+            system_fill_events: 0,
             timeline_resets: 0,
         }
     }
@@ -283,7 +309,8 @@ impl AudioMixerRingBuffer {
             DeviceType::Microphone => &mut self.mic_timeline,
             _ => &mut self.system_timeline,
         };
-        let gap_seconds = if timeline.started {
+        let already_running = timeline.started;
+        let gap_seconds = if already_running {
             timeline.sustained_gap(timestamp, lag_seconds)
         } else {
             // The very first block of a source is where the two streams are
@@ -309,7 +336,32 @@ impl AudioMixerRingBuffer {
             discontinuity_start = Some(start);
         }
 
-        let fill = if discontinuity_start.is_some() {
+        // Silence is written into a source's timeline for exactly one reason:
+        // to line its first block up against the other source, which starts at
+        // its own moment. Nothing after that is repaired.
+        //
+        // What used to be repaired here was a shortfall measured against the
+        // clock, and three recordings showed there is no shortfall to repair.
+        // Each delivered *more* audio than it had running time — 100.1%, 101.4%
+        // and 104% — with no samples dropped and not one window short on the way
+        // out. Blocks simply arrive unevenly: a third of a second late, then in
+        // a burst that more than catches up. A jitter that deep is not
+        // distinguishable from a device that stopped, so repairing it meant
+        // splicing silence into speech every time the delivery bunched up, and
+        // the owner heard every splice as a click in his own voice. Raising the
+        // threshold only made the splices bigger: the shortfall accumulates
+        // until whatever the threshold is cuts it off.
+        //
+        // The two things the repair existed for are still handled. A source
+        // starting late is lined up on its first block, above. A break large
+        // enough to matter — five seconds — resets both timelines instead,
+        // which is the honest response to a stream that has to be picked up
+        // again rather than patched.
+        //
+        // What is given up: a genuine dropout between 0.3s and 5s leaves the
+        // channels that far apart until the next reset. Across three recordings
+        // that never once happened, while the jitter happened in all of them.
+        let fill = if discontinuity_start.is_some() || already_running {
             0
         } else {
             (gap_seconds.max(0.0) * sample_rate).round() as usize
@@ -318,9 +370,33 @@ impl AudioMixerRingBuffer {
         if is_mic {
             self.mic_inserted_samples += fill as u64;
             self.mic_received_samples += samples.len() as u64;
+            if fill > 0 {
+                self.mic_fill_events += 1;
+            }
         } else {
             self.system_inserted_samples += fill as u64;
             self.system_received_samples += samples.len() as u64;
+            if fill > 0 {
+                self.system_fill_events += 1;
+            }
+        }
+
+        // One line per repair, at info, because the owner hears each one of
+        // these as a break in their own voice and debug is not written to the
+        // log file. Eleven lines for a minute of recording is a diagnosis; it
+        // says whether the shortfall grows steadily (a rate mismatch) or comes
+        // in bursts (a handler that was held up), which have different cures.
+        if fill > 0 {
+            info!(
+                "🔇 Filled a {:.0}ms gap in the {} timeline at {:.1}s of the recording \
+                 (shortfall {:.0}ms, raw lag {:.0}ms, {} samples buffered)",
+                fill as f64 / sample_rate * 1000.0,
+                if is_mic { "microphone" } else { "system" },
+                timestamp,
+                gap_seconds * 1000.0,
+                lag_seconds * 1000.0,
+                buffered_end,
+            );
         }
 
         let buffer = match device_type {
@@ -367,8 +443,20 @@ impl AudioMixerRingBuffer {
         // Mixing without one of the sources fills its window with silence, so
         // the lead has to be long enough that only a source which has really
         // stopped can reach it - not one whose blocks are momentarily late.
+        //
+        // Six windows was 300ms, and the measured delivery jitter reaches
+        // 346ms. While the timeline still padded a late source, its buffer was
+        // topped up with silence and this line was never reached; with that
+        // padding gone the jitter walked straight past it — 57 windows in one
+        // recording came out half empty, against none before. A half-empty
+        // microphone window paired with a full system one is worse than a late
+        // one: the echo canceller subtracts the far end from the wrong place,
+        // and the other speaker's voice stays in the owner's channel.
+        //
+        // Twelve windows is 600ms: past the jitter with room to spare, and
+        // still far short of the five seconds that count as a real break.
         let surviving_source_ahead =
-            self.mic_buffer.len().max(self.system_buffer.len()) >= self.window_size_samples * 6;
+            self.mic_buffer.len().max(self.system_buffer.len()) >= self.window_size_samples * 12;
         all_ready || surviving_source_ahead
     }
 
@@ -397,7 +485,11 @@ impl AudioMixerRingBuffer {
 
             padded
         } else {
-            // No mic data - return silence
+            // A window with no microphone data at all is the same silence as
+            // a half-filled one, only more of it, so it counts the same way.
+            // It did not use to be counted, which made `windows padded: 0`
+            // read as "nothing was substituted" when whole windows were.
+            self.padded_mic_windows += 1;
             vec![0.0; self.window_size_samples]
         };
 
@@ -420,7 +512,8 @@ impl AudioMixerRingBuffer {
 
             padded
         } else {
-            // No system data - return silence
+            // Counted for the same reason as the microphone side above.
+            self.padded_system_windows += 1;
             vec![0.0; self.window_size_samples]
         };
 
@@ -432,14 +525,16 @@ impl AudioMixerRingBuffer {
     fn seam_report(&self) -> String {
         let seconds = |samples: u64| samples as f64 / self.sample_rate;
         format!(
-            "mic delivered {:.3}s (+{:.3}s silence inserted, {} windows padded), \
-             system delivered {:.3}s (+{:.3}s silence inserted, {} windows padded), \
+            "mic delivered {:.3}s (+{:.3}s silence inserted over {} fills, {} windows padded), \
+             system delivered {:.3}s (+{:.3}s silence inserted over {} fills, {} windows padded), \
              samples dropped: {}, timeline resets: {}",
             seconds(self.mic_received_samples),
             seconds(self.mic_inserted_samples),
+            self.mic_fill_events,
             self.padded_mic_windows,
             seconds(self.system_received_samples),
             seconds(self.system_inserted_samples),
+            self.system_fill_events,
             self.padded_system_windows,
             self.dropped_samples,
             self.timeline_resets
@@ -1097,6 +1192,36 @@ impl AudioCapture {
     }
 }
 
+/// Take the speakers' echo out of one microphone window — unless Windows has
+/// already done it.
+///
+/// Separated from the pipeline so the choice can be tested on its own: the
+/// defect this guards against is not in the arithmetic but in *when* the
+/// question is asked. `system_is_cancelling` is a live fact about the capture
+/// stream, and the stream opens after the pipeline is built.
+fn cancel_echo_window(
+    canceller: Option<&mut super::echo_cancel::EchoCanceller>,
+    left_to_windows: &mut Option<bool>,
+    system_is_cancelling: bool,
+    mic_window: Vec<f32>,
+    sys_window: &[f32],
+) -> Vec<f32> {
+    // Said once, when the answer changes, rather than twenty times a second.
+    if *left_to_windows != Some(system_is_cancelling) {
+        *left_to_windows = Some(system_is_cancelling);
+        if system_is_cancelling {
+            info!("🔇 Echo cancellation left to Windows; the built-in canceller stays out of the way");
+        } else if canceller.is_some() {
+            info!("🔇 Cancelling the speakers' echo out of the microphone ourselves");
+        }
+    }
+
+    match canceller {
+        Some(canceller) if !system_is_cancelling => canceller.process(&mic_window, sys_window),
+        _ => mic_window,
+    }
+}
+
 /// VAD-driven audio processing pipeline
 /// Uses Voice Activity Detection to segment speech in real-time and send only speech to Whisper
 pub struct AudioPipeline {
@@ -1127,6 +1252,9 @@ pub struct AudioPipeline {
     /// and the saved tracks. None when only one source is recording, when the
     /// owner turned it off, or when the canceller could not start.
     echo_canceller: Option<super::echo_cancel::EchoCanceller>,
+    /// Who cancelled the echo when the last window went through, so a change
+    /// of hands is said once instead of every window. None until the first.
+    echo_left_to_windows: Option<bool>,
     // Recording sender for pre-mixed audio
     recording_sender_for_mixed: Option<mpsc::UnboundedSender<AudioChunk>>,
     // Live per-source level meter output (mic + system) for the frontend visualizer
@@ -1219,7 +1347,13 @@ impl AudioPipeline {
         let ring_buffer = AudioMixerRingBuffer::new(sample_rate, mic_enabled, system_enabled);
         let mixer = ProfessionalAudioMixer::new(sample_rate);
 
-        // Echo can only exist when the speakers and the microphone are both live
+        // Echo can only exist when the speakers and the microphone are both
+        // live. Whether *we* are the ones to cancel it is a second question,
+        // and it cannot be answered here: the pipeline is built before the
+        // capture streams open, so asking whether Windows is cancelling gets
+        // the answer from before this recording started - which is always
+        // "no". Build the canceller whenever the owner asked for one, and ask
+        // the live question once per window instead. See `cancel_echo`.
         let echo_canceller = if mic_enabled
             && system_enabled
             && super::recording_preferences::echo_cancellation()
@@ -1251,6 +1385,7 @@ impl AudioPipeline {
             ring_buffer,
             mixer,
             echo_canceller,
+            echo_left_to_windows: None,
             recording_sender_for_mixed: None,  // Will be set by manager
             // Live level meter (set by manager); default to no output
             level_sender: None,
@@ -1519,10 +1654,7 @@ impl AudioPipeline {
                             // sees the microphone, so neither the live transcript
                             // nor a later retranscription of mic.mp4 repeats what
                             // the remote person said.
-                            let mic_window = match self.echo_canceller.as_mut() {
-                                Some(canceller) => canceller.process(&mic_window, &sys_window),
-                                None => mic_window,
-                            };
+                            let mic_window = self.cancel_echo(mic_window, &sys_window);
                             // STEP 3: Convert each source to the working rate,
                             // once, and store it. Everything that reads this
                             // recording later — VAD now, recognition and
@@ -1620,6 +1752,32 @@ impl AudioPipeline {
         Ok(())
     }
 
+    /// The microphone window with the speakers' echo taken out of it.
+    ///
+    /// Windows does this far better than we can when the microphone was opened
+    /// the way a voice call opens it: the driver has the signal that was played
+    /// and the exact delay it came back with, and an application has neither.
+    /// So while Windows is doing the job ours stands aside — subtracting an
+    /// echo that is already gone takes some of the owner's voice with it.
+    ///
+    /// The question is asked here, once per window, rather than when the
+    /// pipeline is built: the capture stream opens afterwards, and until it
+    /// has, the answer is always the stale "no" from before the recording.
+    fn cancel_echo(&mut self, mic_window: Vec<f32>, sys_window: &[f32]) -> Vec<f32> {
+        #[cfg(target_os = "windows")]
+        let system_is_cancelling = super::capture::wasapi_comms::is_active();
+        #[cfg(not(target_os = "windows"))]
+        let system_is_cancelling = false;
+
+        cancel_echo_window(
+            self.echo_canceller.as_mut(),
+            &mut self.echo_left_to_windows,
+            system_is_cancelling,
+            mic_window,
+            sys_window,
+        )
+    }
+
     fn flush_remaining_audio(&mut self) -> Result<()> {
         info!(
             "Flushing remaining audio from pipeline (processed {} chunks)",
@@ -1628,10 +1786,7 @@ impl AudioPipeline {
 
         while let Some((mic_window, sys_window)) = self.ring_buffer.extract_remaining() {
             // Same treatment as the live path for the trailing partial window
-            let mic_window = match self.echo_canceller.as_mut() {
-                Some(canceller) => canceller.process(&mic_window, &sys_window),
-                None => mic_window,
-            };
+            let mic_window = self.cancel_echo(mic_window, &sys_window);
             let mic_16k = self.mic_work.push(&mic_window);
             let sys_16k = self.system_work.push(&sys_window);
             Self::emit_source_speech(
@@ -2100,27 +2255,55 @@ mod ring_buffer_tests {
         received
     }
 
-    /// A source that really stops still has to line up afterwards, otherwise
-    /// the two channels drift apart. The stall shows in every reading that
-    /// follows it, which is what tells it apart from a late thread.
+    /// A stall in the middle of a recording is no longer patched, and this is
+    /// the test that says so on purpose rather than by omission.
+    ///
+    /// It used to be: a sustained shortfall was filled with silence so the two
+    /// channels stayed lined up. Three measured recordings showed the shortfall
+    /// was almost never real — every one of them delivered more audio than it
+    /// had running time — so the patch fired on delivery jitter and the owner
+    /// heard each patch as a click. Jitter of that depth cannot be told from a
+    /// real stall, so the choice is which mistake to make, and silence spliced
+    /// into speech is the one that is audible.
     #[test]
-    fn a_sustained_gap_is_still_padded() {
+    fn a_stall_in_the_middle_is_left_alone() {
         let sample_rate = 48_000u32;
         let mut buffer = AudioMixerRingBuffer::new(sample_rate, true, false);
         let mut clock = 0.0;
 
-        // The device stalls for 200 ms, and keeps delivering afterwards.
+        // The device stalls for 400 ms, and keeps delivering afterwards.
         let mut received = run_blocks(&mut buffer, sample_rate, &mut clock, 1, 0.0);
-        clock += 0.2;
-        received.extend(run_blocks(&mut buffer, sample_rate, &mut clock, 150, 0.0));
+        clock += 0.4;
+        received.extend(run_blocks(&mut buffer, sample_rate, &mut clock, 300, 0.0));
 
         let silence = received.iter().filter(|value| **value == 0.0).count();
-        let expected = (0.2 * sample_rate as f64) as usize;
-        assert!(
-            silence >= expected * 9 / 10,
-            "expected about {} silent samples for the stall, found {}",
-            expected,
+        assert_eq!(
+            silence, 0,
+            "{} samples of silence spliced in for a stall that is no longer patched",
             silence
+        );
+    }
+
+    /// The break that is still acted on: large enough that the stream has to be
+    /// picked up again rather than patched. Both timelines reset, and the audio
+    /// after it is kept.
+    #[test]
+    fn a_break_of_seconds_resets_the_timelines() {
+        let sample_rate = 48_000u32;
+        let mut buffer = AudioMixerRingBuffer::new(sample_rate, true, false);
+        let mut clock = 0.0;
+
+        let mut received = run_blocks(&mut buffer, sample_rate, &mut clock, 200, 0.0);
+        clock += 6.0;
+        received.extend(run_blocks(&mut buffer, sample_rate, &mut clock, 300, 0.0));
+
+        assert_eq!(buffer.timeline_resets, 1, "the break should have reset once");
+        let silence = received.iter().filter(|value| **value == 0.0).count();
+        assert_eq!(silence, 0, "a reset picks the stream up, it does not pad it");
+        assert!(
+            received.len() >= sample_rate as usize * 4,
+            "the audio on both sides of the break should survive, got {} samples",
+            received.len()
         );
     }
 
@@ -2142,6 +2325,39 @@ mod ring_buffer_tests {
 
         let silence = received.iter().filter(|value| **value == 0.0).count();
         assert_eq!(silence, 0, "{} samples of silence spliced into the stream", silence);
+    }
+
+    /// The failure the owner actually heard: not one late block, but a handler
+    /// held up again and again for longer than the observation window, so every
+    /// reading in it agreed on a shortfall that was never in the audio.
+    ///
+    /// Modelled on the measured recording — blocks arriving 120ms late for two
+    /// and a half seconds, twice, with the stream itself continuous throughout.
+    /// Under the old 100ms threshold this spliced silence into the middle of
+    /// speech; the recording it came from delivered 101.4% of its own length
+    /// with nothing dropped, so there was nothing to repair.
+    #[test]
+    fn a_handler_held_up_for_seconds_is_not_mistaken_for_a_gap() {
+        let sample_rate = 48_000u32;
+        let mut buffer = AudioMixerRingBuffer::new(sample_rate, true, false);
+        let mut clock = 0.0;
+
+        let mut received = run_blocks(&mut buffer, sample_rate, &mut clock, 200, 0.0);
+        for _ in 0..2 {
+            // 250 blocks of 10ms, each reading pushed 120ms late by the work
+            // ahead of it. No audio is missing: every block is delivered whole.
+            for _ in 0..250 {
+                received.extend(run_blocks(&mut buffer, sample_rate, &mut clock, 1, 0.12));
+            }
+            received.extend(run_blocks(&mut buffer, sample_rate, &mut clock, 200, 0.0));
+        }
+
+        let silence = received.iter().filter(|value| **value == 0.0).count();
+        assert_eq!(
+            silence, 0,
+            "{} samples of silence spliced into a stream that never broke",
+            silence
+        );
     }
 
     #[test]
@@ -2206,7 +2422,10 @@ mod ring_buffer_tests {
         let ring = AudioMixerRingBuffer::new(48_000, true, true);
 
         assert_eq!(ring.window_size_samples, 2_400);
-        assert_eq!(ring.max_buffer_size, 19_200);
+        // A second, and deliberately more than the twelve windows `can_mix`
+        // waits before mixing a source's partner without it: a cap below that
+        // would discard the samples being waited for.
+        assert_eq!(ring.max_buffer_size, 48_000);
     }
 
     #[test]
@@ -2351,3 +2570,424 @@ mod ring_buffer_tests {
         assert_eq!(samples[2], 0.0);
     }
 }
+
+/// A bench, not a test: it runs real speech through the mixing buffer under a
+/// delivery profile taken from the owner's own logs, and prints what came out
+/// the other side.
+///
+/// It exists because the alternative was the owner recording himself, playing
+/// it back and counting clicks by ear after every change. His ear was right
+/// every time — the counts matched the log to within one — but it is not a
+/// thing to spend a person on.
+///
+/// Marked `#[ignore]` and run on demand:
+///
+/// ```text
+/// frontend/src-tauri/scripts/make-bench-speech.ps1      # once
+/// cargo test --lib audio_bench -- --ignored --nocapture
+/// ```
+///
+/// What it cannot do: produce the jitter itself. That is born in the capture
+/// callback on a real device. The profile here is modelled on what the logs
+/// measured — blocks arriving up to ~350ms late and then in a burst that more
+/// than catches up — so the bench measures how the pipeline answers that, not
+/// whether the device does it.
+#[cfg(test)]
+mod audio_bench {
+    use super::*;
+    use crate::audio::echo_cancel::EchoCanceller;
+    use std::path::{Path, PathBuf};
+
+    fn bench_dir() -> PathBuf {
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../target/audio-bench")
+            .canonicalize()
+            .expect("run scripts/make-bench-speech.ps1 first")
+    }
+
+    /// The bench files are 48 kHz mono 16-bit PCM, written by our own script,
+    /// so the header is read positionally rather than with a decoder.
+    fn read_wav(path: &Path) -> Vec<f32> {
+        let bytes = std::fs::read(path).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
+        assert_eq!(&bytes[0..4], b"RIFF", "{} is not a WAV", path.display());
+        assert_eq!(bytes.len() % 2, 0);
+        bytes[44..]
+            .chunks_exact(2)
+            .map(|pair| i16::from_le_bytes([pair[0], pair[1]]) as f32 / 32768.0)
+            .collect()
+    }
+
+    fn write_wav(path: &Path, samples: &[f32], sample_rate: u32) {
+        let data_len = samples.len() * 2;
+        let mut out = Vec::with_capacity(44 + data_len);
+        out.extend_from_slice(b"RIFF");
+        out.extend_from_slice(&((36 + data_len) as u32).to_le_bytes());
+        out.extend_from_slice(b"WAVEfmt ");
+        out.extend_from_slice(&16u32.to_le_bytes());
+        out.extend_from_slice(&1u16.to_le_bytes());
+        out.extend_from_slice(&1u16.to_le_bytes());
+        out.extend_from_slice(&sample_rate.to_le_bytes());
+        out.extend_from_slice(&(sample_rate * 2).to_le_bytes());
+        out.extend_from_slice(&2u16.to_le_bytes());
+        out.extend_from_slice(&16u16.to_le_bytes());
+        out.extend_from_slice(b"data");
+        out.extend_from_slice(&(data_len as u32).to_le_bytes());
+        for sample in samples {
+            let clamped = (sample.clamp(-1.0, 1.0) * 32767.0) as i16;
+            out.extend_from_slice(&clamped.to_le_bytes());
+        }
+        std::fs::write(path, out).unwrap();
+    }
+
+    /// How rough the waveform is: the largest step between neighbouring samples
+    /// against the average step. A splice shows up here long before it is
+    /// audible, and this is the same measure used when the capture chain was
+    /// compared against ffmpeg recording the same microphone.
+    fn spikiness(samples: &[f32]) -> f32 {
+        let steps: Vec<f32> = samples.windows(2).map(|w| (w[1] - w[0]).abs()).collect();
+        if steps.is_empty() {
+            return 0.0;
+        }
+        let mean = steps.iter().sum::<f32>() / steps.len() as f32;
+        let max = steps.iter().cloned().fold(0.0f32, f32::max);
+        if mean == 0.0 {
+            0.0
+        } else {
+            max / mean
+        }
+    }
+
+    /// Steps far larger than the signal's own average — one per audible click.
+    /// Counting them is what turns "I think I heard a few" into a number.
+    fn click_count(samples: &[f32]) -> usize {
+        let steps: Vec<f32> = samples.windows(2).map(|w| (w[1] - w[0]).abs()).collect();
+        if steps.is_empty() {
+            return 0;
+        }
+        let mean = steps.iter().sum::<f32>() / steps.len() as f32;
+        let threshold = (mean * 25.0).max(0.02);
+        steps.iter().filter(|step| **step > threshold).count()
+    }
+
+    /// Arrival times modelled on the measured recordings: mostly on time, with
+    /// stretches where the handler falls behind by up to `peak` and then
+    /// delivers in a burst. Deterministic, so two runs compare.
+    /// A plateau, not a sawtooth, because that is what the logs showed: the
+    /// handler falls behind and *stays* behind for seconds at a time, which is
+    /// exactly what defeats a smoothing window that takes the minimum over one.
+    /// A sawtooth dips back to zero every cycle and the minimum never rises.
+    ///
+    /// Seven seconds on time, three seconds behind — the rhythm that produced
+    /// a repair roughly every 6.7s in the owner's 74-second recording.
+    fn jittered_arrival(block_index: usize, block_seconds: f64, peak: f64) -> f64 {
+        let ideal = block_index as f64 * block_seconds;
+        let phase = ideal % 10.0;
+        let behind = if phase >= 7.0 {
+            // Ramp on over 300ms so the plateau starts like a handler getting
+            // busy rather than like a cut.
+            let into = phase - 7.0;
+            peak * (into / 0.3).min(1.0)
+        } else {
+            0.0
+        };
+        ideal + behind
+    }
+
+    #[test]
+    #[ignore = "audio bench: run scripts/make-bench-speech.ps1 first"]
+    fn speech_through_the_mixer_under_measured_jitter() {
+        let dir = bench_dir();
+        let sample_rate = 48_000u32;
+        let mic_source = read_wav(&dir.join("speaker-ru.wav"));
+        let far_source = read_wav(&dir.join("farend-ru.wav"));
+
+        let block = sample_rate as usize / 100; // 10ms, as the device delivers
+        let block_seconds = block as f64 / sample_rate as f64;
+
+        let mut ring = AudioMixerRingBuffer::new(sample_rate, true, true);
+        let mut mixed_mic = Vec::new();
+
+        let blocks = mic_source.len() / block;
+        for index in 0..blocks {
+            let from = index * block;
+            let mic_block = mic_source[from..from + block].to_vec();
+            // The far end plays continuously; it runs out before the near end,
+            // so it repeats rather than falling silent halfway.
+            let far_block: Vec<f32> = (0..block)
+                .map(|offset| far_source[(from + offset) % far_source.len()])
+                .collect();
+
+            // The microphone is the jittered one, as in the logs; the system
+            // capture arrives on time.
+            ring.add_samples(
+                DeviceType::Microphone,
+                mic_block,
+                jittered_arrival(index, block_seconds, 0.35) + block_seconds,
+            );
+            ring.add_samples(
+                DeviceType::System,
+                far_block,
+                (index as f64 + 1.0) * block_seconds,
+            );
+
+            while let Some((mic_window, _system_window)) = ring.extract_window() {
+                mixed_mic.extend_from_slice(&mic_window);
+            }
+        }
+        if let Some((mic_window, _)) = ring.extract_remaining() {
+            mixed_mic.extend_from_slice(&mic_window);
+        }
+
+        write_wav(&dir.join("out-mic.wav"), &mixed_mic, sample_rate);
+
+        let delivered = mic_source.len() as f64 / sample_rate as f64;
+        let produced = mixed_mic.len() as f64 / sample_rate as f64;
+        println!("\n=== speech through the mixer, jitter peaking at 350ms ===");
+        println!("  fed in            {delivered:.3}s");
+        println!("  came out          {produced:.3}s  ({:+.3}s)", produced - delivered);
+        println!("  {}", ring.seam_report());
+        println!("  spikiness  source {:.1}  ->  output {:.1}", spikiness(&mic_source), spikiness(&mixed_mic));
+        println!("  hard steps source {}  ->  output {}", click_count(&mic_source), click_count(&mixed_mic));
+        println!("  written to {}", dir.join("out-mic.wav").display());
+
+        // The bench prints for a person to read, but one thing is worth failing
+        // on: audio must not be invented or lost wholesale.
+        assert!(
+            (produced - delivered).abs() < 1.0,
+            "the pipeline changed the recording's length by {:.3}s",
+            produced - delivered
+        );
+    }
+
+    /// Energy of a span, for comparing what is left of the far end.
+    fn energy(samples: &[f32]) -> f64 {
+        samples.iter().map(|s| (*s as f64) * (*s as f64)).sum()
+    }
+
+    /// The complaint this bench exists for: a video playing through the
+    /// speakers was transcribed as the owner's own speech.
+    ///
+    /// The scene is the one he made by hand — the far end plays, its echo
+    /// reaches the microphone, and he talks over it — under the delivery jitter
+    /// the logs measured. What it checks is not the canceller in isolation
+    /// (there is a unit test for that) but the canceller fed by the mixer:
+    /// echo suppression works on *aligned* pairs, and alignment is exactly what
+    /// broke. A window of microphone half filled with silence against a full
+    /// window of system audio puts the two out of step, and the far end's voice
+    /// survives in the near channel.
+    #[test]
+    #[ignore = "audio bench: run scripts/make-bench-speech.ps1 first"]
+    fn the_far_end_does_not_survive_in_the_near_channel() {
+        let dir = bench_dir();
+        let sample_rate = 48_000u32;
+        let near = read_wav(&dir.join("speaker-ru.wav"));
+        let far = read_wav(&dir.join("farend-ru.wav"));
+
+        let block = sample_rate as usize / 100;
+        let block_seconds = block as f64 / sample_rate as f64;
+        // The speakers are about 120ms away through the air and the room, and
+        // what returns is far quieter than what was played.
+        let echo_delay = (0.120 * sample_rate as f64) as usize;
+        let echo_gain = 0.35f32;
+        // The owner stays quiet for the first stretch, so what is left of the
+        // far end there can be measured on its own.
+        let near_starts = sample_rate as usize * 8;
+
+        let mut ring = AudioMixerRingBuffer::new(sample_rate, true, true);
+        let mut canceller = EchoCanceller::new(sample_rate).expect("canceller for 48 kHz");
+
+        let mut cleaned = Vec::new();
+        let mut echo_only = Vec::new();
+        let mut held: Vec<(Vec<f32>, f64)> = Vec::new();
+
+        let blocks = near.len() / block;
+        for index in 0..blocks {
+            let from = index * block;
+
+            let far_block: Vec<f32> = (0..block)
+                .map(|offset| far[(from + offset) % far.len()])
+                .collect();
+            let mic_block: Vec<f32> = (0..block)
+                .map(|offset| {
+                    let at = from + offset;
+                    let echo = if at >= echo_delay {
+                        far[(at - echo_delay) % far.len()] * echo_gain
+                    } else {
+                        0.0
+                    };
+                    let own = if at >= near_starts { near[at] } else { 0.0 };
+                    echo + own
+                })
+                .collect();
+
+            echo_only.extend(mic_block.iter().take(if from < near_starts { block } else { 0 }));
+
+            // A busy handler does not deliver late, it does not deliver at all
+            // and then delivers everything at once. Holding the blocks back and
+            // releasing them in a burst is what empties the buffer on the other
+            // side — modelling only the timestamp leaves the buffer full and
+            // misses the failure entirely.
+            held.push((mic_block, jittered_arrival(index, block_seconds, 0.35) + block_seconds));
+            // 350ms of held blocks every three seconds: the measured lag,
+            // delivered the way a busy handler delivers it.
+            let busy = (index as f64 * block_seconds) % 3.0 >= 2.65;
+            if !busy {
+                for (block, arrival) in held.drain(..) {
+                    ring.add_samples(DeviceType::Microphone, block, arrival);
+                }
+            }
+
+            ring.add_samples(
+                DeviceType::System,
+                far_block,
+                (index as f64 + 1.0) * block_seconds,
+            );
+
+            while let Some((mic_window, system_window)) = ring.extract_window() {
+                cleaned.extend_from_slice(&canceller.process(&mic_window, &system_window));
+            }
+        }
+        for (block, arrival) in held.drain(..) {
+            ring.add_samples(DeviceType::Microphone, block, arrival);
+        }
+        while let Some((mic_window, system_window)) = ring.extract_window() {
+            cleaned.extend_from_slice(&canceller.process(&mic_window, &system_window));
+        }
+
+        write_wav(&dir.join("out-aec.wav"), &cleaned, sample_rate);
+
+        // Measure over the stretch where only the far end was playing: whatever
+        // is left there is echo the canceller did not remove.
+        let quiet = near_starts.min(cleaned.len());
+        let before = energy(&echo_only[..quiet.min(echo_only.len())]);
+        let after = energy(&cleaned[..quiet]);
+        let erle = 10.0 * (before / after.max(1e-12)).log10();
+
+        // And the owner's own voice has to still be there afterwards.
+        let own_after = energy(&cleaned[quiet..]);
+        let own_before = energy(&near[near_starts..near.len().min(cleaned.len())]);
+        let kept = 10.0 * (own_after / own_before.max(1e-12)).log10();
+
+        println!("\n=== far end through the speakers, owner talking over it ===");
+        println!("  {}", ring.seam_report());
+        println!("  echo left in the near channel: ERLE {erle:.1} dB");
+        println!("  owner's own voice afterwards:  {kept:+.1} dB against the source");
+        println!("  written to {}", dir.join("out-aec.wav").display());
+
+        assert!(
+            erle > 10.0,
+            "only {erle:.1} dB of the far end was removed; it would be transcribed as the owner"
+        );
+        assert!(
+            kept > -6.0,
+            "the owner's own voice lost {kept:.1} dB, the canceller is eating the near end"
+        );
+    }
+
+}
+
+#[cfg(test)]
+mod echo_ownership_tests {
+    use super::*;
+    use crate::audio::echo_cancel::EchoCanceller;
+
+    const SAMPLE_RATE: u32 = 48_000;
+
+    /// One 50 ms window of far-end sound and the echo it leaves in the mic.
+    fn window(index: usize) -> (Vec<f32>, Vec<f32>) {
+        let samples = mixing_window_samples(SAMPLE_RATE);
+        let start = index * samples;
+        let far: Vec<f32> = (0..samples)
+            .map(|offset| {
+                let t = (start + offset) as f32 / SAMPLE_RATE as f32;
+                (t * 440.0 * std::f32::consts::TAU).sin() * 0.5
+            })
+            .collect();
+        // What comes back through the room: quieter, and later.
+        let mic: Vec<f32> = far.iter().map(|s| s * 0.35).collect();
+        (mic, far)
+    }
+
+    /// While Windows is cancelling, our canceller must not touch a sample.
+    ///
+    /// Subtracting an echo that is already gone is not free: it takes some of
+    /// the owner's voice with it, and worst of all exactly when he talks over
+    /// the speakers.
+    #[test]
+    fn windows_cancelling_leaves_the_microphone_untouched() {
+        let mut canceller = EchoCanceller::new(SAMPLE_RATE).expect("canceller for 48 kHz");
+        let mut left_to_windows = None;
+
+        for index in 0..10 {
+            let (mic, far) = window(index);
+            let out = cancel_echo_window(
+                Some(&mut canceller),
+                &mut left_to_windows,
+                true,
+                mic.clone(),
+                &far,
+            );
+            assert_eq!(out, mic, "window {index} came back changed");
+        }
+    }
+
+    /// And when Windows is not, ours is the only one left to do it.
+    #[test]
+    fn our_canceller_runs_when_windows_does_not() {
+        let mut canceller = EchoCanceller::new(SAMPLE_RATE).expect("canceller for 48 kHz");
+        let mut left_to_windows = None;
+        let mut changed = false;
+
+        for index in 0..10 {
+            let (mic, far) = window(index);
+            let out = cancel_echo_window(
+                Some(&mut canceller),
+                &mut left_to_windows,
+                false,
+                mic.clone(),
+                &far,
+            );
+            changed |= out != mic;
+        }
+
+        assert!(changed, "the microphone came back untouched with nobody else cancelling");
+    }
+
+    /// The defect this guards against: the answer used to be frozen when the
+    /// pipeline was built, and the pipeline is built *before* the capture
+    /// stream opens. Whatever Windows was doing by the time audio arrived, the
+    /// frozen answer was always the stale "no" from before the recording.
+    #[test]
+    fn the_answer_is_taken_per_window_not_once_at_the_start() {
+        let mut canceller = EchoCanceller::new(SAMPLE_RATE).expect("canceller for 48 kHz");
+        let mut left_to_windows = None;
+
+        // The stream has not opened yet: nobody else is cancelling.
+        for index in 0..4 {
+            let (mic, far) = window(index);
+            let _ = cancel_echo_window(
+                Some(&mut canceller),
+                &mut left_to_windows,
+                false,
+                mic,
+                &far,
+            );
+        }
+        assert_eq!(left_to_windows, Some(false));
+
+        // It opens in communications mode, and from here Windows has it.
+        for index in 4..8 {
+            let (mic, far) = window(index);
+            let out = cancel_echo_window(
+                Some(&mut canceller),
+                &mut left_to_windows,
+                true,
+                mic.clone(),
+                &far,
+            );
+            assert_eq!(out, mic, "window {index} was cancelled twice");
+        }
+        assert_eq!(left_to_windows, Some(true));
+    }
+}
+

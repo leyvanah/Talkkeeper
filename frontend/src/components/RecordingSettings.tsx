@@ -24,6 +24,8 @@ export interface RecordingPreferences {
   echo_text_filter?: boolean;
   /** One conversation partner: microphone is you, the speakers are them. */
   single_remote_speaker?: boolean;
+  /** Let Windows remove the speakers' echo before we receive the sound. */
+  system_echo_cancellation?: boolean;
 }
 
 interface RecordingSettingsProps {
@@ -44,6 +46,7 @@ export function RecordingSettings({ onSave }: RecordingSettingsProps) {
     echo_cancellation: true,
     echo_text_filter: false,
     single_remote_speaker: true,
+    system_echo_cancellation: true,
   });
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -97,6 +100,12 @@ export function RecordingSettings({ onSave }: RecordingSettingsProps) {
     await Analytics.track('auto_save_recording_toggled', {
       enabled: enabled.toString()
     });
+  };
+
+  const handleSystemEchoCancellationToggle = async (enabled: boolean) => {
+    const newPreferences = { ...preferences, system_echo_cancellation: enabled };
+    setPreferences(newPreferences);
+    await savePreferences(newPreferences);
   };
 
   const handleEchoCancellationToggle = async (enabled: boolean) => {
@@ -268,6 +277,24 @@ export function RecordingSettings({ onSave }: RecordingSettingsProps) {
         <Switch
           checked={preferences.single_remote_speaker !== false}
           onCheckedChange={handleSingleRemoteSpeakerToggle}
+          disabled={saving}
+          className="shrink-0"
+        />
+      </div>
+
+      {/* Windows' own echo cancellation. Above ours on purpose: when this
+          is on, ours stands down, because it has access to the played
+          signal and the exact delay and we never will. */}
+      <div className="flex min-w-0 items-start justify-between gap-3 rounded-lg border p-4 sm:items-center">
+        <div className="min-w-0 flex-1">
+          <div className="font-medium">{t('systemEchoCancellationTitle')}</div>
+          <div className="text-sm text-gray-600">
+            {t('systemEchoCancellationDescription')}
+          </div>
+        </div>
+        <Switch
+          checked={preferences.system_echo_cancellation !== false}
+          onCheckedChange={handleSystemEchoCancellationToggle}
           disabled={saving}
           className="shrink-0"
         />
