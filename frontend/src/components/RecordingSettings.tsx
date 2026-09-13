@@ -26,6 +26,7 @@ export interface RecordingPreferences {
   single_remote_speaker?: boolean;
   /** Let Windows remove the speakers' echo before we receive the sound. */
   system_echo_cancellation?: boolean;
+  own_speech_detector?: boolean;
 }
 
 interface RecordingSettingsProps {
@@ -47,6 +48,7 @@ export function RecordingSettings({ onSave }: RecordingSettingsProps) {
     echo_text_filter: false,
     single_remote_speaker: true,
     system_echo_cancellation: true,
+    own_speech_detector: false,
   });
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -104,6 +106,12 @@ export function RecordingSettings({ onSave }: RecordingSettingsProps) {
 
   const handleSystemEchoCancellationToggle = async (enabled: boolean) => {
     const newPreferences = { ...preferences, system_echo_cancellation: enabled };
+    setPreferences(newPreferences);
+    await savePreferences(newPreferences);
+  };
+
+  const handleOwnSpeechDetectorToggle = async (enabled: boolean) => {
+    const newPreferences = { ...preferences, own_speech_detector: enabled };
     setPreferences(newPreferences);
     await savePreferences(newPreferences);
   };
@@ -295,6 +303,24 @@ export function RecordingSettings({ onSave }: RecordingSettingsProps) {
         <Switch
           checked={preferences.system_echo_cancellation !== false}
           onCheckedChange={handleSystemEchoCancellationToggle}
+          disabled={saving}
+          className="shrink-0"
+        />
+      </div>
+
+      {/* The hybrid. Under the switch above because it changes what that one
+          means: Windows stops cleaning the microphone and only says who is
+          speaking, so the owner's voice survives talking over the speakers. */}
+      <div className="flex min-w-0 items-start justify-between gap-3 rounded-lg border p-4 sm:items-center">
+        <div className="min-w-0 flex-1">
+          <div className="font-medium">{t('ownSpeechDetectorTitle')}</div>
+          <div className="text-sm text-gray-600">
+            {t('ownSpeechDetectorDescription')}
+          </div>
+        </div>
+        <Switch
+          checked={preferences.own_speech_detector === true}
+          onCheckedChange={handleOwnSpeechDetectorToggle}
           disabled={saving}
           className="shrink-0"
         />

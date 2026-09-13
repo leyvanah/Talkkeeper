@@ -49,6 +49,9 @@ static SINGLE_REMOTE_SPEAKER: AtomicBool = AtomicBool::new(true);
 /// Whether the microphone is opened the way a voice call opens it, so
 /// Windows removes the speakers' echo before the samples reach us.
 static SYSTEM_ECHO_CANCELLATION: AtomicBool = AtomicBool::new(true);
+/// Whether a second microphone stream is opened purely to say when the owner
+/// is the one speaking, leaving the recorded microphone raw.
+static OWN_SPEECH_DETECTOR: AtomicBool = AtomicBool::new(false);
 
 /// Current mic gain multiplier (0.5–3.0). Applied after mic loudness normalize.
 pub fn mic_gain() -> f32 {
@@ -95,6 +98,27 @@ pub fn system_echo_cancellation() -> bool {
 
 fn set_system_echo_cancellation_runtime(enabled: bool) {
     SYSTEM_ECHO_CANCELLATION.store(enabled, Ordering::Relaxed);
+}
+
+/// Whether to open the microphone a second time, in the communications
+/// category, and read that stream only for whether the owner is speaking.
+///
+/// This answers the one thing letting Windows clean the microphone costs:
+/// when he talks over the other person, the driver takes his voice down along
+/// with the echo, and no setting asks it not to. With this on, the recorded
+/// microphone is the ordinary one, where his voice is never suppressed, and
+/// the second stream is read only to tell his speech from what is left of the
+/// speakers.
+///
+/// Off by default. It changes what lands on disk: the recording keeps the room
+/// as it sounds, including whatever trace of the speakers our own canceller
+/// leaves behind.
+pub fn own_speech_detector() -> bool {
+    OWN_SPEECH_DETECTOR.load(Ordering::Relaxed)
+}
+
+fn set_own_speech_detector_runtime(enabled: bool) {
+    OWN_SPEECH_DETECTOR.store(enabled, Ordering::Relaxed);
 }
 
 /// Whether to drop microphone text that repeats a recent system phrase.
@@ -154,6 +178,12 @@ pub struct RecordingPreferences {
     /// without the noise suppression and gain that come with the mode.
     #[serde(default = "default_system_echo_cancellation")]
     pub system_echo_cancellation: bool,
+    /// Open the microphone a second time and read that stream only for when
+    /// the owner is speaking, so his voice survives talking over the other
+    /// person (default off, Windows only). The recorded microphone is then
+    /// the ordinary one, room and all.
+    #[serde(default)]
+    pub own_speech_detector: bool,
     #[cfg(target_os = "macos")]
     #[serde(default)]
     pub system_audio_backend: Option<String>,
@@ -193,6 +223,7 @@ impl Default for RecordingPreferences {
             echo_text_filter: false,
             single_remote_speaker: true,
             system_echo_cancellation: true,
+            own_speech_detector: false,
             #[cfg(target_os = "macos")]
             system_audio_backend: Some("coreaudio".to_string()),
         }
@@ -416,6 +447,7 @@ pub async fn load_recording_preferences<R: Runtime>(
     set_echo_text_filter_runtime(prefs.echo_text_filter);
     set_single_remote_speaker_runtime(prefs.single_remote_speaker);
     set_system_echo_cancellation_runtime(prefs.system_echo_cancellation);
+    set_own_speech_detector_runtime(prefs.own_speech_detector);
     info!("Loaded recording preferences: save_folder={:?}, auto_save={}, format={}, mic={:?}, system={:?}, mic_gain={:.2}, system_gain={:.2}",
           prefs.save_folder, prefs.auto_save, prefs.file_format,
            prefs.preferred_mic_device, prefs.preferred_system_device, prefs.mic_gain,
@@ -467,6 +499,7 @@ pub async fn save_recording_preferences<R: Runtime>(
     set_echo_text_filter_runtime(preferences.echo_text_filter);
     set_single_remote_speaker_runtime(preferences.single_remote_speaker);
     set_system_echo_cancellation_runtime(preferences.system_echo_cancellation);
+    set_own_speech_detector_runtime(preferences.own_speech_detector);
     info!("Successfully persisted recording preferences to disk");
 
     // Save backend preference to global config

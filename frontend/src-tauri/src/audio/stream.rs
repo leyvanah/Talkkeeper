@@ -41,6 +41,11 @@ unsafe impl Send for StreamBackend {}
 pub struct AudioStream {
     device: Arc<AudioDevice>,
     backend: StreamBackend,
+    /// A second, unrecorded microphone stream that only says when the owner is
+    /// speaking. Held here so it lives exactly as long as the capture it
+    /// belongs to. See `audio::own_speech`.
+    #[cfg(target_os = "windows")]
+    own_speech_detector: Option<super::capture::CommsCapture>,
 }
 
 // SAFETY: AudioStream contains StreamBackend which we've marked as Send
@@ -111,9 +116,14 @@ impl AudioStream {
         // already cleaned of echo. The system channel must stay raw: it is
         // the other person's voice, and cancelling it would be cancelling
         // the recording.
+        //
+        // The own-speech detector below wins when both are asked for: it needs
+        // the ordinary microphone to record, and this branch would hand back
+        // the cleaned one instead.
         #[cfg(target_os = "windows")]
         if device_type == DeviceType::Microphone
             && super::recording_preferences::system_echo_cancellation()
+            && !super::recording_preferences::own_speech_detector()
         {
             match Self::create_comms_stream(
                 device.clone(),
@@ -135,6 +145,26 @@ impl AudioStream {
         }
 
         info!("🎵 Stream: Using CPAL backend ({}) for device: {}", backend_name, device.name);
+
+        // The hybrid: record the ordinary microphone, where the owner's voice
+        // is never suppressed, and open a second one in the communications
+        // category to be read only for when he is the one speaking. Letting
+        // Windows clean the microphone itself costs exactly this — his voice
+        // goes down along with the echo whenever he talks over the other
+        // person — and this is the way around it.
+        #[cfg(target_os = "windows")]
+        {
+            let wants_detector = device_type == DeviceType::Microphone
+                && super::recording_preferences::own_speech_detector();
+            let mut stream =
+                Self::create_cpal_stream(device, state, device_type, recording_sender).await?;
+            if wants_detector {
+                stream.own_speech_detector = Self::start_own_speech_detector();
+            }
+            return Ok(stream);
+        }
+
+        #[cfg(not(target_os = "windows"))]
         Self::create_cpal_stream(device, state, device_type, recording_sender).await
     }
 
@@ -185,7 +215,43 @@ impl AudioStream {
                 capture: Some(comms),
                 task: Some(task),
             },
+            own_speech_detector: None,
         })
+    }
+
+    /// Open the second microphone stream that only says who is speaking.
+    ///
+    /// Nothing it delivers is recorded, transcribed or written down: it feeds
+    /// the detector and nothing else. Failing to open costs the detector, not
+    /// the recording — the microphone is already captured by then — and with
+    /// the detector closed the pipeline keeps every microphone segment, which
+    /// is the behaviour from before this existed.
+    #[cfg(target_os = "windows")]
+    fn start_own_speech_detector() -> Option<super::capture::CommsCapture> {
+        let gate = super::own_speech::OwnSpeechGate::shared();
+        let feed = gate.clone();
+
+        match super::capture::CommsCapture::start_as(
+            super::capture::CommsRole::Detector,
+            move |samples| feed.push(samples),
+        ) {
+            Ok(capture) => {
+                gate.opened(capture.sample_rate());
+                info!(
+                    "🎙️ Own-speech detector listening at {} Hz — the recorded microphone stays as the room sounds",
+                    capture.sample_rate()
+                );
+                Some(capture)
+            }
+            Err(error) => {
+                gate.closed();
+                warn!(
+                    "Own-speech detector unavailable, keeping every microphone segment: {}",
+                    error
+                );
+                None
+            }
+        }
     }
 
     /// Create a CPAL-based stream (ScreenCaptureKit on macOS)
@@ -223,6 +289,8 @@ impl AudioStream {
         Ok(Self {
             device,
             backend: StreamBackend::Cpal(stream),
+            #[cfg(target_os = "windows")]
+            own_speech_detector: None,
         })
     }
 
@@ -441,6 +509,16 @@ impl AudioStream {
     pub fn stop(self) -> Result<()> {
         info!("Stopping audio stream for device: {}", self.device.name);
 
+        // The detector first, and always: the pipeline asks it whether the
+        // owner was speaking, and an open detector with nothing arriving would
+        // be answering about a recording that has ended.
+        #[cfg(target_os = "windows")]
+        if let Some(detector) = self.own_speech_detector {
+            detector.stop();
+            super::own_speech::OwnSpeechGate::shared().closed();
+            info!("Own-speech detector stopped");
+        }
+
         match self.backend {
             StreamBackend::Cpal(stream) => {
                 // CRITICAL: Pause the stream first to stop callbacks immediately
@@ -514,6 +592,12 @@ impl AudioStreamManager {
     ) -> Result<()> {
         use super::capture::get_current_backend;
         let backend = get_current_backend();
+
+        // Whatever the last recording left behind: a detector that is not
+        // being fed must not still read as open, or the pipeline would weigh
+        // microphone segments against a timeline nobody is writing.
+        super::own_speech::OwnSpeechGate::shared().closed();
+
         info!("🎙️ Starting audio streams with backend: {:?}", backend);
 
         // Start microphone stream
