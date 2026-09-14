@@ -243,31 +243,31 @@ Function MeetilyWelcomePageShow
   ${EndIf}
   SetCtlColors $R0 E6EBF5 0A0C10
 
-  ${NSD_CreateLabel} 0 2u 100% 12u "MEETILY  /  LOCAL AI MEETINGS"
+  ${NSD_CreateLabel} 0 0 100% 10u "TALKKEEPER  /  LOCAL AI MEETINGS"
   Pop $R1
   SetCtlColors $R1 50D5C7 0A0C10
   SendMessage $R1 ${WM_SETFONT} $MeetilyFontBody 1
 
-  ${NSD_CreateLabel} 0 24u 100% 30u "Meetings stay yours."
+  ${NSD_CreateLabel} 0 16u 100% 22u "Meetings stay yours."
   Pop $R1
   SetCtlColors $R1 F1F5F9 0A0C10
   SendMessage $R1 ${WM_SETFONT} $MeetilyFontTitle 1
 
-  ${NSD_CreateLabel} 0 58u 100% 28u "Private recording, transcription, speaker labels, and summaries on your own PC."
+  ${NSD_CreateLabel} 0 42u 100% 22u "Private recording, transcription, speaker labels, and summaries on your own PC."
   Pop $R1
   SetCtlColors $R1 A8B3C7 0A0C10
 
-  ${NSD_CreateGroupBox} 0 96u 100% 62u "  ONE INSTALLER, THREE BACKENDS  "
+  ${NSD_CreateGroupBox} 0 70u 100% 46u "  ONE INSTALLER, THREE BACKENDS  "
   Pop $R1
   SetCtlColors $R1 7DD3FC 0A0C10
-  ${NSD_CreateLabel} 14u 116u -14u 12u "NVIDIA CUDA    |    AMD / Intel / NVIDIA Vulkan    |    CPU fallback"
+  ${NSD_CreateLabel} 10u 84u -10u 10u "NVIDIA CUDA    |    AMD / Intel / NVIDIA Vulkan    |    CPU fallback"
   Pop $R1
   SetCtlColors $R1 E2E8F0 0A0C10
-  ${NSD_CreateLabel} 14u 136u -14u 12u "Setup detects compatible hardware automatically."
+  ${NSD_CreateLabel} 10u 98u -10u 10u "Setup detects compatible hardware automatically."
   Pop $R1
   SetCtlColors $R1 7F8CA3 0A0C10
 
-  ${NSD_CreateLabel} 0 174u 100% 24u "No account. No subscription. No analytics."
+  ${NSD_CreateLabel} 0 124u 100% 12u "No account. No subscription. No analytics."
   Pop $R1
   SetCtlColors $R1 94A3B8 0A0C10
   nsDialogs::Show
@@ -624,29 +624,29 @@ Function MeetilyFinishPageShow
   ${EndIf}
   SetCtlColors $R0 E6EBF5 0A0C10
 
-  ${NSD_CreateLabel} 0 6u 100% 14u "INSTALL COMPLETE"
+  ${NSD_CreateLabel} 0 0 100% 10u "INSTALL COMPLETE"
   Pop $R1
   SetCtlColors $R1 50D5C7 0A0C10
 
-  ${NSD_CreateLabel} 0 32u 100% 32u "Talkkeeper is ready."
+  ${NSD_CreateLabel} 0 16u 100% 22u "Talkkeeper is ready."
   Pop $R1
   SetCtlColors $R1 F1F5F9 0A0C10
   SendMessage $R1 ${WM_SETFONT} $MeetilyFontTitle 1
 
-  ${NSD_CreateLabel} 0 72u 100% 38u "Your selected transcription backend and local runtimes are installed. First launch includes a short name and audio setup."
+  ${NSD_CreateLabel} 0 42u 100% 24u "Your selected transcription backend and local runtimes are installed. First launch includes a short name and audio setup."
   Pop $R1
   SetCtlColors $R1 A8B3C7 0A0C10
 
-  ${NSD_CreateCheckbox} 8u 128u -8u 14u "Launch Talkkeeper now"
+  ${NSD_CreateCheckbox} 0 74u 100% 12u "Launch Talkkeeper now"
   Pop $MeetilyFinishLaunch
   SetCtlColors $MeetilyFinishLaunch E6EBF5 0A0C10
   ${NSD_Check} $MeetilyFinishLaunch
 
-  ${NSD_CreateCheckbox} 8u 154u -8u 14u "Create a desktop shortcut"
+  ${NSD_CreateCheckbox} 0 92u 100% 12u "Create a desktop shortcut"
   Pop $MeetilyFinishDesktop
   SetCtlColors $MeetilyFinishDesktop E6EBF5 0A0C10
 
-  ${NSD_CreateLabel} 0 188u 100% 20u "All app data remains local unless you explicitly configure a cloud provider."
+  ${NSD_CreateLabel} 0 118u 100% 18u "All app data remains local unless you explicitly configure a cloud provider."
   Pop $R1
   SetCtlColors $R1 64748B 0A0C10
 
@@ -1432,6 +1432,20 @@ Section Uninstall
     SetShellVarContext current
     RmDir /r "$APPDATA\${BUNDLEID}"
     RmDir /r "$LOCALAPPDATA\${BUNDLEID}"
+    ; The keystore is not app data in the ordinary sense: it holds the only
+    ; copy of the key that opens every recording ever made, and the recordings
+    ; live OUTSIDE $INSTDIR, so wiping it here leaves files on disk that nobody
+    ; can ever read again — silently, and with no way back. It cost the owner
+    ; his whole archive once; copy it out first and say where it went.
+    ${If} ${FileExists} "$INSTDIR\data\keystore.json"
+      CreateDirectory "$DOCUMENTS\Talkkeeper-key-backup"
+      CopyFiles /SILENT "$INSTDIR\data\keystore.json" "$DOCUMENTS\Talkkeeper-key-backup\keystore.json"
+      ${If} ${FileExists} "$DOCUMENTS\Talkkeeper-key-backup\keystore.json"
+      ${AndIf} $PassiveMode <> 1
+        MessageBox MB_ICONINFORMATION|MB_OK "Your recordings are encrypted, and the key that opens them was about to be deleted along with the app data.$\r$\n$\r$\nA copy has been saved here:$\r$\n$DOCUMENTS\Talkkeeper-key-backup\keystore.json$\r$\n$\r$\nKeep this file. Without it — and without your password — existing recordings cannot be opened again."
+      ${EndIf}
+    ${EndIf}
+
     RmDir /r "$INSTDIR\data"
     RmDir "$INSTDIR"
   ${EndIf}
