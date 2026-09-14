@@ -204,10 +204,10 @@ VIAddVersionKey "ProductVersion" "${VERSION}"
 !define MUI_FINISHPAGE_TITLE_3LINES
 !define MUI_FINISHPAGE_TEXT "Talkkeeper is installed.$\r$\n$\r$\nLaunch it to finish a 30-second onboarding (your name + a quick audio check). Everything stays on this machine."
 
-!define MUI_INSTFILESPAGE_FINISHHEADER_TEXT "Install complete"
-!define MUI_INSTFILESPAGE_FINISHHEADER_SUBTEXT "Talkkeeper is ready on this PC."
-!define MUI_INSTFILESPAGE_ABORTHEADER_TEXT "Install cancelled"
-!define MUI_INSTFILESPAGE_ABORTHEADER_SUBTEXT "No changes were finished."
+!define MUI_INSTFILESPAGE_FINISHHEADER_TEXT "$(tkFinishHeader)"
+!define MUI_INSTFILESPAGE_FINISHHEADER_SUBTEXT "$(tkFinishSub)"
+!define MUI_INSTFILESPAGE_ABORTHEADER_TEXT "$(tkAbortHeader)"
+!define MUI_INSTFILESPAGE_ABORTHEADER_SUBTEXT "$(tkAbortSub)"
 
 !define MUI_CUSTOMFUNCTION_GUIINIT MeetilyGUIInit
 
@@ -243,31 +243,31 @@ Function MeetilyWelcomePageShow
   ${EndIf}
   SetCtlColors $R0 E6EBF5 0A0C10
 
-  ${NSD_CreateLabel} 0 0 100% 10u "TALKKEEPER  /  LOCAL AI MEETINGS"
+  ${NSD_CreateLabel} 0 0 100% 10u "$(tkEyebrow)"
   Pop $R1
   SetCtlColors $R1 50D5C7 0A0C10
   SendMessage $R1 ${WM_SETFONT} $MeetilyFontBody 1
 
-  ${NSD_CreateLabel} 0 16u 100% 22u "Meetings stay yours."
+  ${NSD_CreateLabel} 0 16u 100% 22u "$(tkWelcomeTitle)"
   Pop $R1
   SetCtlColors $R1 F1F5F9 0A0C10
   SendMessage $R1 ${WM_SETFONT} $MeetilyFontTitle 1
 
-  ${NSD_CreateLabel} 0 42u 100% 22u "Private recording, transcription, speaker labels, and summaries on your own PC."
+  ${NSD_CreateLabel} 0 42u 100% 22u "$(tkWelcomeText)"
   Pop $R1
   SetCtlColors $R1 A8B3C7 0A0C10
 
-  ${NSD_CreateGroupBox} 0 70u 100% 46u "  ONE INSTALLER, THREE BACKENDS  "
+  ${NSD_CreateGroupBox} 0 70u 100% 46u "$(tkBackendsBox)"
   Pop $R1
   SetCtlColors $R1 7DD3FC 0A0C10
-  ${NSD_CreateLabel} 10u 84u -10u 10u "NVIDIA CUDA    |    AMD / Intel / NVIDIA Vulkan    |    CPU fallback"
+  ${NSD_CreateLabel} 10u 84u -10u 10u "$(tkBackendsList)"
   Pop $R1
   SetCtlColors $R1 E2E8F0 0A0C10
-  ${NSD_CreateLabel} 10u 98u -10u 10u "Setup detects compatible hardware automatically."
+  ${NSD_CreateLabel} 10u 98u -10u 10u "$(tkBackendsHint)"
   Pop $R1
   SetCtlColors $R1 7F8CA3 0A0C10
 
-  ${NSD_CreateLabel} 0 124u 100% 12u "No account. No subscription. No analytics."
+  ${NSD_CreateLabel} 0 124u 100% 12u "$(tkNoAccount)"
   Pop $R1
   SetCtlColors $R1 94A3B8 0A0C10
   nsDialogs::Show
@@ -308,7 +308,7 @@ Function MeetilyGUIInit
   GetDlgItem $R0 $HWNDPARENT 1028
   IntCmp $R0 0 +3 0 0
     SetCtlColors $R0 5A6578 0A0C10
-    SendMessage $R0 ${WM_SETTEXT} 0 "STR:Talkkeeper  ·  local AI meetings"
+    SendMessage $R0 ${WM_SETTEXT} 0 "STR:$(tkFooter)"
   GetDlgItem $R0 $HWNDPARENT 1035
   IntCmp $R0 0 +2 0 0
     ShowWindow $R0 ${SW_HIDE}
@@ -419,14 +419,14 @@ Function MeetilyDarkenInstFiles
   FindWindow $R0 "#32770" "" $HWNDPARENT
 
   ${If} $UpdateMode = 1
-    SendMessage $HWNDPARENT ${WM_SETTEXT} 0 "STR:Talkkeeper Updater"
-    !insertmacro MUI_HEADER_TEXT "Updating Talkkeeper" "Updating app files and refreshing local AI runtimes..."
+    SendMessage $HWNDPARENT ${WM_SETTEXT} 0 "STR:$(tkUpdaterTitle)"
+    !insertmacro MUI_HEADER_TEXT "$(tkUpdateHeader)" "$(tkUpdateSub)"
     GetDlgItem $R1 $HWNDPARENT 1028
-    SendMessage $R1 ${WM_SETTEXT} 0 "STR:Talkkeeper updater  ·  local AI meetings"
+    SendMessage $R1 ${WM_SETTEXT} 0 "STR:$(tkUpdaterFooter)"
     GetDlgItem $R1 $HWNDPARENT 2
-    SendMessage $R1 ${WM_SETTEXT} 0 "STR:Cancel update"
+    SendMessage $R1 ${WM_SETTEXT} 0 "STR:$(tkCancelUpdate)"
   ${Else}
-    !insertmacro MUI_HEADER_TEXT "Installing Talkkeeper" "Copying app files and preparing local AI runtimes..."
+    !insertmacro MUI_HEADER_TEXT "$(tkInstallHeader)" "$(tkInstallSub)"
   ${EndIf}
 
   ; Progress bar → teal on dark track
@@ -524,20 +524,17 @@ Function MeetilyRefreshInstallProgress
   ${If} $MeetilyReportedProgress > $R0
     StrCpy $R0 $MeetilyReportedProgress
   ${EndIf}
+  ; Follow the bar instead of crawling two points at a time behind it: the
+  ; smoothing looked calm and read "0% complete" while extraction was at 58.
   ${If} $R0 > $MeetilyDisplayedProgress
-    IntOp $R2 $R0 - $MeetilyDisplayedProgress
-    ${If} $R2 > 6
-      IntOp $MeetilyDisplayedProgress $MeetilyDisplayedProgress + 2
-    ${Else}
-      StrCpy $MeetilyDisplayedProgress $R0
-    ${EndIf}
+    StrCpy $MeetilyDisplayedProgress $R0
   ${EndIf}
 
   GetDlgItem $R1 $HWNDPARENT 1038
   ${If} $UpdateMode = 1
-    SendMessage $R1 ${WM_SETTEXT} 0 "STR:Updating app files to version ${VERSION}  |  $MeetilyDisplayedProgress% complete"
+    SendMessage $R1 ${WM_SETTEXT} 0 "STR:$(tkProgressUpdate)  |  $MeetilyDisplayedProgress$(tkPercentDone)"
   ${Else}
-    SendMessage $R1 ${WM_SETTEXT} 0 "STR:Copying files and setting up local runtimes  |  $MeetilyDisplayedProgress% complete"
+    SendMessage $R1 ${WM_SETTEXT} 0 "STR:$(tkProgressCopy)  |  $MeetilyDisplayedProgress$(tkPercentDone)"
   ${EndIf}
   meetily_progress_done:
   Pop $R3
@@ -549,7 +546,7 @@ FunctionEnd
 ; ----- Custom install-location page (no stock groupbox wizard look) -----
 Function MeetilyDirBrowseClick
   ${NSD_GetText} $MeetilyDirText $0
-  nsDialogs::SelectFolderDialog "Choose Talkkeeper install folder" "$0"
+  nsDialogs::SelectFolderDialog "$(tkDirBrowseTitle)" "$0"
   Pop $0
   ${If} $0 != "error"
   ${AndIf} $0 != ""
@@ -562,17 +559,17 @@ Function MeetilyDirPageShow
     Abort
   ${EndIf}
 
-  !insertmacro MUI_HEADER_TEXT "Install location" "Pick a folder — the default is recommended"
+  !insertmacro MUI_HEADER_TEXT "$(tkDirHeader)" "$(tkDirSub)"
   nsDialogs::Create 1018
   Pop $MeetilyDirDlg
   SetCtlColors $MeetilyDirDlg E6EBF5 0A0C10
 
-  ${NSD_CreateLabel} 0 0 100% 28u "Talkkeeper will be installed for your Windows user account. You can change the folder below if you prefer."
+  ${NSD_CreateLabel} 0 0 100% 28u "$(tkDirIntro)"
   Pop $0
   SetCtlColors $0 A8B3C7 0A0C10
   SendMessage $0 ${WM_SETFONT} $MeetilyFontBody 1
 
-  ${NSD_CreateLabel} 0 36u 100% 12u "FOLDER"
+  ${NSD_CreateLabel} 0 36u 100% 12u "$(tkDirFolder)"
   Pop $0
   SetCtlColors $0 2DD4BF 0A0C10
   SendMessage $0 ${WM_SETFONT} $MeetilyFontTitle 1
@@ -582,16 +579,16 @@ Function MeetilyDirPageShow
   SetCtlColors $MeetilyDirText E6EBF5 12151C
   System::Call 'uxtheme::SetWindowTheme(p$MeetilyDirText, w"DarkMode_Explorer", p0)'
 
-  ${NSD_CreateButton} 78% 51u 22% 15u "Browse…"
+  ${NSD_CreateButton} 78% 51u 22% 15u "$(tkDirBrowse)"
   Pop $MeetilyDirBrowse
   ${NSD_OnClick} $MeetilyDirBrowse MeetilyDirBrowseClick
   System::Call 'uxtheme::SetWindowTheme(p$MeetilyDirBrowse, w"DarkMode_Explorer", p0)'
 
-  ${NSD_CreateLabel} 0 78u 100% 24u "Approx. 810 MB required for the app, models bundle hooks, and GPU runtimes. WebView2 may add a little more on first run."
+  ${NSD_CreateLabel} 0 78u 100% 24u "$(tkDirSpace)"
   Pop $MeetilyDirHint
   SetCtlColors $MeetilyDirHint 5A6578 0A0C10
 
-  ${NSD_CreateLabel} 0 110u 100% 36u "After files copy, setup quietly ensures WebView2, Visual C++, and CUDA libraries. An NVIDIA GPU is used automatically when a driver is present."
+  ${NSD_CreateLabel} 0 110u 100% 36u "$(tkDirRuntimes)"
   Pop $0
   SetCtlColors $0 A8B3C7 0A0C10
 
@@ -626,16 +623,16 @@ Function MeetilyFinishPageShow
 
   ; No eyebrow here: the wizard's own header band already reads "Install
   ; complete" two lines above, and saying it twice was just noise.
-  ${NSD_CreateLabel} 0 0 100% 22u "Talkkeeper is ready."
+  ${NSD_CreateLabel} 0 0 100% 22u "$(tkFinishTitle)"
   Pop $R1
   SetCtlColors $R1 F1F5F9 0A0C10
   SendMessage $R1 ${WM_SETFONT} $MeetilyFontTitle 1
 
-  ${NSD_CreateLabel} 0 26u 100% 24u "Your selected transcription backend and local runtimes are installed. First launch includes a short name and audio setup."
+  ${NSD_CreateLabel} 0 26u 100% 24u "$(tkFinishText)"
   Pop $R1
   SetCtlColors $R1 A8B3C7 0A0C10
 
-  ${NSD_CreateCheckbox} 0 60u 100% 12u "Launch Talkkeeper now"
+  ${NSD_CreateCheckbox} 0 60u 100% 12u "$(tkLaunchNow)"
   Pop $MeetilyFinishLaunch
   ; A themed checkbox draws its own label, in the theme's near-black text
   ; colour, and ignores SetCtlColors entirely - which on this page means an
@@ -645,17 +642,17 @@ Function MeetilyFinishPageShow
   SetCtlColors $MeetilyFinishLaunch E6EBF5 0A0C10
   ${NSD_Check} $MeetilyFinishLaunch
 
-  ${NSD_CreateCheckbox} 0 78u 100% 12u "Create a desktop shortcut"
+  ${NSD_CreateCheckbox} 0 78u 100% 12u "$(createDesktop)"
   Pop $MeetilyFinishDesktop
   System::Call 'uxtheme::SetWindowTheme(p$MeetilyFinishDesktop, w" ", w" ")'
   SetCtlColors $MeetilyFinishDesktop E6EBF5 0A0C10
 
-  ${NSD_CreateLabel} 0 104u 100% 18u "All app data remains local unless you explicitly configure a cloud provider."
+  ${NSD_CreateLabel} 0 104u 100% 18u "$(tkFinishLocal)"
   Pop $R1
   SetCtlColors $R1 64748B 0A0C10
 
   GetDlgItem $R1 $HWNDPARENT 1
-  SendMessage $R1 ${WM_SETTEXT} 0 "STR:Finish"
+  SendMessage $R1 ${WM_SETTEXT} 0 "STR:$(tkFinishButton)"
   nsDialogs::Show
 FunctionEnd
 
@@ -781,16 +778,25 @@ Function PageReinstall
     nsDialogs::Create 1018
     Pop $R4
     ${IfThen} $(^RTL) = 1 ${|} nsDialogs::SetRTL $(^RTL) ${|}
+    ; The one page still wearing the stock light theme, which made it look like
+    ; a different program had taken over mid-install. Same palette as the rest.
+    SetCtlColors $R4 E6EBF5 0A0C10
 
-    ${NSD_CreateLabel} 0 0 100% 24u $R1
+    ${NSD_CreateLabel} 0 4u 100% 28u $R1
     Pop $R1
+    SetCtlColors $R1 A8B3C7 0A0C10
 
-    ${NSD_CreateRadioButton} 30u 50u -30u 8u $R2
+    ${NSD_CreateRadioButton} 8u 44u -8u 12u $R2
     Pop $R2
+    ; Radio buttons hide their label behind the theme exactly as checkboxes do.
+    System::Call 'uxtheme::SetWindowTheme(p$R2, w" ", w" ")'
+    SetCtlColors $R2 E6EBF5 0A0C10
     ${NSD_OnClick} $R2 PageReinstallUpdateSelection
 
-    ${NSD_CreateRadioButton} 30u 70u -30u 8u $R3
+    ${NSD_CreateRadioButton} 8u 62u -8u 12u $R3
     Pop $R3
+    System::Call 'uxtheme::SetWindowTheme(p$R3, w" ", w" ")'
+    SetCtlColors $R3 E6EBF5 0A0C10
     ; Disable this radio button if downgrading and downgrades are disabled
     !if "${ALLOWDOWNGRADES}" == "false"
       ${IfThen} $R0 = -1 ${|} EnableWindow $R3 0 ${|}
@@ -908,8 +914,8 @@ Var AppStartMenuFolder
 
 ; 7. Installation page (details + teal progress)
 !define MUI_PAGE_CUSTOMFUNCTION_SHOW MeetilyDarkenInstFiles
-!define MUI_PAGE_HEADER_TEXT "Installing Talkkeeper"
-!define MUI_PAGE_HEADER_SUBTEXT "Copying files and setting up local runtimes…"
+!define MUI_PAGE_HEADER_TEXT "$(tkInstallHeader)"
+!define MUI_PAGE_HEADER_SUBTEXT "$(tkInstallSub)"
 !insertmacro MUI_PAGE_INSTFILES
 
 ; 8. Custom completion page
@@ -969,8 +975,12 @@ FunctionEnd
 !insertmacro MUI_LANGUAGE "{{this}}"
 {{/each}}
 !insertmacro MUI_RESERVEFILE_LANGDLL
+; /CHARSET=UTF8 because the Russian strings are UTF-8 and this makensis is not
+; BOM-aware: a byte-order mark at the top of an included file arrives as part of
+; the first token and the build dies with Invalid command. Stating the encoding
+; is the version-safe way to say it, and the files carry no BOM.
 {{#each language_files}}
-  !include "{{this}}"
+  !include /CHARSET=UTF8 "{{this}}"
 {{/each}}
 
 Function .onInit
@@ -993,6 +1003,22 @@ Function .onInit
 
   !if "${DISPLAYLANGUAGESELECTOR}" == "true"
     !insertmacro MUI_LANGDLL_DISPLAY
+  !endif
+
+  ; Follow the system language, the way the app itself does: its default is the
+  ; system locale, and an installer that argues with that is just noise. Asked
+  ; of Windows directly rather than left to MUI, which only auto-selects when
+  ; the language dialog is shown - and it is not.
+  !ifdef LANG_RUSSIAN
+    Push $0
+    System::Call 'kernel32::GetUserDefaultUILanguage() i .r0'
+    IntOp $0 $0 & 0x3FF
+    ${If} $0 = 25 ; LANG_RUSSIAN
+      StrCpy $LANGUAGE ${LANG_RUSSIAN}
+    ${Else}
+      StrCpy $LANGUAGE ${LANG_ENGLISH}
+    ${EndIf}
+    Pop $0
   !endif
 
   !insertmacro SetContext
@@ -1446,7 +1472,7 @@ Section Uninstall
       CopyFiles /SILENT "$INSTDIR\data\keystore.json" "$DOCUMENTS\Talkkeeper-key-backup\keystore.json"
       ${If} ${FileExists} "$DOCUMENTS\Talkkeeper-key-backup\keystore.json"
       ${AndIf} $PassiveMode <> 1
-        MessageBox MB_ICONINFORMATION|MB_OK "Your recordings are encrypted, and the key that opens them was about to be deleted along with the app data.$\r$\n$\r$\nA copy has been saved here:$\r$\n$DOCUMENTS\Talkkeeper-key-backup\keystore.json$\r$\n$\r$\nKeep this file. Without it — and without your password — existing recordings cannot be opened again."
+        MessageBox MB_ICONINFORMATION|MB_OK "$(tkKeyRescued)"
       ${EndIf}
     ${EndIf}
 

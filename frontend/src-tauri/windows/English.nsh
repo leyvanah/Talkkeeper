@@ -26,3 +26,49 @@ LangString webview2Downloading ${LANG_ENGLISH} "Downloading WebView2 bootstrappe
 LangString webview2InstallError ${LANG_ENGLISH} "WebView2 install failed (exit code $1)"
 LangString webview2InstallSuccess ${LANG_ENGLISH} "WebView2 installed"
 LangString deleteAppData ${LANG_ENGLISH} "Also delete meetings, models, and local data"
+
+; --- welcome page ---
+LangString tkEyebrow ${LANG_ENGLISH} "TALKKEEPER  /  LOCAL AI MEETINGS"
+LangString tkWelcomeTitle ${LANG_ENGLISH} "Meetings stay yours."
+LangString tkWelcomeText ${LANG_ENGLISH} "Recording, transcription, speaker labels and summaries on your own PC."
+LangString tkBackendsBox ${LANG_ENGLISH} "  ONE INSTALLER, THREE BACKENDS  "
+LangString tkBackendsList ${LANG_ENGLISH} "NVIDIA CUDA    |    AMD / Intel / NVIDIA Vulkan    |    CPU fallback"
+LangString tkBackendsHint ${LANG_ENGLISH} "Setup picks the right one by itself."
+LangString tkNoAccount ${LANG_ENGLISH} "No account. No subscription. No analytics."
+LangString tkFooter ${LANG_ENGLISH} "Talkkeeper  ·  local AI meetings"
+
+; --- install location page ---
+LangString tkDirHeader ${LANG_ENGLISH} "Install location"
+LangString tkDirSub ${LANG_ENGLISH} "Pick a folder — the suggested one is fine"
+LangString tkDirIntro ${LANG_ENGLISH} "Talkkeeper will be installed for your Windows user account. You can change the folder below."
+LangString tkDirFolder ${LANG_ENGLISH} "FOLDER"
+LangString tkDirBrowse ${LANG_ENGLISH} "Browse…"
+LangString tkDirBrowseTitle ${LANG_ENGLISH} "Choose the Talkkeeper install folder"
+LangString tkDirSpace ${LANG_ENGLISH} "About 810 MB is needed — the app, the models and the graphics libraries. WebView2 adds a little more on first run."
+LangString tkDirRuntimes ${LANG_ENGLISH} "After the files are copied, setup quietly adds WebView2, Visual C++ and the CUDA libraries. An NVIDIA card is used on its own when a driver is present."
+
+; --- installing page ---
+LangString tkInstallHeader ${LANG_ENGLISH} "Installing Talkkeeper"
+LangString tkInstallSub ${LANG_ENGLISH} "Copying files and preparing the local engines…"
+LangString tkUpdateHeader ${LANG_ENGLISH} "Updating Talkkeeper"
+LangString tkUpdateSub ${LANG_ENGLISH} "Refreshing files and local engines…"
+LangString tkUpdaterTitle ${LANG_ENGLISH} "Talkkeeper Updater"
+LangString tkUpdaterFooter ${LANG_ENGLISH} "Talkkeeper  ·  updater"
+LangString tkCancelUpdate ${LANG_ENGLISH} "Cancel update"
+LangString tkProgressCopy ${LANG_ENGLISH} "Copying files and setting up the engines"
+LangString tkProgressUpdate ${LANG_ENGLISH} "Updating to version ${VERSION}"
+LangString tkPercentDone ${LANG_ENGLISH} "% complete"
+
+; --- finish page ---
+LangString tkFinishHeader ${LANG_ENGLISH} "Install complete"
+LangString tkFinishSub ${LANG_ENGLISH} "Talkkeeper is ready on this PC."
+LangString tkAbortHeader ${LANG_ENGLISH} "Install cancelled"
+LangString tkAbortSub ${LANG_ENGLISH} "No changes were finished."
+LangString tkFinishTitle ${LANG_ENGLISH} "Talkkeeper is ready."
+LangString tkFinishText ${LANG_ENGLISH} "The transcription backend and the local libraries are installed. First launch has a short setup: your name and an audio check."
+LangString tkLaunchNow ${LANG_ENGLISH} "Launch Talkkeeper now"
+LangString tkFinishLocal ${LANG_ENGLISH} "All data stays on this PC unless you configure a cloud provider yourself."
+LangString tkFinishButton ${LANG_ENGLISH} "Finish"
+
+; --- uninstall ---
+LangString tkKeyRescued ${LANG_ENGLISH} "Your recordings are encrypted, and the key that opens them was about to be deleted along with the app data.$\r$\n$\r$\nA copy has been saved here:$\r$\n$DOCUMENTS\Talkkeeper-key-backup\keystore.json$\r$\n$\r$\nKeep this file. Without it — and without your password — existing recordings cannot be opened again."
