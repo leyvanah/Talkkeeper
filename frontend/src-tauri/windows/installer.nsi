@@ -624,29 +624,33 @@ Function MeetilyFinishPageShow
   ${EndIf}
   SetCtlColors $R0 E6EBF5 0A0C10
 
-  ${NSD_CreateLabel} 0 0 100% 10u "INSTALL COMPLETE"
-  Pop $R1
-  SetCtlColors $R1 50D5C7 0A0C10
-
-  ${NSD_CreateLabel} 0 16u 100% 22u "Talkkeeper is ready."
+  ; No eyebrow here: the wizard's own header band already reads "Install
+  ; complete" two lines above, and saying it twice was just noise.
+  ${NSD_CreateLabel} 0 0 100% 22u "Talkkeeper is ready."
   Pop $R1
   SetCtlColors $R1 F1F5F9 0A0C10
   SendMessage $R1 ${WM_SETFONT} $MeetilyFontTitle 1
 
-  ${NSD_CreateLabel} 0 42u 100% 24u "Your selected transcription backend and local runtimes are installed. First launch includes a short name and audio setup."
+  ${NSD_CreateLabel} 0 26u 100% 24u "Your selected transcription backend and local runtimes are installed. First launch includes a short name and audio setup."
   Pop $R1
   SetCtlColors $R1 A8B3C7 0A0C10
 
-  ${NSD_CreateCheckbox} 0 74u 100% 12u "Launch Talkkeeper now"
+  ${NSD_CreateCheckbox} 0 60u 100% 12u "Launch Talkkeeper now"
   Pop $MeetilyFinishLaunch
+  ; A themed checkbox draws its own label, in the theme's near-black text
+  ; colour, and ignores SetCtlColors entirely - which on this page means an
+  ; invisible label. Dropping the theme from just these two controls hands the
+  ; drawing back to the plain control, and that one does honour the colours.
+  System::Call 'uxtheme::SetWindowTheme(p$MeetilyFinishLaunch, w" ", w" ")'
   SetCtlColors $MeetilyFinishLaunch E6EBF5 0A0C10
   ${NSD_Check} $MeetilyFinishLaunch
 
-  ${NSD_CreateCheckbox} 0 92u 100% 12u "Create a desktop shortcut"
+  ${NSD_CreateCheckbox} 0 78u 100% 12u "Create a desktop shortcut"
   Pop $MeetilyFinishDesktop
+  System::Call 'uxtheme::SetWindowTheme(p$MeetilyFinishDesktop, w" ", w" ")'
   SetCtlColors $MeetilyFinishDesktop E6EBF5 0A0C10
 
-  ${NSD_CreateLabel} 0 118u 100% 18u "All app data remains local unless you explicitly configure a cloud provider."
+  ${NSD_CreateLabel} 0 104u 100% 18u "All app data remains local unless you explicitly configure a cloud provider."
   Pop $R1
   SetCtlColors $R1 64748B 0A0C10
 
