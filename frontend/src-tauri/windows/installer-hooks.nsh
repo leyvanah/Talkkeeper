@@ -355,8 +355,45 @@ Var MeetilyCudaNotice
   RMDir /r "$INSTDIR\installer-variants"
 !macroend
 
+; A line in $INSTDIR\data\install.log for every run that gets as far as copying
+; files.
+;
+; Written because the opposite — the absence of a line — is the answer to a
+; question that cost a morning: the owner ran the installer, nothing was
+; replaced, and the only way to establish that was comparing file sizes by
+; hand. An installer that leaves no trace cannot be diagnosed at all.
+!macro Meetily_Stamp Stage
+  Push $0
+  Push $1
+  Push $2
+  Push $3
+  Push $4
+  Push $5
+  Push $6
+  Push $9
+  CreateDirectory "$INSTDIR\data"
+  ; day month year day-of-week hour minute second
+  ${GetTime} "" "L" $0 $1 $2 $3 $4 $5 $6
+  ClearErrors
+  FileOpen $9 "$INSTDIR\data\install.log" a
+  ${IfNot} ${Errors}
+    FileSeek $9 0 END
+    FileWrite $9 "$2-$1-$0 $4:$5:$6  ${Stage}  v${VERSION}  $INSTDIR$\r$\n"
+    FileClose $9
+  ${EndIf}
+  Pop $9
+  Pop $6
+  Pop $5
+  Pop $4
+  Pop $3
+  Pop $2
+  Pop $1
+  Pop $0
+!macroend
+
 !macro NSIS_HOOK_PREINSTALL
   SetDetailsPrint both
+  !insertmacro Meetily_Stamp "files: begin"
   DetailPrint "────────────────────────────────────────"
   DetailPrint " Talkkeeper"
   ${If} $UpdateMode == 1
@@ -409,6 +446,7 @@ Var MeetilyCudaNotice
 
   DetailPrint ""
   DetailPrint "Runtime setup finished."
+  !insertmacro Meetily_Stamp "install: finished"
   !insertmacro MeetilyReportProgress 98
   DetailPrint "────────────────────────────────────────"
 !macroend
