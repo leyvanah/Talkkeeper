@@ -304,3 +304,129 @@ mod tests {
         assert!(AudioSource::open_with_key(&path, other.as_ref()).is_err());
     }
 }
+
+#[cfg(test)]
+mod recovery {
+    use super::*;
+    use std::path::PathBuf;
+
+    /// Decrypt recordings with a keystore that is no longer the app's.
+    ///
+    /// Not a test of anything — a recovery tool, kept beside the primitives it
+    /// uses so it cannot drift from them. It exists because an uninstall wiped
+    /// the owner's keystore while his recordings, which live outside the
+    /// install directory, survived: the audio was intact and unreadable at the
+    /// same moment, and the only copy of the key was in a backup.
+    ///
+    /// The password is read from the environment and never appears here, in the
+    /// output, or in any file this writes. Run it with the keystore that
+    /// matches the recordings:
+    ///
+    /// ```text
+    /// TK_KEYSTORE=...\keystore.json TK_PASSWORD=... \
+    ///   TK_IN=...\rec-5c2abf... TK_OUT=...\recovered \
+    ///   cargo test --lib recover_recordings -- --ignored --nocapture
+    /// ```
+    ///
+    /// `TK_IN` may be one recording folder or the whole folder of them; every
+    /// file underneath is copied to `TK_OUT`, decrypted if it was encrypted and
+    /// passed through untouched if it was not. Files written under a different
+    /// key are listed and skipped, because an archive can hold several.
+    #[test]
+    #[ignore = "recovery tool: needs TK_KEYSTORE, TK_PASSWORD, TK_IN, TK_OUT"]
+    fn recover_recordings() {
+        let need = |name: &str| {
+            std::env::var(name)
+                .unwrap_or_else(|_| panic!("{name} is not set; see the doc comment above"))
+        };
+
+        let keystore_path = PathBuf::from(need("TK_KEYSTORE"));
+        let password = need("TK_PASSWORD");
+        let input = PathBuf::from(need("TK_IN"));
+        let output = PathBuf::from(need("TK_OUT"));
+
+        let mut keystore = crate::security::keystore::Keystore::load_from(&keystore_path)
+            .expect("the keystore could not be read")
+            .expect("there is no keystore at that path");
+        let dek = keystore
+            .unlock_with_password(&password)
+            .expect("that password does not open this keystore");
+
+        let mut done = 0usize;
+        let mut plain = 0usize;
+        let mut failed = Vec::new();
+        walk(&input, &input, &output, &dek[..], &mut done, &mut plain, &mut failed);
+
+        println!("\n=== recovered into {} ===", output.display());
+        println!("  decrypted:        {done}");
+        println!("  copied as-is:     {plain}");
+        println!("  not for this key:  {}", failed.len());
+        for (path, why) in &failed {
+            println!("    {} - {why}", path.display());
+        }
+
+        // Failures are expected and fine: a folder of recordings can hold
+        // files written under several keys, and this key opens the ones it
+        // opens. What is not fine is opening nothing at all, which means the
+        // keystore does not belong to any of these recordings.
+        assert!(
+            done > 0,
+            "not a single file decrypted with this keystore; it does not match these recordings"
+        );
+    }
+
+    fn walk(
+        root: &std::path::Path,
+        dir: &std::path::Path,
+        output: &std::path::Path,
+        key: &[u8],
+        done: &mut usize,
+        plain: &mut usize,
+        failed: &mut Vec<(PathBuf, String)>,
+    ) {
+        let entries = match std::fs::read_dir(dir) {
+            Ok(entries) => entries,
+            Err(error) => {
+                failed.push((dir.to_path_buf(), error.to_string()));
+                return;
+            }
+        };
+
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                walk(root, &path, output, key, done, plain, failed);
+                continue;
+            }
+
+            let relative = path.strip_prefix(root).unwrap_or(&path);
+            let target = output.join(relative);
+            if let Some(parent) = target.parent() {
+                let _ = std::fs::create_dir_all(parent);
+            }
+
+            let was_encrypted = file_looks_encrypted(&path);
+            match AudioSource::open_with_key(&path, key)
+                .and_then(|mut source| {
+                    let mut bytes = Vec::with_capacity(source.len() as usize);
+                    source.read_to_end(&mut bytes)?;
+                    std::fs::write(&target, &bytes)?;
+                    Ok(())
+                }) {
+                Ok(()) => {
+                    if was_encrypted {
+                        *done += 1;
+                    } else {
+                        *plain += 1;
+                    }
+                    println!(
+                        "  {} {}",
+                        if was_encrypted { "decrypted" } else { "copied   " },
+                        relative.display()
+                    );
+                }
+                Err(error) => failed.push((path, error.to_string())),
+            }
+        }
+    }
+}
