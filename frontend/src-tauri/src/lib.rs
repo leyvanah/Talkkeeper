@@ -943,6 +943,9 @@ pub fn run() {
         .expect("error while building tauri application")
         .run(|_app_handle, event| {
             match event {
+                tauri::RunEvent::Ready => {
+                    apply_window_icons(_app_handle);
+                }
                 #[cfg(target_os = "macos")]
                 tauri::RunEvent::Reopen { .. } => {
                     tray::focus_main_window(_app_handle);
@@ -976,4 +979,140 @@ pub fn run() {
                 _ => {}
             }
         });
+}
+
+
+/// Hand the window a *large* icon, which is what Windows draws on the taskbar
+/// button.
+///
+/// Tauri's `set_icon` fills `ICON_SMALL` and leaves `ICON_BIG` at zero — read
+/// back from the running app with `WM_GETICON` on every top-level window of the
+/// process, and confirmed after `set_icon` reported success. The window class
+/// carries no icon either, so the button has nothing to fall back on and draws
+/// the blank placeholder. Alt-Tab and the title bar read the small icon, which
+/// is why those always looked right while the button did not.
+///
+/// The icon is built from the same pixels Tauri compiled in, rather than loaded
+/// from a resource id, so it cannot end up showing a different picture than the
+/// rest of the app. Those pixels are 32x32, which is exactly what the taskbar
+/// asks for at 100% scaling; on a higher-DPI screen Windows would upscale them
+/// and the button would look soft. Worth revisiting only on such a screen.
+#[cfg(target_os = "windows")]
+fn set_large_window_icon(hwnd: isize, rgba: &[u8], width: u32, height: u32) -> Result<(), String> {
+    use windows::Win32::Foundation::{HWND, LPARAM, WPARAM};
+    use windows::Win32::Graphics::Gdi::{
+        CreateBitmap, CreateDIBSection, DeleteObject, BITMAPINFO, BITMAPINFOHEADER, BI_RGB,
+        DIB_RGB_COLORS, HBITMAP, HDC,
+    };
+    use windows::Win32::UI::WindowsAndMessaging::{
+        CreateIconIndirect, SendMessageW, ICONINFO, ICON_BIG, WM_SETICON,
+    };
+
+    if width == 0 || height == 0 || rgba.len() < (width * height * 4) as usize {
+        return Err("icon pixels are not the size the header claims".into());
+    }
+
+    unsafe {
+        // Top-down 32-bit DIB: negative height, and BGRA rather than RGBA.
+        let mut header = BITMAPINFO::default();
+        header.bmiHeader = BITMAPINFOHEADER {
+            biSize: std::mem::size_of::<BITMAPINFOHEADER>() as u32,
+            biWidth: width as i32,
+            biHeight: -(height as i32),
+            biPlanes: 1,
+            biBitCount: 32,
+            biCompression: BI_RGB.0,
+            ..Default::default()
+        };
+
+        let mut pixels: *mut std::ffi::c_void = std::ptr::null_mut();
+        let colour: HBITMAP =
+            CreateDIBSection(None, &header, DIB_RGB_COLORS, &mut pixels, None, 0)
+                .map_err(|error| format!("CreateDIBSection failed: {error}"))?;
+        if pixels.is_null() {
+            let _ = DeleteObject(colour.into());
+            return Err("CreateDIBSection returned no pixel buffer".into());
+        }
+
+        let out = std::slice::from_raw_parts_mut(pixels as *mut u8, (width * height * 4) as usize);
+        for (source, target) in rgba.chunks_exact(4).zip(out.chunks_exact_mut(4)) {
+            target[0] = source[2];
+            target[1] = source[1];
+            target[2] = source[0];
+            target[3] = source[3];
+        }
+
+        // A 32-bit colour bitmap carries its own alpha, so the mask is unused;
+        // it still has to exist for CreateIconIndirect.
+        let mask: HBITMAP = CreateBitmap(width as i32, height as i32, 1, 1, None);
+
+        let info = ICONINFO {
+            fIcon: true.into(),
+            xHotspot: 0,
+            yHotspot: 0,
+            hbmMask: mask,
+            hbmColor: colour,
+        };
+        let icon = CreateIconIndirect(&info);
+
+        let _ = DeleteObject(colour.into());
+        let _ = DeleteObject(mask.into());
+
+        let icon = icon.map_err(|error| format!("CreateIconIndirect failed: {error}"))?;
+        let _ = SendMessageW(
+            HWND(hwnd as *mut std::ffi::c_void),
+            WM_SETICON,
+            Some(WPARAM(ICON_BIG as usize)),
+            Some(LPARAM(icon.0 as isize)),
+        );
+        let _ = HDC::default();
+    }
+
+    Ok(())
+}
+/// Give every window the app icon, once the windows exist.
+///
+/// Windows draws the taskbar button from a window's *large* icon. Tauri sets
+/// neither: measured on the running app, `WM_GETICON` returned a handle for
+/// `ICON_SMALL` and **zero** for `ICON_BIG`, and the window class carried no
+/// icon to fall back on — so the button had nothing to draw and showed a blank
+/// placeholder. That is the whole of "the icon is right in Alt-Tab and wrong on
+/// the taskbar": Alt-Tab and the title bar read the small icon, the button
+/// reads the big one.
+///
+/// This runs on `RunEvent::Ready` rather than in `setup`, and that placement is
+/// the point: during `setup` the windows declared in the config do not exist
+/// yet, so the same loop found nothing and silently did nothing. The count is
+/// logged so the next person does not have to measure to find that out.
+fn apply_window_icons<R: tauri::Runtime>(app: &tauri::AppHandle<R>) {
+    use tauri::Manager;
+
+    let Some(icon) = app.default_window_icon().cloned() else {
+        log::warn!("No default window icon compiled in; taskbar button will stay blank");
+        return;
+    };
+
+    let mut done = 0usize;
+    for (label, window) in app.webview_windows() {
+        if let Err(error) = window.set_icon(icon.clone()) {
+            log::warn!("Could not set the small icon on window '{label}': {error}");
+            continue;
+        }
+
+        // And the large one, which Tauri leaves unset.
+        #[cfg(target_os = "windows")]
+        match window.hwnd() {
+            Ok(hwnd) => {
+                if let Err(error) =
+                    set_large_window_icon(hwnd.0 as isize, icon.rgba(), icon.width(), icon.height())
+                {
+                    log::warn!("Could not set the taskbar icon on window '{label}': {error}");
+                }
+            }
+            Err(error) => log::warn!("No window handle for '{label}': {error}"),
+        }
+
+        done += 1;
+    }
+    log::info!("Window icon applied to {done} window(s)");
 }

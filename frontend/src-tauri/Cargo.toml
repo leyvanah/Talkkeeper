@@ -1,6 +1,6 @@
 [package]
 name = "meetily"
-version = "0.2.13"
+version = "0.2.16"
 description = "Meetily - Actually Free: privacy-first AI meeting assistant"
 authors = ["TylerBuza"]
 repository = "https://github.com/TylerBuza/Meetily-ActuallyFree"
@@ -203,6 +203,10 @@ windows = { version = "0.61", features = [
     "Win32_System_Com",
     "Win32_System_Com_StructuredStorage",
     "Win32_System_Variant",
+    # Giving the taskbar button an icon: Tauri fills only the window's small
+    # icon, so the large one is created and sent here.
+    "Win32_Graphics_Gdi",
+    "Win32_UI_WindowsAndMessaging",
 ] }
 # The async-operation type the Hello call returns. `windows` depends on it but
 # does not re-export it, so naming the type needs the crate directly.

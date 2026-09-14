@@ -3689,7 +3689,7 @@ dependencies = [
 
 [[package]]
 name = "meetily"
-version = "0.2.13"
+version = "0.2.16"
 dependencies = [
  "aec3",
  "aes-gcm",
