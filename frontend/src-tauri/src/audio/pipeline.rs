@@ -54,6 +54,7 @@ use super::audio_processing::{
 use super::devices::AudioDevice;
 use super::recording_preferences;
 use super::recording_state::{AudioChunk, AudioError, DeviceType, RecordingState};
+use super::own_speech::measure_segment;
 use super::vad::{ContinuousVadProcessor, SpeechSegment};
 use super::working_track::{working_track_path, WorkingTrack, WORKING_SAMPLE_RATE};
 
@@ -1192,26 +1193,6 @@ impl AudioCapture {
     }
 }
 
-/// How long the owner was audible under a microphone segment, and how long the
-/// speakers were playing under it.
-///
-/// The two unanswered-window rules are opposites on purpose, and both lean the
-/// same way in the end: an unobserved window counts as the owner speaking and
-/// as the speakers being silent, so a gap in either timeline can only keep a
-/// segment, never lose one. Losing a word he actually said is the one failure
-/// this whole arrangement is not allowed to have.
-fn measure_segment(
-    own_speech: &super::own_speech::WindowTimeline,
-    far_end: &super::own_speech::WindowTimeline,
-    from_ms: f64,
-    to_ms: f64,
-) -> (f64, f64) {
-    (
-        own_speech.active_ms_between(from_ms, to_ms, true),
-        far_end.active_ms_between(from_ms, to_ms, false),
-    )
-}
-
 /// Whether the speakers were playing during this window.
 ///
 /// Plain loudness rather than voice detection on purpose: an echo can come
@@ -1293,6 +1274,9 @@ pub struct AudioPipeline {
     /// The second microphone stream, read only for whether the owner is the
     /// one speaking. Closed unless he asked for it; see `own_speech`.
     own_speech: super::own_speech::OwnSpeechGate,
+    /// Both detectors, window by window, for the passes that come after this
+    /// recording; see `own_speech_record`.
+    own_speech_record: super::own_speech_record::GateRecorder,
     /// What that detector said about each window, along the recording's clock.
     own_speech_timeline: super::own_speech::WindowTimeline,
     /// Whether the speakers were playing in each window. Without this the
@@ -1437,6 +1421,7 @@ impl AudioPipeline {
             echo_canceller,
             echo_left_to_windows: None,
             own_speech: super::own_speech::OwnSpeechGate::shared(),
+            own_speech_record: super::own_speech_record::GateRecorder::new(MIXING_WINDOW_MS),
             own_speech_timeline: super::own_speech::WindowTimeline::new(window_ms),
             far_end_timeline: super::own_speech::WindowTimeline::new(window_ms),
             echo_segments_dropped: 0,
@@ -1455,6 +1440,9 @@ impl AudioPipeline {
     /// the recording is being saved. Without this the conversion still runs —
     /// VAD needs it — but nothing is written down.
     fn open_working_tracks(&mut self, meeting_folder: &std::path::Path) {
+        // Same folder, same moment, same publish-by-rename: what the detector
+        // answered is only useful next to the track it answered about.
+        self.own_speech_record.open_in(meeting_folder);
         let chunk = mixing_window_samples(self.sample_rate);
         for (label, name) in [("microphone", "mic"), ("system", "system")] {
             let path = working_track_path(meeting_folder, name);
@@ -1803,6 +1791,7 @@ impl AudioPipeline {
         // passes but not put through a VAD that has already been flushed.
         self.mic_work.finish();
         self.system_work.finish();
+        self.own_speech_record.finish();
 
         info!(
             "🧵 Capture seams for this recording - {}",
@@ -1824,11 +1813,15 @@ impl AudioPipeline {
     /// Called once per mixing window, in order, so the two timelines and the
     /// microphone VAD share one clock without any of them having to read it.
     fn observe_window(&mut self, sys_window: &[f32]) {
-        self.far_end_timeline
-            .push(Some(far_end_is_playing(sys_window)));
-        let window_ms = MIXING_WINDOW_MS as f64;
-        self.own_speech_timeline
-            .push(self.own_speech.take_window(window_ms));
+        let far_end = Some(far_end_is_playing(sys_window));
+        let own_speech = self.own_speech.take_window(MIXING_WINDOW_MS as f64);
+        self.far_end_timeline.push(far_end);
+        self.own_speech_timeline.push(own_speech);
+        // The same two answers, kept for whoever reads this recording later.
+        // Written here rather than from the timelines above because those are
+        // laid out in recording time, which runs on across a break in capture
+        // while the stored track does not.
+        self.own_speech_record.observe(own_speech, far_end);
     }
 
     /// Microphone speech, minus whatever was only the speakers coming back.
@@ -3048,13 +3041,22 @@ mod audio_bench {
             crate::audio::own_speech::WindowTimeline::new(MIXING_WINDOW_MS as f64);
         let mut far_timeline =
             crate::audio::own_speech::WindowTimeline::new(MIXING_WINDOW_MS as f64);
+        // A real meeting folder this time: the second half of the bench reads
+        // the track back off disk the way a retranscription does.
+        let meeting = tempfile::tempdir().expect("meeting folder");
         let mut mic_work = WorkingTrack::new(
             "microphone",
             sample_rate,
             mixing_window_samples(sample_rate),
-            None,
+            Some(crate::audio::working_track::working_track_path(
+                meeting.path(),
+                "mic",
+            )),
         )
         .expect("working track");
+        let mut record =
+            crate::audio::own_speech_record::GateRecorder::new(MIXING_WINDOW_MS);
+        record.open_in(meeting.path());
         let mut vad = ContinuousVadProcessor::new_with_thresholds(WORKING_SAMPLE_RATE, 800, 0.20, 0.10)
             .expect("VAD");
 
@@ -3096,8 +3098,11 @@ mod audio_bench {
             ring.add_samples(DeviceType::System, far_block, arrival);
 
             while let Some((mic_window, sys_window)) = ring.extract_window() {
-                far_timeline.push(Some(far_end_is_playing(&sys_window)));
-                own_timeline.push(gate.take_window(MIXING_WINDOW_MS as f64));
+                let far_end = Some(far_end_is_playing(&sys_window));
+                let own_speech = gate.take_window(MIXING_WINDOW_MS as f64);
+                far_timeline.push(far_end);
+                own_timeline.push(own_speech);
+                record.observe(own_speech, far_end);
 
                 let cleaned = canceller.process(&mic_window, &sys_window);
                 let mic_16k = mic_work.push(&cleaned);
@@ -3109,6 +3114,8 @@ mod audio_bench {
         if let Ok(found) = vad.flush() {
             segments.extend(found);
         }
+        mic_work.finish();
+        record.finish();
 
         let mut echo_kept_ms = 0.0;
         let mut own_kept_ms = 0.0;

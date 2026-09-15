@@ -47,6 +47,12 @@ const PARTIAL_EXT: &str = "flac.part";
 /// FLAC at the working rate, written as the recording runs.
 const WORKING_FORMAT: streaming_encoder::EncodeFormat = streaming_encoder::FLAC;
 
+/// The derived-audio folder of a recording. Anything a later pass could
+/// rebuild for itself belongs here rather than beside the recording.
+pub fn working_dir(meeting_folder: &Path) -> PathBuf {
+    meeting_folder.join(WORKING_DIR)
+}
+
 /// Where the working track for `track` ("mic" / "system") lives.
 pub fn working_track_path(meeting_folder: &Path, track: &str) -> PathBuf {
     meeting_folder

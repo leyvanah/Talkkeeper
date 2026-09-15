@@ -87,6 +87,18 @@ impl WindowTimeline {
         }
     }
 
+    /// Rebuild a timeline that was written down during the recording.
+    ///
+    /// The slots are the same windows in the same order; what was `None` then
+    /// is `None` now, so an unobserved window keeps reading as "do not know"
+    /// rather than as silence.
+    pub fn from_slots(slot_ms: f64, slots: Vec<Option<bool>>) -> Self {
+        Self {
+            slot_ms: slot_ms.max(1.0),
+            slots,
+        }
+    }
+
     /// Record what the next window held.
     pub fn push(&mut self, value: Option<bool>) {
         self.slots.push(value);
@@ -131,6 +143,73 @@ impl WindowTimeline {
     fn len(&self) -> usize {
         self.slots.len()
     }
+}
+
+/// How long the owner was audible under a microphone segment, and how long the
+/// speakers were playing under it.
+///
+/// The two unanswered-window rules are opposites on purpose, and both lean the
+/// same way in the end: an unobserved window counts as the owner speaking and
+/// as the speakers being silent, so a gap in either timeline can only keep a
+/// segment, never lose one. Losing a word he actually said is the one failure
+/// this whole arrangement is not allowed to have.
+///
+/// Live and offline ask this the same way. The pipeline asks it of the
+/// timelines it is filling; a later pass over the stored audio asks it of the
+/// same timelines read back from the recording folder.
+pub fn measure_segment(
+    own_speech: &WindowTimeline,
+    far_end: &WindowTimeline,
+    from_ms: f64,
+    to_ms: f64,
+) -> (f64, f64) {
+    (
+        own_speech.active_ms_between(from_ms, to_ms, true),
+        far_end.active_ms_between(from_ms, to_ms, false),
+    )
+}
+
+/// The stretches of a recording that were nothing but the speakers.
+///
+/// The live pass asks the question of one VAD segment at a time, and that
+/// works there because its segments are short: a pause of 800 ms ends one. A
+/// later pass over the stored track segments it far more coarsely — two
+/// seconds of silence is treated as one breath inside a sentence rather than
+/// the end of a turn — so a single segment routinely holds the echo *and* the
+/// answer he gave over it, and no verdict on the whole of it can be right.
+///
+/// So offline the question is asked of the windows themselves: the speakers
+/// playing, and the owner not. A run of such windows has to last
+/// [`FAR_END_MIN_MS`] before it counts, which is what keeps the gaps between
+/// his own words from being cut, and by construction it holds none of his
+/// speech at all — an unanswered window is never a candidate, so a detector
+/// that fell behind silences nothing.
+pub fn echo_spans(own_speech: &WindowTimeline, far_end: &WindowTimeline) -> Vec<(f64, f64)> {
+    debug_assert_eq!(own_speech.slot_ms, far_end.slot_ms);
+    let slot_ms = far_end.slot_ms;
+    let count = far_end.slots.len().max(own_speech.slots.len());
+    let is_candidate = |index: usize| {
+        far_end.slots.get(index).copied().flatten() == Some(true)
+            && own_speech.slots.get(index).copied().flatten() == Some(false)
+    };
+
+    let mut spans = Vec::new();
+    let mut run_start: Option<usize> = None;
+    // One past the end, to close a run that reaches it.
+    for index in 0..=count {
+        if index < count && is_candidate(index) {
+            run_start.get_or_insert(index);
+            continue;
+        }
+        if let Some(start) = run_start.take() {
+            let from = start as f64 * slot_ms;
+            let to = index as f64 * slot_ms;
+            if to - from >= FAR_END_MIN_MS {
+                spans.push((from, to));
+            }
+        }
+    }
+    spans
 }
 
 /// Whether a microphone segment is nothing but the speakers coming back.
@@ -396,5 +475,67 @@ mod tests {
     fn a_segment_recorded_in_a_silent_room_is_kept() {
         assert!(!is_only_the_speakers(0.0, 0.0));
         assert!(!is_only_the_speakers(0.0, 200.0));
+    }
+
+    /// Windows as a later pass reads them back: `own` is what the detector
+    /// answered, `far` whether the speakers were playing.
+    fn two_timelines(
+        windows: &[(Option<bool>, Option<bool>)],
+    ) -> (WindowTimeline, WindowTimeline) {
+        let own = windows.iter().map(|(own, _)| *own).collect();
+        let far = windows.iter().map(|(_, far)| *far).collect();
+        (
+            WindowTimeline::from_slots(WINDOW_MS, own),
+            WindowTimeline::from_slots(WINDOW_MS, far),
+        )
+    }
+
+    #[test]
+    fn a_stretch_of_speakers_with_him_silent_is_an_echo_span() {
+        let (own, far) = two_timelines(&[(Some(false), Some(true)); 20]);
+        assert_eq!(echo_spans(&own, &far), vec![(0.0, 1_000.0)]);
+    }
+
+    /// A gap between his words is not a stretch to cut out of the recording.
+    #[test]
+    fn a_stretch_shorter_than_the_floor_is_left_alone() {
+        let mut windows = vec![(Some(true), Some(true)); 4];
+        windows.extend(vec![(Some(false), Some(true)); 5]); // 250 ms
+        windows.extend(vec![(Some(true), Some(true)); 4]);
+        let (own, far) = two_timelines(&windows);
+        assert!(echo_spans(&own, &far).is_empty());
+    }
+
+    #[test]
+    fn a_span_ends_where_he_starts_speaking() {
+        let mut windows = vec![(Some(false), Some(true)); 20];
+        windows.extend(vec![(Some(true), Some(true)); 20]);
+        let (own, far) = two_timelines(&windows);
+        assert_eq!(echo_spans(&own, &far), vec![(0.0, 1_000.0)]);
+    }
+
+    #[test]
+    fn nothing_is_cut_where_the_speakers_were_silent() {
+        let (own, far) = two_timelines(&[(Some(false), Some(false)); 40]);
+        assert!(echo_spans(&own, &far).is_empty());
+    }
+
+    /// A detector that fell behind silences nothing: its windows are
+    /// unanswered, and an unanswered window is never a candidate.
+    #[test]
+    fn a_stretch_the_detector_never_saw_is_left_alone() {
+        let (own, far) = two_timelines(&[(None, Some(true)); 40]);
+        assert!(echo_spans(&own, &far).is_empty());
+    }
+
+    /// One answered window in the middle is enough to break a stretch in two,
+    /// and what is left either side has to stand on its own length.
+    #[test]
+    fn a_word_in_the_middle_breaks_the_stretch() {
+        let mut windows = vec![(Some(false), Some(true)); 8];
+        windows.push((Some(true), Some(true)));
+        windows.extend(vec![(Some(false), Some(true)); 4]);
+        let (own, far) = two_timelines(&windows);
+        assert_eq!(echo_spans(&own, &far), vec![(0.0, 400.0)]);
     }
 }
