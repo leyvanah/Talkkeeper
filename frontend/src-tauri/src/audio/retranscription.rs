@@ -4,7 +4,9 @@ use crate::audio::decoder::decode_audio_file;
 use crate::audio::vad::get_speech_chunks_with_thresholds_and_progress;
 use super::common::{create_transcript_segments, split_segment_at_silence};
 use super::constants::AUDIO_EXTENSIONS;
-use super::working_track::find_working_track;
+use super::own_speech::echo_spans;
+use super::own_speech_record::read_timelines;
+use super::working_track::{find_working_track, WORKING_SAMPLE_RATE};
 use crate::config::{DEFAULT_WHISPER_MODEL, DEFAULT_PARAKEET_MODEL};
 use crate::database::fields;
 use crate::database::models::DateTimeUtc;
@@ -214,6 +216,13 @@ struct RetranscriptionSource {
     speaker_hint: Option<&'static str>,
     positive_threshold: f32,
     negative_threshold: f32,
+    /// Whether the detector record applies to this track.
+    ///
+    /// Only the working track qualifies. The record counts windows of it, one
+    /// for one, so any other file — the delivery track, the mixed playback —
+    /// would be judged against a clock that is only nearly the same as its
+    /// own, and the failure mode there is deleting something the owner said.
+    gated_by_the_record: bool,
 }
 
 fn find_retranscription_sources(folder: &Path, fallback: &Path) -> Vec<RetranscriptionSource> {
@@ -223,15 +232,19 @@ fn find_retranscription_sources(folder: &Path, fallback: &Path) -> Vec<Retranscr
     // complete pair is used, so a half-written one cannot silently truncate
     // the transcript; recordings made before this fall back to the delivery
     // tracks (see `super::working_track`).
-    let (mic_path, system_path) = match (
+    let (mic_path, system_path, from_working_tracks) = match (
         find_working_track(folder, "mic"),
         find_working_track(folder, "system"),
     ) {
         (Some(mic), Some(system)) => {
             info!("Retranscribing from the 16 kHz working tracks");
-            (mic, system)
+            (mic, system, true)
         }
-        _ => (folder.join("mic.mp4"), folder.join("system.mp4")),
+        _ => (
+            folder.join("mic.mp4"),
+            folder.join("system.mp4"),
+            false,
+        ),
     };
     let mut sources = Vec::new();
 
@@ -242,6 +255,7 @@ fn find_retranscription_sources(folder: &Path, fallback: &Path) -> Vec<Retranscr
             speaker_hint: Some("You"),
             positive_threshold: 0.20,
             negative_threshold: 0.10,
+            gated_by_the_record: from_working_tracks,
         });
         sources.push(RetranscriptionSource {
             path: system_path,
@@ -249,6 +263,7 @@ fn find_retranscription_sources(folder: &Path, fallback: &Path) -> Vec<Retranscr
             speaker_hint: Some("Guest"),
             positive_threshold: 0.50,
             negative_threshold: 0.35,
+            gated_by_the_record: false,
         });
     }
     if sources.is_empty() {
@@ -258,10 +273,41 @@ fn find_retranscription_sources(folder: &Path, fallback: &Path) -> Vec<Retranscr
             speaker_hint: None,
             positive_threshold: 0.50,
             negative_threshold: 0.35,
+            gated_by_the_record: false,
         });
     }
 
     sources
+}
+
+/// Silence the stretches the detector said were nothing but the speakers.
+///
+/// Done to the audio, before voice detection, rather than to the segments
+/// after it — and that is not a detail. This pass bridges pauses of two
+/// seconds, so one segment routinely runs from the echo straight through the
+/// answer he gave over it: dropping segments would either keep the echo or
+/// take his answer with it. Silenced first, the stretch simply is not speech
+/// any more, and the segments fall where they should.
+///
+/// Returns how much was silenced, which is worth a line in the log: it is
+/// audio being erased from this pass on the strength of a stored answer.
+pub(crate) fn silence_the_speakers(
+    samples: &mut [f32],
+    sample_rate: u32,
+    own_speech: &crate::audio::own_speech::WindowTimeline,
+    far_end: &crate::audio::own_speech::WindowTimeline,
+) -> f64 {
+    let mut silenced_ms = 0.0f64;
+    for (from_ms, to_ms) in echo_spans(own_speech, far_end) {
+        let first = ((from_ms / 1000.0) * sample_rate as f64).round() as usize;
+        let last = (((to_ms / 1000.0) * sample_rate as f64).round() as usize).min(samples.len());
+        if first >= last {
+            continue;
+        }
+        samples[first..last].fill(0.0);
+        silenced_ms += (last - first) as f64 / sample_rate as f64 * 1000.0;
+    }
+    silenced_ms
 }
 
 fn create_source_labeled_segments(
@@ -305,6 +351,11 @@ async fn run_retranscription<R: Runtime>(
     let mut duration_seconds = 0.0f64;
     let mut speech_segments = Vec::new();
 
+    // What the detector answered while this was being recorded, if it was on
+    // and the recording closed cleanly. Absent for everything recorded before
+    // this existed, and then nothing is dropped — the behaviour until now.
+    let own_speech_record = read_timelines(&folder_path);
+
     // Retained source tracks prevent one speaker from masking the other. Older
     // recordings fall back to the mixed playback file.
     for (source_index, source) in sources.into_iter().enumerate() {
@@ -330,9 +381,35 @@ async fn run_retranscription<R: Runtime>(
             source.label, decoded.duration_seconds, decoded.sample_rate, decoded.channels
         );
 
-        let audio_samples = tokio::task::spawn_blocking(move || decoded.to_whisper_format())
+        let mut audio_samples = tokio::task::spawn_blocking(move || decoded.to_whisper_format())
             .await
             .map_err(|e| anyhow!("Resample task panicked: {}", e))?;
+
+        // Before voice detection, take out what the detector said was only the
+        // speakers coming back. Without this the pass would hand the owner's
+        // channel words the other person said — which is what it used to do.
+        if source.gated_by_the_record {
+            match own_speech_record.as_ref() {
+                Some((own_speech, far_end)) => {
+                    let silenced = silence_the_speakers(
+                        &mut audio_samples,
+                        WORKING_SAMPLE_RATE,
+                        own_speech,
+                        far_end,
+                    );
+                    if silenced > 0.0 {
+                        info!(
+                            "🔇 Silenced {:.1}s of the microphone track the speakers had played under alone",
+                            silenced / 1000.0
+                        );
+                    }
+                }
+                None => info!(
+                    "No own-speech record for this recording: reading the microphone as it was stored"
+                ),
+            }
+        }
+
         let app_for_vad = app.clone();
         let meeting_id_for_vad = meeting_id.clone();
         let source_label = source.label;
@@ -1102,6 +1179,60 @@ mod tests {
         DateTime::parse_from_rfc3339("2026-08-30T12:00:00Z")
             .unwrap()
             .with_timezone(&Utc)
+    }
+
+    /// One second of 50 ms windows, as the detector record hands them back.
+    fn timelines_of(
+        windows: &[(Option<bool>, Option<bool>)],
+    ) -> (
+        crate::audio::own_speech::WindowTimeline,
+        crate::audio::own_speech::WindowTimeline,
+    ) {
+        use crate::audio::own_speech::WindowTimeline;
+        (
+            WindowTimeline::from_slots(50.0, windows.iter().map(|(own, _)| *own).collect()),
+            WindowTimeline::from_slots(50.0, windows.iter().map(|(_, far)| *far).collect()),
+        )
+    }
+
+    #[test]
+    fn the_speakers_are_silenced_and_nothing_else_is() {
+        // Half a second of the speakers alone, then half a second of him.
+        let mut windows = vec![(Some(false), Some(true)); 10];
+        windows.extend(vec![(Some(true), Some(true)); 10]);
+        let (own, far) = timelines_of(&windows);
+
+        let mut samples = vec![1.0f32; WORKING_SAMPLE_RATE as usize];
+        let silenced = silence_the_speakers(&mut samples, WORKING_SAMPLE_RATE, &own, &far);
+
+        assert_eq!(silenced, 500.0);
+        let half = WORKING_SAMPLE_RATE as usize / 2;
+        assert!(samples[..half].iter().all(|sample| *sample == 0.0));
+        assert!(samples[half..].iter().all(|sample| *sample == 1.0));
+    }
+
+    /// A recording made with the detector off, or before it existed, reaches
+    /// this with nothing to say — and the audio has to come through untouched.
+    #[test]
+    fn an_unanswered_record_silences_nothing() {
+        let (own, far) = timelines_of(&[(None, Some(true)); 20]);
+        let mut samples = vec![1.0f32; WORKING_SAMPLE_RATE as usize];
+        let silenced = silence_the_speakers(&mut samples, WORKING_SAMPLE_RATE, &own, &far);
+
+        assert_eq!(silenced, 0.0);
+        assert!(samples.iter().all(|sample| *sample == 1.0));
+    }
+
+    /// The record describes the whole recording; a track that was cut short
+    /// must not send the silencing past the end of what it holds.
+    #[test]
+    fn a_record_longer_than_the_track_stops_at_the_end_of_it() {
+        let (own, far) = timelines_of(&[(Some(false), Some(true)); 40]);
+        let mut samples = vec![1.0f32; WORKING_SAMPLE_RATE as usize / 2];
+        let silenced = silence_the_speakers(&mut samples, WORKING_SAMPLE_RATE, &own, &far);
+
+        assert_eq!(silenced, 500.0);
+        assert!(samples.iter().all(|sample| *sample == 0.0));
     }
 
     #[test]

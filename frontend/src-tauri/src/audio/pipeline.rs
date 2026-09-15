@@ -3163,6 +3163,110 @@ mod audio_bench {
             own_kept_ms > 3_000.0,
             "only {own_kept_ms:.0} ms of his own speech was kept; the detector is eating him"
         );
+
+        // The same recording, read again from disk — which is the half this
+        // whole record exists for. The live pass had the detector running; a
+        // retranscription has only the file, and until the record was written
+        // down the two reached different verdicts about the same session.
+        //
+        // Nothing here is reused from above: the track is decoded off disk,
+        // segmented by the offline VAD with the settings retranscription uses,
+        // and judged by the same function retranscription calls.
+        let stored = crate::audio::working_track::find_working_track(meeting.path(), "mic")
+            .expect("the working track was published");
+        let decoded = crate::audio::decoder::decode_audio_file(&stored).expect("decodes");
+        let mut samples = decoded.to_whisper_format();
+        let his_half = (near_starts_ms / 1000.0 * WORKING_SAMPLE_RATE as f64) as usize;
+        let stored_echo_before = energy(&samples[..his_half.min(samples.len())]);
+        let his_half_before = energy(&samples[his_half.min(samples.len())..]);
+
+        let (own_read, far_read) =
+            crate::audio::own_speech_record::read_timelines(meeting.path())
+                .expect("the record was published beside the track");
+        let spans = crate::audio::own_speech::echo_spans(&own_read, &far_read).len();
+        let untouched = crate::audio::vad::get_speech_chunks_with_thresholds_and_progress(
+            &samples,
+            2_000,
+            0.20,
+            0.10,
+            |_, _| true,
+        )
+        .expect("offline VAD");
+        let his_speech_untouched: f64 = untouched
+            .iter()
+            .map(|segment| {
+                (segment.end_timestamp_ms - segment.start_timestamp_ms.max(near_starts_ms)).max(0.0)
+            })
+            .sum();
+
+        let silenced_ms = crate::audio::retranscription::silence_the_speakers(
+            &mut samples,
+            WORKING_SAMPLE_RATE,
+            &own_read,
+            &far_read,
+        );
+        let offline = crate::audio::vad::get_speech_chunks_with_thresholds_and_progress(
+            &samples,
+            2_000,
+            0.20,
+            0.10,
+            |_, _| true,
+        )
+        .expect("offline VAD");
+
+        let stored_echo_after = energy(&samples[..his_half.min(samples.len())]);
+        let his_half_after = energy(&samples[his_half.min(samples.len())..]);
+        let his_speech_ms: f64 = offline
+            .iter()
+            .map(|segment| {
+                (segment.end_timestamp_ms - segment.start_timestamp_ms.max(near_starts_ms)).max(0.0)
+            })
+            .sum();
+
+        let echo_left = stored_echo_after / stored_echo_before;
+        let his_speech_kept = his_speech_ms / his_speech_untouched.max(1.0);
+        let too_early = offline
+            .iter()
+            .filter(|segment| segment.end_timestamp_ms <= near_starts_ms)
+            .count();
+
+        println!("\n=== the same recording, read again from disk ===");
+        println!("  stretches silenced:         {spans} ({silenced_ms:.0} ms)");
+        println!("  far end left in the track:  {stored_echo_before:.4} → {stored_echo_after:.4} ({:.0}% left)", echo_left * 100.0);
+        println!("  his own half of the track:  {his_half_before:.1} → {his_half_after:.1}");
+        println!(
+            "  speech found after {:.0}s:     {his_speech_untouched:.0} → {his_speech_ms:.0} ms",
+            near_starts_ms / 1000.0
+        );
+        println!("  segments before he spoke:   {too_early}");
+
+        // First: the stored track really does carry the far end. Without this
+        // the rest would pass on a scene with nothing in it.
+        assert!(
+            stored_echo_before > 1e-4,
+            "the stored track holds no leftover far end, so reading it back proves nothing"
+        );
+        // Second: what is left of it cannot be taken for speech. Not zero —
+        // the record says when the speakers *played*, and the echo of that
+        // arrives about 120 ms later, so the tail after each pause survives —
+        // but far too little to be recognized, and the pass finds no speech at
+        // all before he starts.
+        assert!(
+            echo_left < 0.25,
+            "{:.0}% of the far end is still in the track a later pass would transcribe",
+            echo_left * 100.0
+        );
+        assert_eq!(
+            too_early, 0,
+            "the second reading still found speech in the stretch where only the speakers played"
+        );
+        // Third, and the one that matters most: his own speech survives. A
+        // record that ate any of it would be worse than no record at all.
+        assert!(
+            his_speech_kept > 0.95,
+            "the second reading kept only {:.0}% of what he said",
+            his_speech_kept * 100.0
+        );
     }
 
 }
