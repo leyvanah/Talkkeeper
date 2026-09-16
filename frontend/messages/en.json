@@ -283,6 +283,12 @@
   "meetingDetails": {
     "untitledMeeting": "Untitled meeting",
     "transcriptTab": "Transcript",
+    "transcriptViewLabel": "Transcript layout",
+    "transcriptViewChat": "Conversation",
+    "transcriptViewTable": "Table",
+    "tableColumnTime": "Time",
+    "tableColumnClient": "Client",
+    "tableColumnHost": "You",
     "playerPlay": "Play the recording",
     "playerPause": "Pause",
     "playerPosition": "Position in the recording",
