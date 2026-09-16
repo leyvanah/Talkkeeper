@@ -20,6 +20,7 @@ use app_lib::database::fields;
 use app_lib::database::repositories::client::ClientsRepository;
 use app_lib::database::repositories::meeting::MeetingsRepository;
 use app_lib::database::repositories::person::PeopleRepository;
+use app_lib::database::repositories::speaker_role::{Role, Side, SpeakerRolesRepository};
 use app_lib::database::repositories::transcript::TranscriptsRepository;
 use app_lib::security::envelope::generate_dek;
 use app_lib::security::session::{self, KeySession};
@@ -55,6 +56,9 @@ async fn archive() -> SqlitePool {
              updated_at TEXT NOT NULL); \
          CREATE TABLE person_speakers (person_id TEXT NOT NULL, meeting_id TEXT NOT NULL, \
              speaker_label TEXT NOT NULL, UNIQUE(meeting_id, speaker_label)); \
+         CREATE TABLE meeting_speaker_roles (meeting_id TEXT NOT NULL, \
+             speaker_label TEXT NOT NULL, role TEXT NOT NULL, \
+             PRIMARY KEY (meeting_id, speaker_label)); \
          CREATE TABLE clients (id TEXT PRIMARY KEY, \
              display_name TEXT NOT NULL CHECK (length(trim(display_name)) > 0), \
              normalized_name TEXT NOT NULL CHECK (length(normalized_name) > 0), \
@@ -88,6 +92,7 @@ async fn every_stored_value(pool: &SqlitePool) -> String {
         "SELECT display_name FROM clients",
         "SELECT normalized_name FROM clients",
         "SELECT COALESCE(notes, '') FROM clients",
+        "SELECT speaker_label FROM meeting_speaker_roles",
     ] {
         let values: Vec<String> = sqlx::query_scalar(query).fetch_all(pool).await.unwrap();
         dump.push_str(&values.join("\n"));
@@ -268,6 +273,51 @@ async fn the_same_name_is_recognised_through_the_blind_index() {
     assert!(!indexes[0].contains("анна"));
 }
 
+/// A role is assigned to a sealed label and has to be found again by the
+/// same label — the lookup is an `=` on two sealed values, like the profile
+/// join above.
+#[tokio::test]
+async fn a_role_assigned_to_a_named_speaker_is_found_again() {
+    let pool = archive().await;
+    let meeting_id = TranscriptsRepository::save_transcript(
+        &pool,
+        "Вторая",
+        &[
+            segment("s1", "первая реплика", "You", 0.0),
+            segment("s2", "вторая реплика", "Анна", 3.0),
+        ],
+        None,
+        None,
+    )
+    .await
+    .unwrap();
+
+    let before = SpeakerRolesRepository::sides(&pool, &meeting_id).await.unwrap();
+    let side_of = |sides: &[app_lib::database::repositories::speaker_role::SpeakerSide],
+                   name: &str| {
+        sides
+            .iter()
+            .find(|entry| entry.speaker == name)
+            .map(|entry| (entry.side, entry.assigned))
+    };
+    assert_eq!(side_of(&before, "You"), Some((Side::Host, false)));
+    assert_eq!(side_of(&before, "Анна"), Some((Side::Client, false)));
+
+    SpeakerRolesRepository::assign(&pool, &meeting_id, "Анна", Some(Role::Host))
+        .await
+        .unwrap();
+    let after = SpeakerRolesRepository::sides(&pool, &meeting_id).await.unwrap();
+    assert_eq!(side_of(&after, "Анна"), Some((Side::Host, true)));
+
+    let stored: Vec<String> =
+        sqlx::query_scalar("SELECT speaker_label FROM meeting_speaker_roles")
+            .fetch_all(&pool)
+            .await
+            .unwrap();
+    assert_eq!(stored.len(), 1);
+    assert!(!stored[0].contains("Анна"));
+}
+
 #[tokio::test]
 async fn an_archive_written_before_b4_converts_and_converts_back() {
     // The migration, both ways, on rows that look exactly like an archive
@@ -285,7 +335,7 @@ async fn an_archive_written_before_b4_converts_and_converts_back() {
              VALUES ('c1', 'Анна Петрова', 'анна петрова', 'звонить до обеда', 'n', 'n'); \
          INSERT INTO people (id, display_name, normalized_name, created_at, updated_at) \
              VALUES ('p1', 'Анна', 'анна', 'n', 'n'); \
-         INSERT INTO person_speakers VALUES ('p1', 'm1', 'Анна');",
+         INSERT INTO person_speakers VALUES ('p1', 'm1', 'Анна'); \n         INSERT INTO meeting_speaker_roles VALUES ('m1', 'Анна', 'host');",
     )
     .execute(&pool)
     .await

@@ -216,6 +216,13 @@ fn columns() -> Vec<Column> {
             field: fields::SPEAKER_LABEL,
             kind: Kind::Joinable,
         },
+        Column {
+            table: "meeting_speaker_roles",
+            key: "rowid",
+            name: "speaker_label",
+            field: fields::SPEAKER_LABEL,
+            kind: Kind::Joinable,
+        },
     ]
 }
 
@@ -419,6 +426,8 @@ mod tests {
                  normalized_name TEXT NOT NULL, notes TEXT); \
              CREATE TABLE person_speakers (person_id TEXT NOT NULL, meeting_id TEXT NOT NULL, \
                  speaker_label TEXT NOT NULL); \
+             CREATE TABLE meeting_speaker_roles (meeting_id TEXT NOT NULL, \
+                 speaker_label TEXT NOT NULL, role TEXT NOT NULL); \
              INSERT INTO meetings VALUES ('m1', 'Встреча'); \
              INSERT INTO transcripts VALUES ('t1', 'первая реплика', 'Анна', NULL, NULL, NULL); \
              INSERT INTO clients VALUES ('c1', 'Анна', 'анна', NULL); \
