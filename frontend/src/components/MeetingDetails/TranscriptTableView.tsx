@@ -56,7 +56,7 @@ interface TranscriptTableViewProps {
   activeSegmentId?: string | null;
   onSeekTo?: (seconds: number) => void;
   followActiveSegment?: boolean;
-  /** The player's position, drawn as a line moving down the ruler. */
+  /** The player's position, drawn as a pointer moving down the ruler. */
   playhead?: Playhead;
   hasMore?: boolean;
   isLoadingMore?: boolean;
@@ -82,6 +82,8 @@ const PAD_X = 10;
 const PIECE_GAP = 2;
 /** Height of the sticky column header. */
 const HEADER = 32;
+/** How far the playhead pointer's tip reaches past the ruler. */
+const POINTER_TIP = 7;
 /** From a line's position on the ruler down to where its text begins. */
 const TEXT_ORIGIN = LABEL_ROW / 2 + LABEL_GAP + BORDER + PAD_Y;
 
@@ -440,7 +442,7 @@ export function TranscriptTableView({
     pinnedTime.current = null;
   }, [layout]);
 
-  // The moving line. It is positioned straight on its element every frame;
+  // The playhead pointer. It is positioned straight on its element every frame;
   // re-rendering the table sixty times a second is what the playhead store
   // exists to avoid.
   const lineRef = useRef<HTMLDivElement>(null);
@@ -611,17 +613,21 @@ export function TranscriptTableView({
             <div
               ref={lineRef}
               aria-hidden
-              className="pointer-events-none absolute left-0 right-0 top-0 z-10 flex items-center"
+              className="pointer-events-none absolute left-0 top-0 z-10"
               style={{ visibility: 'hidden', willChange: 'transform' }}
             >
-              {/* The accent can be white or black depending on the theme, so
-                  the label takes the page colour to stay readable on it. */}
+              {/* A pointer on the ruler, its tip on the moment being heard. The
+                  accent can be white or black depending on the theme, so the
+                  time takes the page colour to stay readable on it. */}
               <span
                 ref={lineLabelRef}
-                className="-translate-y-1/2 whitespace-nowrap rounded-sm bg-[var(--af-accent)] px-0.5 text-[9px] font-semibold tabular-nums leading-[14px] text-[var(--af-bg)]"
-                style={{ minWidth: ruler, textAlign: 'center' }}
+                className="block -translate-y-1/2 whitespace-nowrap bg-[var(--af-accent)] pl-0.5 text-[9px] font-semibold tabular-nums leading-[14px] text-[var(--af-bg)]"
+                style={{
+                  width: ruler + POINTER_TIP,
+                  paddingRight: POINTER_TIP,
+                  clipPath: `polygon(0 0, calc(100% - ${POINTER_TIP}px) 0, 100% 50%, calc(100% - ${POINTER_TIP}px) 100%, 0 100%)`,
+                }}
               />
-              <span className="h-0.5 flex-1 -translate-y-1/2 bg-[var(--af-accent)] shadow-[0_0_6px_var(--af-accent)]" />
             </div>
           )}
 
