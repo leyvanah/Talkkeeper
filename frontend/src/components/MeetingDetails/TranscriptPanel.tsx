@@ -27,6 +27,7 @@ import { TranscriptButtonGroup } from './TranscriptButtonGroup';
 import { RecordingPlayer, RecordingPlayerHandle } from './RecordingPlayer';
 import { MeetingClientBadge } from '@/components/MeetingClientBadge';
 import { TranscriptTableView } from './TranscriptTableView';
+import { createPlayhead } from '@/lib/playhead';
 
 type TranscriptLayout = 'chat' | 'table';
 
@@ -98,8 +99,12 @@ export function TranscriptPanel({
   // come back from the player; the playhead itself stays inside it.
   const [activeSegmentId, setActiveSegmentId] = useState<string | null>(null);
   const [isPlaying, setIsPlaying] = useState(false);
+  // The moving line is drawn only when there is a recording to move with.
+  const [hasAudio, setHasAudio] = useState(false);
   const playerRef = useRef<RecordingPlayerHandle>(null);
   const seekTo = useCallback((seconds: number) => playerRef.current?.seek(seconds), []);
+  // One per meeting: a new recording starts from the top.
+  const playhead = useMemo(() => createPlayhead(), [meetingId]);
 
   const [layout, setLayout] = useState<TranscriptLayout>('chat');
   useEffect(() => {
@@ -260,6 +265,7 @@ export function TranscriptPanel({
             activeSegmentId={activeSegmentId}
             onSeekTo={seekTo}
             followActiveSegment={isPlaying}
+            playhead={hasAudio ? playhead : undefined}
             hasMore={hasMore}
             isLoadingMore={isLoadingMore}
             totalCount={totalCount}
@@ -298,6 +304,8 @@ export function TranscriptPanel({
           segments={displayedSegments}
           onActiveSegmentChange={setActiveSegmentId}
           onPlayingChange={setIsPlaying}
+          playhead={playhead}
+          onAvailabilityChange={setHasAudio}
         />
       )}
     </div>

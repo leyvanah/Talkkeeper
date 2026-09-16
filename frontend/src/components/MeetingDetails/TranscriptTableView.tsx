@@ -37,6 +37,7 @@ import {
   yAt,
 } from '@/lib/transcript-table';
 import { getSpeakerSides, sideOf, SpeakerSide } from '@/services/speakerRoleService';
+import { Playhead } from '@/lib/playhead';
 
 interface TranscriptTableViewProps {
   segments: TranscriptSegmentData[];
@@ -47,6 +48,8 @@ interface TranscriptTableViewProps {
   activeSegmentId?: string | null;
   onSeekTo?: (seconds: number) => void;
   followActiveSegment?: boolean;
+  /** The player's position, drawn as a line moving down the ruler. */
+  playhead?: Playhead;
   hasMore?: boolean;
   isLoadingMore?: boolean;
   totalCount?: number;
@@ -198,6 +201,7 @@ export function TranscriptTableView({
   activeSegmentId = null,
   onSeekTo,
   followActiveSegment = false,
+  playhead,
   hasMore = false,
   isLoadingMore = false,
   totalCount = 0,
@@ -366,9 +370,44 @@ export function TranscriptTableView({
     pinnedTime.current = null;
   }, [layout]);
 
-  // Follow the playhead, the way the chat view does.
+  // The moving line. It is positioned straight on its element every frame;
+  // re-rendering the table sixty times a second is what the playhead store
+  // exists to avoid.
+  const lineRef = useRef<HTMLDivElement>(null);
+  const lineLabelRef = useRef<HTMLSpanElement>(null);
+  const layoutRef = useRef(layout);
+  layoutRef.current = layout;
+  const drawPlayhead = useCallback((seconds: number, playing: boolean, follow: boolean) => {
+    const line = lineRef.current;
+    const element = scrollRef.current;
+    if (!line || !element) return;
+    const y = yAt(layoutRef.current, seconds);
+    line.style.transform = `translateY(${y}px)`;
+    line.style.visibility = playing || seconds > 0 ? 'visible' : 'hidden';
+    if (lineLabelRef.current) lineLabelRef.current.textContent = clock(seconds, true);
+    if (!follow || !playing) return;
+    // Keep it in view while playing: when it leaves the lower part of the
+    // screen, bring it back to the upper third in one step.
+    const onScreen = y + HEADER - element.scrollTop;
+    if (onScreen < HEADER || onScreen > element.clientHeight * 0.85) {
+      element.scrollTop = y + HEADER - element.clientHeight / 3;
+    }
+  }, []);
+  const followRef = useRef(followActiveSegment);
+  followRef.current = followActiveSegment;
   useEffect(() => {
-    if (!followActiveSegment || !activeSegmentId) return;
+    if (!playhead) return;
+    return playhead.subscribe((seconds, playing) => drawPlayhead(seconds, playing, followRef.current));
+  }, [playhead, drawPlayhead]);
+  // A new layout (zoom, measured heights) moves the line without the player
+  // having moved.
+  useLayoutEffect(() => {
+    if (playhead) drawPlayhead(playhead.time(), playhead.playing(), false);
+  }, [layout, playhead, drawPlayhead]);
+
+  // Without a playhead, follow the spoken line, the way the chat view does.
+  useEffect(() => {
+    if (playhead || !followActiveSegment || !activeSegmentId) return;
     const placed = layout.placed.find((entry) => entry.line.id === activeSegmentId);
     const element = scrollRef.current;
     if (!placed || !element) return;
@@ -378,7 +417,7 @@ export function TranscriptTableView({
     const visibleBottom = element.scrollTop + element.clientHeight;
     if (top >= visibleTop && bottom <= visibleBottom) return;
     element.scrollTo({ top: top - element.clientHeight / 3, behavior: 'smooth' });
-  }, [activeSegmentId, followActiveSegment, layout]);
+  }, [activeSegmentId, followActiveSegment, layout, playhead]);
 
   // Load the next page when the end comes into view.
   const onScroll = useCallback(() => {
@@ -439,9 +478,20 @@ export function TranscriptTableView({
         <div className="relative w-full" style={{ height: layout.height }}>
           {/* The ruler: flush with the left edge of the panel. */}
           <div
-            aria-hidden
-            className="absolute left-0 top-0 h-full border-r border-[var(--af-border)]"
+            className={`absolute left-0 top-0 h-full border-r border-[var(--af-border)] ${
+              onSeekTo ? 'cursor-pointer' : ''
+            }`}
             style={{ width: RULER }}
+            title={onSeekTo ? tr('playFromHere') : undefined}
+            // A click on the ruler plays from that moment.
+            onClick={
+              onSeekTo
+                ? (event) => {
+                    const box = event.currentTarget.getBoundingClientRect();
+                    onSeekTo(timeAt(layout, event.clientY - box.top));
+                  }
+                : undefined
+            }
           >
             {ticks.map((tick) => (
               <div
@@ -504,6 +554,22 @@ export function TranscriptTableView({
                 }}
               />
             ) : null,
+          )}
+
+          {playhead && (
+            <div
+              ref={lineRef}
+              aria-hidden
+              className="pointer-events-none absolute left-0 right-0 top-0 z-10 flex items-center"
+              style={{ visibility: 'hidden', willChange: 'transform' }}
+            >
+              <span
+                ref={lineLabelRef}
+                className="-translate-y-1/2 rounded bg-[var(--af-accent)] px-1 text-[10px] font-semibold tabular-nums leading-4 text-white"
+                style={{ width: RULER - 4, marginLeft: 2, textAlign: 'center' }}
+              />
+              <span className="h-0.5 flex-1 -translate-y-1/2 bg-[var(--af-accent)] shadow-[0_0_6px_var(--af-accent)]" />
+            </div>
           )}
 
           {layout.placed.map((placed) => (
