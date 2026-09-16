@@ -289,6 +289,8 @@
     "tableColumnTime": "Time",
     "tableColumnClient": "Client",
     "tableColumnHost": "You",
+    "timelineZoomIn": "Zoom in",
+    "timelineZoomOut": "Zoom out",
     "playerPlay": "Play the recording",
     "playerPause": "Pause",
     "playerPosition": "Position in the recording",

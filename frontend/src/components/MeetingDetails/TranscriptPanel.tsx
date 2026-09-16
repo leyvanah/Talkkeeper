@@ -249,7 +249,8 @@ export function TranscriptPanel({
       />
 
       {/* Transcript content */}
-      <div className="flex-1 overflow-hidden px-4 pb-4">
+      {/* The table's ruler sits flush with the panel edge, so it takes no side padding. */}
+      <div className={`flex-1 overflow-hidden pb-4 ${showTable ? "" : "px-4"}`}>
         {showTable ? (
           <TranscriptTableView
             segments={convertedSegments}
