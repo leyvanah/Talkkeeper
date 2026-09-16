@@ -283,6 +283,12 @@
   "meetingDetails": {
     "untitledMeeting": "Встреча без названия",
     "transcriptTab": "Транскрипт",
+    "transcriptViewLabel": "Вид транскрипта",
+    "transcriptViewChat": "Диалог",
+    "transcriptViewTable": "Таблица",
+    "tableColumnTime": "Время",
+    "tableColumnClient": "Клиент",
+    "tableColumnHost": "Вы",
     "playerPlay": "Воспроизвести запись",
     "playerPause": "Пауза",
     "playerPosition": "Позиция в записи",

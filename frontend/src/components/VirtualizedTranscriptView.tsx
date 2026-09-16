@@ -82,7 +82,7 @@ export interface VirtualizedTranscriptViewProps {
 const VIRTUALIZATION_THRESHOLD = 10;
 
 // Helper function to format seconds as recording-relative time [MM:SS]
-function formatRecordingTime(seconds: number | undefined): string {
+export function formatRecordingTime(seconds: number | undefined): string {
     if (seconds === undefined) return '--:--:--';
 
     const totalSeconds = Math.floor(seconds);
@@ -94,7 +94,7 @@ function formatRecordingTime(seconds: number | undefined): string {
 }
 
 // Helper function to remove filler words and repetitions
-function cleanStopWords(text: string): string {
+export function cleanStopWords(text: string): string {
     const stopWords = ['uh', 'um', 'er', 'ah', 'hmm', 'hm', 'eh', 'oh'];
 
     let cleanedText = text;
@@ -114,12 +114,20 @@ function cleanStopWords(text: string): string {
  * local microphone. The display name lives in settings (not in Rust) so it can
  * be changed without restarting, which is why substitution happens here.
  */
-function isUserSpeaker(speaker?: string): boolean {
+export function isUserSpeaker(speaker?: string): boolean {
     const normalized = speaker?.trim() ?? '';
     return /^you\b/i.test(normalized) || /\(\s*you\s*\)$/i.test(normalized);
 }
 
-function displaySpeaker(speaker: string, userName: string): string {
+export function displaySpeaker(speaker: string, userName: string): string {
+    // Both at once: name each voice, rather than letting the leading "You"
+    // stand for the whole label.
+    if (speaker.includes(' + ')) {
+        return speaker
+            .split(' + ')
+            .map((part) => displaySpeaker(part.trim(), userName))
+            .join(' + ');
+    }
     if (isUserSpeaker(speaker)) {
         return userName ? `${userName} (You)` : 'You';
     }
@@ -128,6 +136,9 @@ function displaySpeaker(speaker: string, userName: string): string {
 
 /** Normalize speaker keys so "You" / "you" / empty compare cleanly. */
 function speakerKey(speaker?: string): string {
+    // "You + Speaker 1" is both people at once, not the user: it starts with
+    // "You", but merging it into the user's turns would swallow the overlap.
+    if (speaker?.includes(' + ')) return speaker.trim().toLowerCase();
     if (isUserSpeaker(speaker)) return '__you__';
     return (speaker ?? '').trim().toLowerCase() || '__unknown__';
 }
@@ -197,7 +208,7 @@ export function mergeAdjacentSameSpeaker(
 }
 
 /** Dot colour on the timeline rail — same mapping as the text colour. */
-function speakerDot(speaker?: string): string {
+export function speakerDot(speaker?: string): string {
     if (!speaker) return 'bg-gray-600';
     if (isUserSpeaker(speaker)) return 'bg-blue-500';
     if (/^guest\b/i.test(speaker)) return 'bg-purple-500';
@@ -205,7 +216,7 @@ function speakerDot(speaker?: string): string {
 }
 
 /** Stable colour per speaker label so each speaker reads consistently. */
-function speakerColor(speaker: string): string {
+export function speakerColor(speaker: string): string {
     if (isUserSpeaker(speaker)) return 'text-blue-500';
     if (/^guest\b/i.test(speaker)) return 'text-purple-500';
     return speakerTextPalette[speakerPaletteIndex(speaker)];

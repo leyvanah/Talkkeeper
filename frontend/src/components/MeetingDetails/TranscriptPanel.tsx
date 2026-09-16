@@ -14,10 +14,10 @@
  *   - otherwise  → converted inline from `transcripts` below
  */
 
-import { useCallback, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useLocale, useTranslations } from 'next-intl';
 import { Transcript, TranscriptSegmentData } from '@/types';
-import { Calendar, Clock } from 'lucide-react';
+import { Calendar, Clock, MessagesSquare, Table2 } from 'lucide-react';
 import { SpeakerRenameDialog } from './SpeakerRenameDialog';
 import {
   VirtualizedTranscriptView,
@@ -26,6 +26,12 @@ import {
 import { TranscriptButtonGroup } from './TranscriptButtonGroup';
 import { RecordingPlayer, RecordingPlayerHandle } from './RecordingPlayer';
 import { MeetingClientBadge } from '@/components/MeetingClientBadge';
+import { TranscriptTableView } from './TranscriptTableView';
+
+type TranscriptLayout = 'chat' | 'table';
+
+/** A reading preference, kept per machine rather than per meeting. */
+const LAYOUT_STORAGE_KEY = 'transcript_layout';
 
 interface TranscriptPanelProps {
   transcripts: Transcript[];
@@ -95,6 +101,27 @@ export function TranscriptPanel({
   const playerRef = useRef<RecordingPlayerHandle>(null);
   const seekTo = useCallback((seconds: number) => playerRef.current?.seek(seconds), []);
 
+  const [layout, setLayout] = useState<TranscriptLayout>('chat');
+  useEffect(() => {
+    try {
+      if (localStorage.getItem(LAYOUT_STORAGE_KEY) === 'table') setLayout('table');
+    } catch {
+      // Storage can be unavailable; the chat layout is the default anyway.
+    }
+  }, []);
+  const chooseLayout = useCallback((next: TranscriptLayout) => {
+    setLayout(next);
+    try {
+      localStorage.setItem(LAYOUT_STORAGE_KEY, next);
+    } catch {
+      // Not remembered this time; nothing else depends on it.
+    }
+  }, []);
+  // The table is laid out by meeting and by who spoke, and neither is settled
+  // while recording, so the live screen keeps the chat.
+  const canShowTable = !isRecording && !!meetingId;
+  const showTable = canShowTable && layout === 'table';
+
   const convertedSegments = useMemo(() => {
     if (usePagination && segments) return segments;
     return transcripts.map(t => ({
@@ -106,6 +133,13 @@ export function TranscriptPanel({
       speaker: t.speaker,
     }));
   }, [transcripts, usePagination, segments]);
+
+  // Speaker roles are asked for again whenever the set of speakers changes —
+  // after a rename, or a rerun of recognition or diarization.
+  const speakersKey = useMemo(
+    () => Array.from(new Set(convertedSegments.map((s) => s.speaker ?? ''))).sort().join('\n'),
+    [convertedSegments],
+  );
 
   // The player has to name the same lines the transcript draws, and the
   // transcript draws one bubble per turn rather than per VAD fragment.
@@ -161,6 +195,35 @@ export function TranscriptPanel({
           {t('transcriptTab')}
           <span className="absolute inset-x-0 -bottom-px h-0.5 rounded-full bg-[var(--af-accent)]" />
         </span>
+        {canShowTable && (
+          <div
+            role="radiogroup"
+            aria-label={t('transcriptViewLabel')}
+            className="flex shrink-0 items-center rounded-md border border-[var(--af-border)] p-0.5"
+          >
+            {([
+              ['chat', MessagesSquare, t('transcriptViewChat')],
+              ['table', Table2, t('transcriptViewTable')],
+            ] as const).map(([value, Icon, label]) => (
+              <button
+                key={value}
+                type="button"
+                role="radio"
+                aria-checked={layout === value}
+                aria-label={label}
+                title={label}
+                onClick={() => chooseLayout(value)}
+                className={`rounded px-1.5 py-1 transition-colors ${
+                  layout === value
+                    ? 'bg-[var(--af-panel-2)] text-[var(--af-accent)]'
+                    : 'text-[var(--af-text-3)] hover:text-[var(--af-text)]'
+                }`}
+              >
+                <Icon size={15} />
+              </button>
+            ))}
+          </div>
+        )}
         <div className="transcript-actions-container ml-auto min-w-0 flex-1 overflow-x-auto overscroll-x-contain py-1 no-scrollbar">
           <TranscriptButtonGroup
             transcriptCount={usePagination ? (totalCount ?? convertedSegments.length) : (transcripts?.length || 0)}
@@ -187,6 +250,22 @@ export function TranscriptPanel({
 
       {/* Transcript content */}
       <div className="flex-1 overflow-hidden px-4 pb-4">
+        {showTable ? (
+          <TranscriptTableView
+            segments={convertedSegments}
+            meetingId={meetingId}
+            speakersKey={speakersKey}
+            onRenameSpeaker={setRenameTarget}
+            activeSegmentId={activeSegmentId}
+            onSeekTo={seekTo}
+            followActiveSegment={isPlaying}
+            hasMore={hasMore}
+            isLoadingMore={isLoadingMore}
+            totalCount={totalCount}
+            loadedCount={loadedCount}
+            onLoadMore={onLoadMore}
+          />
+        ) : (
         <VirtualizedTranscriptView
           onRenameSpeaker={meetingId ? setRenameTarget : undefined}
           activeSegmentId={activeSegmentId}
@@ -206,6 +285,7 @@ export function TranscriptPanel({
           loadedCount={loadedCount}
           onLoadMore={onLoadMore}
         />
+        )}
       </div>
 
       {/* Playing a recording only makes sense once it exists; the player takes
