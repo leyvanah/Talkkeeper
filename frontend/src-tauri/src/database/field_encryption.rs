@@ -136,6 +136,13 @@ fn columns() -> Vec<Column> {
             kind: Kind::Sealed,
         },
         Column {
+            table: "transcripts",
+            key: "id",
+            name: "words",
+            field: fields::TRANSCRIPT_WORDS,
+            kind: Kind::Sealed,
+        },
+        Column {
             table: "summary_processes",
             key: "meeting_id",
             name: "result",
@@ -415,7 +422,7 @@ mod tests {
         sqlx::raw_sql(
             "CREATE TABLE meetings (id TEXT PRIMARY KEY, title TEXT NOT NULL); \
              CREATE TABLE transcripts (id TEXT PRIMARY KEY, transcript TEXT NOT NULL, \
-                 speaker TEXT, summary TEXT, action_items TEXT, key_points TEXT); \
+                 speaker TEXT, summary TEXT, action_items TEXT, key_points TEXT, words TEXT); \
              CREATE TABLE summary_processes (meeting_id TEXT PRIMARY KEY, result TEXT, \
                  result_backup TEXT); \
              CREATE TABLE transcript_chunks (meeting_id TEXT PRIMARY KEY, \
@@ -429,7 +436,8 @@ mod tests {
              CREATE TABLE meeting_speaker_roles (meeting_id TEXT NOT NULL, \
                  speaker_label TEXT NOT NULL, role TEXT NOT NULL); \
              INSERT INTO meetings VALUES ('m1', 'Встреча'); \
-             INSERT INTO transcripts VALUES ('t1', 'первая реплика', 'Анна', NULL, NULL, NULL); \
+             INSERT INTO transcripts VALUES ('t1', 'первая реплика', 'Анна', NULL, NULL, NULL, \
+                 '[{\"w\":\"первая\",\"s\":0.0,\"e\":0.4}]'); \
              INSERT INTO clients VALUES ('c1', 'Анна', 'анна', NULL); \
              INSERT INTO people VALUES ('p1', 'Анна', 'анна', NULL); \
              INSERT INTO person_speakers VALUES ('p1', 'm1', 'Анна');",
@@ -461,8 +469,9 @@ mod tests {
         let pool = pool_with_rows().await;
         let counts = count(&pool).await.unwrap();
         assert_eq!(counts.sealed, 0);
-        // Six names and lines, plus the two lookup columns.
-        assert_eq!(counts.plaintext, 8);
+        // Six names and lines, one line's word timings, plus the two lookup
+        // columns.
+        assert_eq!(counts.plaintext, 9);
     }
 
     #[tokio::test]

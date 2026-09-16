@@ -164,6 +164,9 @@ pub struct MeetingTranscript {
     /// Speaker label: capture source ("You"/"Guest") or diarization ("Speaker N")
     #[serde(skip_serializing_if = "Option::is_none")]
     pub speaker: Option<String>,
+    /// When each word was said, in seconds of the recording.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub words: Option<Vec<crate::audio::word_timing::WordTiming>>,
 }
 
 /// Meeting metadata without transcripts (for pagination)
@@ -1102,6 +1105,7 @@ pub async fn api_get_meeting_transcripts<R: Runtime>(
                     audio_end_time: t.audio_end_time,
                     duration: t.duration,
                     speaker: t.speaker,
+                    words: t.words,
                 })
                 .collect::<Vec<_>>();
 

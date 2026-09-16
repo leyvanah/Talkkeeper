@@ -44,6 +44,9 @@ pub const TRANSCRIPT_SPEAKER: Field = Field::new("transcripts", "speaker");
 pub const TRANSCRIPT_SUMMARY: Field = Field::new("transcripts", "summary");
 pub const TRANSCRIPT_ACTION_ITEMS: Field = Field::new("transcripts", "action_items");
 pub const TRANSCRIPT_KEY_POINTS: Field = Field::new("transcripts", "key_points");
+/// When each word of the line was said, as JSON. It holds the words, so it is
+/// sealed like the line itself.
+pub const TRANSCRIPT_WORDS: Field = Field::new("transcripts", "words");
 /// The generated summary, as a JSON document. Sealed whole: picking the text
 /// out of it and sealing only that would leave the rest — which includes the
 /// English cache of the same text — readable.

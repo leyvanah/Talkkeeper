@@ -6,6 +6,7 @@ use super::common::{create_transcript_segments, split_segment_at_silence};
 use super::constants::AUDIO_EXTENSIONS;
 use super::own_speech::echo_spans;
 use super::own_speech_record::read_timelines;
+use super::word_timing::{shift, to_json, WordTiming};
 use super::working_track::{find_working_track, WORKING_SAMPLE_RATE};
 use crate::config::{DEFAULT_WHISPER_MODEL, DEFAULT_PARAKEET_MODEL};
 use crate::database::fields;
@@ -553,6 +554,8 @@ async fn run_retranscription<R: Runtime>(
     // Process each speech segment with progress updates
     let mut all_transcripts: Vec<(String, f64, f64)> = Vec::new(); // (text, start_ms, end_ms)
     let mut speaker_hints: Vec<Option<&'static str>> = Vec::new();
+    // When each word was said, on the recording's clock, alongside each text.
+    let mut all_words: Vec<Option<Vec<WordTiming>>> = Vec::new();
     let mut total_confidence = 0.0f32;
 
     for (i, (segment, speaker_hint)) in processable_segments.iter().enumerate() {
@@ -584,14 +587,14 @@ async fn run_retranscription<R: Runtime>(
         }
 
         // Transcribe this segment
-        let (text, conf) = if use_gigaam {
+        let (text, conf, words) = if use_gigaam {
             let engine = gigaam_engine.as_ref().unwrap();
-            let text = engine
-                .transcribe_audio(segment.samples.clone())
+            let (text, words) = engine
+                .transcribe_audio_with_words(segment.samples.clone())
                 .await
                 .map_err(|e| anyhow!("GigaAM transcription failed on segment {}: {}", i, e))?;
             // Greedy transducer decoding reports no confidence
-            (text, 0.9f32)
+            (text, 0.9f32, words)
         } else if use_external {
             let provider = external_stt.as_ref().unwrap();
             let wav = crate::audio::transcription::external_stt::encode_wav_pcm16(
@@ -605,25 +608,25 @@ async fn run_retranscription<R: Runtime>(
                     anyhow!("External STT transcription failed on segment {}: {}", i, e)
                 })?;
             // The service reports no confidence; use the same placeholder as Parakeet
-            (text, 0.9f32)
+            (text, 0.9f32, None)
         } else if use_parakeet {
             let engine = parakeet_engine.as_ref().unwrap();
             let text = engine
                 .transcribe_audio(segment.samples.clone())
                 .await
                 .map_err(|e| anyhow!("Parakeet transcription failed on segment {}: {}", i, e))?;
-            (text, 0.9f32)
+            (text, 0.9f32, None)
         } else {
             let engine = whisper_engine.as_ref().unwrap();
-            let (text, conf, _) = engine
-                .transcribe_audio_with_confidence(
+            let (text, conf, _, words) = engine
+                .transcribe_audio_with_words(
                     segment.samples.clone(),
                     language.clone(),
                     initial_prompt.as_deref(),
                 )
                 .await
                 .map_err(|e| anyhow!("Whisper transcription failed on segment {}: {}", i, e))?;
-            (text, conf)
+            (text, conf, words)
         };
 
         // Skip empty transcripts
@@ -636,6 +639,10 @@ async fn run_retranscription<R: Runtime>(
             );
             all_transcripts.push((text, segment.start_timestamp_ms, segment.end_timestamp_ms));
             speaker_hints.push(*speaker_hint);
+            all_words.push(words.map(|mut words| {
+                shift(&mut words, segment.start_timestamp_ms / 1000.0);
+                words
+            }));
             total_confidence += conf;
         } else {
             debug!("Segment {}/{}: {:.1}s — empty transcription", i + 1, processable_count, segment_duration_sec);
@@ -708,10 +715,18 @@ async fn run_retranscription<R: Runtime>(
         .await
         .map_err(|e| anyhow!("Failed to delete existing transcripts: {}", e))?;
 
-    for segment in &segments {
+    let with_words = all_words.iter().filter(|words| words.is_some()).count();
+    info!(
+        "Word timings kept for {} of {} transcript lines",
+        with_words,
+        segments.len()
+    );
+    // Segments are made from the texts one for one and in order, so the
+    // timings line up with them by position.
+    for (segment, words) in segments.iter().zip(all_words.iter()) {
         sqlx::query(
-            "INSERT INTO transcripts (id, meeting_id, transcript, timestamp, audio_start_time, audio_end_time, duration, speaker)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?)"
+            "INSERT INTO transcripts (id, meeting_id, transcript, timestamp, audio_start_time, audio_end_time, duration, speaker, words)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)"
         )
         .bind(&segment.id)
         .bind(&meeting_id)
@@ -724,6 +739,11 @@ async fn run_retranscription<R: Runtime>(
             fields::TRANSCRIPT_SPEAKER,
             segment.speaker.as_deref(),
         ))
+        .bind(
+            words
+                .as_deref()
+                .map(|words| fields::seal(fields::TRANSCRIPT_WORDS, &to_json(words))),
+        )
         .execute(&mut *tx)
         .await
         .map_err(|e| anyhow!("Failed to insert transcript: {}", e))?;
