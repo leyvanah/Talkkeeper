@@ -136,6 +136,7 @@ export function TranscriptPanel({
       text: t.text,
       confidence: t.confidence,
       speaker: t.speaker,
+      words: t.words,
     }));
   }, [transcripts, usePagination, segments]);
 

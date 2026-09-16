@@ -31,6 +31,8 @@ export interface TimelineLine {
   text: string;
   speaker?: string;
   confidence?: number;
+  /** When each word was said, where the recognizer reported it. */
+  words?: TimedWord[];
 }
 
 export interface PlacedLine {
@@ -301,4 +303,87 @@ export function placePieces(
     limit = tops[index] - gap;
   }
   return tops;
+}
+
+/** A word with the moment it was said, as the recognizer reported it. */
+export interface TimedWord {
+  w: string;
+  s: number;
+  e: number;
+}
+
+/** A piece of a line whose words have times. */
+export interface TimedPiece {
+  text: string;
+  /** Seconds of the recording: when the piece's first word began. */
+  start: number;
+  words: TimedWord[];
+}
+
+/**
+ * Cut timed words into pieces by the same rule as `splitForTimeline` — at the
+ * end of a sentence, and before a piece grows past `maxChars` — so a timed line
+ * reads the same as an untimed one, only placed by the clock.
+ */
+export function piecesFromWords(words: TimedWord[], maxChars = 90): TimedPiece[] {
+  const pieces: TimedPiece[] = [];
+  let current: TimedWord[] = [];
+  let length = 0;
+  const flush = () => {
+    if (!current.length) return;
+    pieces.push({ text: current.map((word) => word.w).join(' '), start: current[0].s, words: current });
+    current = [];
+    length = 0;
+  };
+  for (const word of words) {
+    if (current.length && length + 1 + word.w.length > maxChars) flush();
+    current.push(word);
+    length += (length ? 1 : 0) + word.w.length;
+    if (/[.!?…]$/.test(word.w)) flush();
+  }
+  flush();
+  return pieces;
+}
+
+/**
+ * Place pieces at given offsets, each at its own or directly under the piece
+ * above, and moved up only as far as `bottom` requires — the rule
+ * `placePieces` applies to estimated offsets.
+ */
+export function placeAt(targets: number[], heights: number[], gap = 0, bottom = Infinity): number[] {
+  const tops: number[] = [];
+  let free = 0;
+  targets.forEach((target, index) => {
+    const top = Math.max(target, free);
+    tops.push(top);
+    free = top + (heights[index] ?? 0) + gap;
+  });
+  let limit = bottom;
+  for (let index = tops.length - 1; index >= 0; index--) {
+    tops[index] = Math.max(0, Math.min(tops[index], limit - (heights[index] ?? 0)));
+    limit = tops[index] - gap;
+  }
+  return tops;
+}
+
+/**
+ * The words being said at `seconds`, as indexes into a list sorted by start.
+ *
+ * A word counts until it ends; the two sides can overlap, so there may be
+ * more than one. Only a bounded stretch before the moment is examined: no
+ * word is that long.
+ */
+export function wordsAt(words: TimedWord[], seconds: number, lookBack = 40): number[] {
+  let low = 0;
+  let high = words.length;
+  while (low < high) {
+    const mid = (low + high) >> 1;
+    if (words[mid].s <= seconds) low = mid + 1;
+    else high = mid;
+  }
+  const found: number[] = [];
+  for (let index = low - 1; index >= 0 && index >= low - lookBack; index--) {
+    if (words[index].e > seconds) found.push(index);
+  }
+  return found.reverse();
 }

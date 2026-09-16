@@ -4,6 +4,16 @@ export interface Message {
   timestamp: string;
 }
 
+/**
+ * When a word was said, in seconds of the recording. Kept by re-recognition
+ * with Whisper or GigaAM; absent everywhere else.
+ */
+export interface WordTiming {
+  w: string;
+  s: number;
+  e: number;
+}
+
 export interface Transcript {
   id: string;
   text: string;
@@ -17,6 +27,7 @@ export interface Transcript {
   audio_end_time?: number;   // Seconds from recording start (e.g., 128.6)
   duration?: number;          // Segment duration in seconds (e.g., 3.3)
   speaker?: string;           // Speaker label: "You" (mic) or "Guest" (system audio)
+  words?: WordTiming[];
 }
 
 export interface TranscriptUpdate {
@@ -124,6 +135,8 @@ export interface TranscriptSegmentData {
    * capture-source fallback "You". Undefined renders no label.
    */
   speaker?: string;
+  /** When each word was said, where the recognizer reported it. */
+  words?: WordTiming[];
 }
 
 export type GlobalSearchResultKind = 'person' | 'meeting' | 'transcript' | 'summary';
