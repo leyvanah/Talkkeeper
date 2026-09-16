@@ -231,3 +231,74 @@ export function ticksBetween(layout: TimelineLayout, fromY: number, toY: number)
   }
   return ticks;
 }
+
+/**
+ * A line's text cut into pieces that can each sit near the moment they were
+ * said.
+ *
+ * Without word timings the best estimate is that speech runs at an even pace,
+ * so a piece is placed by how much of the text comes before it. Pieces are
+ * sentences, and long sentences are cut further at a comma or a space, so a
+ * minute-long monologue is spread over its minute rather than bunched at its
+ * start.
+ */
+export function splitForTimeline(text: string, maxChars = 90): string[] {
+  const sentences = text
+    .replace(/\s+/g, ' ')
+    .trim()
+    .split(/(?<=[.!?…])\s+/)
+    .filter(Boolean);
+  const pieces: string[] = [];
+  for (const sentence of sentences) {
+    let rest = sentence;
+    while (rest.length > maxChars) {
+      const window = rest.slice(0, maxChars + 1);
+      const comma = window.lastIndexOf(', ');
+      const space = window.lastIndexOf(' ');
+      // A comma in the second half of the window reads best; otherwise the
+      // last space; a single unbroken word stays whole.
+      const cut = comma > maxChars / 2 ? comma + 1 : space > 0 ? space : -1;
+      if (cut <= 0) break;
+      pieces.push(rest.slice(0, cut).trim());
+      rest = rest.slice(cut).trim();
+    }
+    if (rest) pieces.push(rest);
+  }
+  return pieces.length ? pieces : [text];
+}
+
+/**
+ * Where each piece goes inside its line, in pixels from where the text starts.
+ *
+ * `offsetAt(fraction)` says how far down the line's own span a fraction of its
+ * duration is — the elastic ruler, not a straight proportion. A piece goes at
+ * the position of the fraction of text before it, or directly under the piece
+ * above if that is further down.
+ *
+ * With `bottom`, nothing may end below it: pieces that would are moved up —
+ * the last ones first — just far enough for everything to fit.
+ */
+export function placePieces(
+  pieces: string[],
+  heights: number[],
+  offsetAt: (fraction: number) => number,
+  gap = 0,
+  bottom = Infinity,
+): number[] {
+  const total = pieces.reduce((sum, piece) => sum + piece.length, 0) || 1;
+  const tops: number[] = [];
+  let before = 0;
+  let free = 0;
+  pieces.forEach((piece, index) => {
+    const top = Math.max(offsetAt(before / total), free);
+    tops.push(top);
+    free = top + (heights[index] ?? 0) + gap;
+    before += piece.length;
+  });
+  let limit = bottom;
+  for (let index = tops.length - 1; index >= 0; index--) {
+    tops[index] = Math.max(0, Math.min(tops[index], limit - (heights[index] ?? 0)));
+    limit = tops[index] - gap;
+  }
+  return tops;
+}

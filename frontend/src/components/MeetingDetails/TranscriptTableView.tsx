@@ -12,6 +12,11 @@
  * for, the ruler stretches rather than the lines drifting off their marks —
  * see `lib/transcript-table`.
  *
+ * A line's box runs the whole length of its time, and its text is spread down
+ * the box — each sentence near the moment it was said, on the assumption of an
+ * even pace — so the moving playhead passes a sentence while it is being
+ * spoken, and a long answer does not leave its last half minute blank.
+ *
  * Shares the chat view's contract with the player: the active line is named
  * by id, a click on a line seeks there, and the view follows the playhead only
  * while it plays and only when the line has scrolled out of sight.
@@ -31,8 +36,11 @@ import {
 import {
   layoutTimeline,
   PlacedLine,
+  placePieces,
+  splitForTimeline,
   ticksBetween,
   timeAt,
+  TimelineLayout,
   TimelineLine,
   yAt,
 } from '@/lib/transcript-table';
@@ -57,16 +65,25 @@ interface TranscriptTableViewProps {
   onLoadMore?: () => void;
 }
 
-/** Width of the ruler, in pixels. */
-const RULER = 64;
+/** Width of the ruler: just the labels, and room for `h:mm:ss` past an hour. */
+const RULER = 32;
+const RULER_LONG = 40;
 /** Space between the ruler and a column, and between the two columns. */
-const GUTTER = 12;
+const GUTTER = 10;
 /** Space to the right of the second column, clear of the scrollbar. */
 const EDGE = 16;
-/** Height of a line's name-and-time row. */
+/** Height of a line's name-and-time row, and the space under it. */
 const LABEL_ROW = 16;
+const LABEL_GAP = 4;
+/** The text box: border and inner padding, and the space between pieces. */
+const BORDER = 1;
+const PAD_Y = 6;
+const PAD_X = 10;
+const PIECE_GAP = 2;
 /** Height of the sticky column header. */
 const HEADER = 32;
+/** From a line's position on the ruler down to where its text begins. */
+const TEXT_ORIGIN = LABEL_ROW / 2 + LABEL_GAP + BORDER + PAD_Y;
 
 /** Pixels per second of recording, from overview to tenths of a second. */
 const SCALES = [16, 32, 64, 128] as const;
@@ -88,25 +105,39 @@ function clock(seconds: number, tenths = false): string {
   return hours > 0 ? `${hours}:${mm}:${secText}` : `${mm}:${secText}`;
 }
 
-/** A guess at a line's height until it has been measured. */
-function estimateHeight(line: TimelineLine): number {
-  return 46 + 20 * Math.max(0, Math.ceil(line.text.length / 42) - 1);
+/** Key under which one piece of a line's text is measured. */
+function pieceKey(lineId: string, index: number): string {
+  return `${lineId}#${index}`;
+}
+
+/** A guess at a piece's height until it has been measured. */
+function estimatePiece(piece: string): number {
+  return 22 * Math.max(1, Math.ceil(piece.length / 42));
 }
 
 /** Horizontal placement of a column, as CSS. */
-function columnBox(column: PlacedLine['column']): { left: string; width: string } {
-  const both = `calc(100% - ${RULER + GUTTER + EDGE}px)`;
-  const half = `calc((100% - ${RULER + GUTTER * 2 + EDGE}px) / 2)`;
-  if (column === 'both') return { left: `${RULER + GUTTER}px`, width: both };
-  if (column === 'client') return { left: `${RULER + GUTTER}px`, width: half };
+function columnBox(column: PlacedLine['column'], ruler: number): { left: string; width: string } {
+  const both = `calc(100% - ${ruler + GUTTER + EDGE}px)`;
+  const half = `calc((100% - ${ruler + GUTTER * 2 + EDGE}px) / 2)`;
+  if (column === 'both') return { left: `${ruler + GUTTER}px`, width: both };
+  if (column === 'client') return { left: `${ruler + GUTTER}px`, width: half };
   return {
-    left: `calc(${RULER + GUTTER * 2}px + (100% - ${RULER + GUTTER * 2 + EDGE}px) / 2)`,
+    left: `calc(${ruler + GUTTER * 2}px + (100% - ${ruler + GUTTER * 2 + EDGE}px) / 2)`,
     width: half,
   };
 }
 
+/** Where a line's pieces go and how tall its box is. */
+interface LineGeometry {
+  pieceTops: number[];
+  boxHeight: number;
+}
+
 const Bubble = memo(function Bubble({
   placed,
+  pieces,
+  geometry,
+  ruler,
   userName,
   isActive,
   onSeekTo,
@@ -114,30 +145,27 @@ const Bubble = memo(function Bubble({
   onMeasure,
 }: {
   placed: PlacedLine;
+  pieces: string[];
+  geometry: LineGeometry;
+  ruler: number;
   userName: string;
   isActive: boolean;
   onSeekTo?: (seconds: number) => void;
   onRenameSpeaker?: (speaker: string) => void;
-  onMeasure: (id: string, element: HTMLElement | null) => void;
+  onMeasure: (key: string, element: HTMLElement | null) => void;
 }) {
   const t = useTranslations('recording');
   const { line, column } = placed;
-  const host = column === 'host';
-  const text = cleanStopWords(line.text) || line.text;
-  const ref = useCallback((element: HTMLDivElement | null) => onMeasure(line.id, element), [
-    line.id,
-    onMeasure,
-  ]);
+  const host = column !== 'client';
   const seek = onSeekTo ? () => onSeekTo(line.start) : undefined;
 
   return (
     <div
-      ref={ref}
       id={`table-line-${line.id}`}
       className="absolute"
-      // The header line is centred on the line's position, so the start time
+      // The name-and-time row is centred on the line's position, so the start
       // reads on the ruler mark it belongs to.
-      style={{ top: placed.top - LABEL_ROW / 2, ...columnBox(column) }}
+      style={{ top: placed.top - LABEL_ROW / 2, ...columnBox(column, ruler) }}
     >
       <div className="flex items-center gap-1.5 text-[11px]" style={{ height: LABEL_ROW }}>
         <span aria-hidden className={`h-1.5 w-1.5 shrink-0 rounded-full ${speakerDot(line.speaker)}`} />
@@ -177,8 +205,8 @@ const Bubble = memo(function Bubble({
             : undefined
         }
         className={[
-          'mt-1 rounded-lg border px-2.5 py-1.5 text-sm leading-relaxed',
-          host || column === 'both'
+          'relative rounded-lg border text-sm leading-relaxed',
+          host
             ? 'border-blue-500/25 bg-blue-500/10 text-[var(--af-text)]'
             : 'border-[var(--af-border)] bg-[var(--af-panel-2)] text-[var(--af-text-2)]',
           seek ? 'cursor-pointer transition-colors' : '',
@@ -186,8 +214,18 @@ const Bubble = memo(function Bubble({
         ]
           .filter(Boolean)
           .join(' ')}
+        style={{ marginTop: LABEL_GAP, height: geometry.boxHeight, borderWidth: BORDER }}
       >
-        {text}
+        {pieces.map((piece, index) => (
+          <p
+            key={index}
+            ref={(element) => onMeasure(pieceKey(line.id, index), element)}
+            className="absolute"
+            style={{ top: PAD_Y + (geometry.pieceTops[index] ?? 0), left: PAD_X, right: PAD_X }}
+          >
+            {piece}
+          </p>
+        ))}
       </div>
     </div>
   );
@@ -249,15 +287,20 @@ export function TranscriptTableView({
         id: segment.id,
         start: segment.timestamp ?? 0,
         end: segment.endTime,
-        text: segment.text,
+        text: cleanStopWords(segment.text) || segment.text,
         speaker: segment.speaker,
         confidence: segment.confidence,
       })),
     [segments],
   );
+  const piecesOf = useMemo(
+    () => new Map(lines.map((line) => [line.id, splitForTimeline(line.text)])),
+    [lines],
+  );
 
-  // Heights are measured after the first paint; a change re-runs the layout
-  // once per frame at most.
+  // Pieces are measured after the first paint; a change re-runs the layout
+  // once per frame at most. Their width is fixed by the column, so their
+  // height never depends on where they end up.
   const heights = useRef(new Map<string, number>());
   const observed = useRef(new Map<string, HTMLElement>());
   const [measureVersion, setMeasureVersion] = useState(0);
@@ -276,11 +319,11 @@ export function TranscriptTableView({
         : new ResizeObserver((entries) => {
             let changed = false;
             for (const entry of entries) {
-              const id = (entry.target as HTMLElement).dataset.lineId;
-              if (!id) continue;
+              const key = (entry.target as HTMLElement).dataset.pieceKey;
+              if (!key) continue;
               const height = Math.ceil((entry.target as HTMLElement).offsetHeight);
-              if (heights.current.get(id) !== height) {
-                heights.current.set(id, height);
+              if (heights.current.get(key) !== height) {
+                heights.current.set(key, height);
                 changed = true;
               }
             }
@@ -290,32 +333,59 @@ export function TranscriptTableView({
   );
   useEffect(() => () => resizeObserver?.disconnect(), [resizeObserver]);
   const onMeasure = useCallback(
-    (id: string, element: HTMLElement | null) => {
-      const previous = observed.current.get(id);
-      if (previous && previous !== element) {
+    (key: string, element: HTMLElement | null) => {
+      const previous = observed.current.get(key);
+      if (previous === element) return;
+      if (previous) {
         resizeObserver?.unobserve(previous);
-        observed.current.delete(id);
+        observed.current.delete(key);
       }
-      if (element && previous !== element) {
-        element.dataset.lineId = id;
-        observed.current.set(id, element);
+      if (element) {
+        element.dataset.pieceKey = key;
+        observed.current.set(key, element);
         resizeObserver?.observe(element);
       }
     },
     [resizeObserver],
   );
+  const pieceHeights = useCallback(
+    (line: TimelineLine) =>
+      (piecesOf.get(line.id) ?? []).map(
+        (piece, index) => heights.current.get(pieceKey(line.id, index)) ?? estimatePiece(piece),
+      ),
+    [piecesOf],
+  );
 
+  // The room a line needs with its text packed tight; the layout reserves
+  // this, and any extra length a line has in time is filled by spreading.
   const layout = useMemo(
     () =>
       layoutTimeline(
         lines,
         (speaker) => sideOf(sides, speaker),
-        (line) => heights.current.get(line.id) ?? estimateHeight(line),
+        (line) => {
+          const own = pieceHeights(line);
+          const text = own.reduce((sum, h) => sum + h, 0) + PIECE_GAP * Math.max(0, own.length - 1);
+          return LABEL_ROW / 2 + LABEL_GAP + BORDER * 2 + PAD_Y * 2 + text;
+        },
         { pxPerSecond: scale, ...LAYOUT },
       ),
     // measureVersion stands for the heights, which live in a ref.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [lines, sides, scale, measureVersion],
+    [lines, sides, scale, measureVersion, pieceHeights],
+  );
+
+  const ruler = useMemo(
+    () => (layout.anchors[layout.anchors.length - 1].t >= 3600 ? RULER_LONG : RULER),
+    [layout],
+  );
+
+  // Each line's box and the places of its pieces.
+  const geometry = useMemo(
+    () => spreadLines(layout, piecesOf, pieceHeights),
+    // measureVersion: see above.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [layout, piecesOf, pieceHeights, measureVersion],
   );
 
   // The visible stretch, for drawing only the ruler marks that can be seen.
@@ -439,31 +509,31 @@ export function TranscriptTableView({
         className="sticky top-0 z-20 grid items-center border-b border-[var(--af-border)] bg-[var(--af-bg)] text-[11px] font-semibold uppercase tracking-wide text-[var(--af-text-3)]"
         style={{
           height: HEADER,
-          gridTemplateColumns: `${RULER}px 1fr 1fr`,
+          gridTemplateColumns: `${ruler}px 1fr 1fr`,
           columnGap: GUTTER,
           paddingRight: EDGE,
         }}
       >
-        <div className="flex h-full items-center justify-center gap-0.5 border-r border-[var(--af-border)]">
-          <button
-            type="button"
-            onClick={() => changeScale(-1)}
-            disabled={scaleIndex <= 0}
-            title={t('timelineZoomOut')}
-            aria-label={t('timelineZoomOut')}
-            className="rounded p-0.5 hover:text-[var(--af-text)] disabled:opacity-30"
-          >
-            <Minus size={13} />
-          </button>
+        <div className="flex h-full flex-col items-center justify-center border-r border-[var(--af-border)]">
           <button
             type="button"
             onClick={() => changeScale(1)}
             disabled={scaleIndex >= SCALES.length - 1}
             title={t('timelineZoomIn')}
             aria-label={t('timelineZoomIn')}
-            className="rounded p-0.5 hover:text-[var(--af-text)] disabled:opacity-30"
+            className="leading-none hover:text-[var(--af-text)] disabled:opacity-30"
           >
-            <Plus size={13} />
+            <Plus size={12} />
+          </button>
+          <button
+            type="button"
+            onClick={() => changeScale(-1)}
+            disabled={scaleIndex <= 0}
+            title={t('timelineZoomOut')}
+            aria-label={t('timelineZoomOut')}
+            className="leading-none hover:text-[var(--af-text)] disabled:opacity-30"
+          >
+            <Minus size={12} />
           </button>
         </div>
         <div>{t('tableColumnClient')}</div>
@@ -481,7 +551,7 @@ export function TranscriptTableView({
             className={`absolute left-0 top-0 h-full border-r border-[var(--af-border)] ${
               onSeekTo ? 'cursor-pointer' : ''
             }`}
-            style={{ width: RULER }}
+            style={{ width: ruler }}
             title={onSeekTo ? tr('playFromHere') : undefined}
             // A click on the ruler plays from that moment.
             onClick={
@@ -500,14 +570,14 @@ export function TranscriptTableView({
                 style={{ top: tick.y, transform: 'translateY(-50%)' }}
               >
                 {tick.kind === 'label' && (
-                  <span className="mr-1 text-[10px] tabular-nums text-[var(--af-text-3)]">
+                  <span className="mr-0.5 text-[9px] tabular-nums leading-none text-[var(--af-text-3)]">
                     {clock(tick.t)}
                   </span>
                 )}
                 <span
                   className="block h-px bg-[var(--af-text-3)]"
                   style={{
-                    width: tick.kind === 'label' ? 10 : tick.kind === 'major' ? 6 : 3,
+                    width: tick.kind === 'minor' ? 2 : 4,
                     opacity: tick.kind === 'minor' ? 0.5 : 0.9,
                   }}
                 />
@@ -533,28 +603,9 @@ export function TranscriptTableView({
                 key={`guide-${tick.t}`}
                 aria-hidden
                 className="pointer-events-none absolute h-px bg-[var(--af-border)] opacity-40"
-                style={{ top: tick.y, left: RULER, right: 0 }}
+                style={{ top: tick.y, left: ruler, right: 0 }}
               />
             ))}
-
-          {/* How long each line lasted, down its left edge on the same ruler:
-              what makes an interjection visibly land inside a longer line. */}
-          {layout.placed.map(({ line, column, top }) =>
-            line.end != null && line.end > line.start ? (
-              <div
-                key={`span-${line.id}`}
-                aria-hidden
-                className={`pointer-events-none absolute w-0.5 rounded-full ${
-                  column === 'client' ? 'bg-purple-500/50' : 'bg-blue-500/50'
-                }`}
-                style={{
-                  top,
-                  height: Math.max(2, yAt(layout, line.end) - top),
-                  left: `calc(${columnBox(column).left} - 6px)`,
-                }}
-              />
-            ) : null,
-          )}
 
           {playhead && (
             <div
@@ -563,10 +614,12 @@ export function TranscriptTableView({
               className="pointer-events-none absolute left-0 right-0 top-0 z-10 flex items-center"
               style={{ visibility: 'hidden', willChange: 'transform' }}
             >
+              {/* The accent can be white or black depending on the theme, so
+                  the label takes the page colour to stay readable on it. */}
               <span
                 ref={lineLabelRef}
-                className="-translate-y-1/2 rounded bg-[var(--af-accent)] px-1 text-[10px] font-semibold tabular-nums leading-4 text-white"
-                style={{ width: RULER - 4, marginLeft: 2, textAlign: 'center' }}
+                className="-translate-y-1/2 whitespace-nowrap rounded-sm bg-[var(--af-accent)] px-0.5 text-[9px] font-semibold tabular-nums leading-[14px] text-[var(--af-bg)]"
+                style={{ minWidth: ruler, textAlign: 'center' }}
               />
               <span className="h-0.5 flex-1 -translate-y-1/2 bg-[var(--af-accent)] shadow-[0_0_6px_var(--af-accent)]" />
             </div>
@@ -576,6 +629,9 @@ export function TranscriptTableView({
             <Bubble
               key={placed.line.id}
               placed={placed}
+              pieces={piecesOf.get(placed.line.id) ?? [placed.line.text]}
+              geometry={geometry.get(placed.line.id) ?? { pieceTops: [], boxHeight: 0 }}
+              ruler={ruler}
               userName={userName}
               isActive={placed.line.id === activeSegmentId}
               onSeekTo={onSeekTo}
@@ -597,4 +653,62 @@ export function TranscriptTableView({
       )}
     </div>
   );
+}
+
+/**
+ * Stretch each line's box over its time and spread its text down it.
+ *
+ * A box never reaches into the next line of its own column: two lines of one
+ * side that overlap in time would otherwise cover each other, so the spread
+ * is limited to the room before the next one.
+ */
+function spreadLines(
+  layout: TimelineLayout,
+  piecesOf: Map<string, string[]>,
+  pieceHeights: (line: TimelineLine) => number[],
+): Map<string, LineGeometry> {
+  // The next top in each column, walking up from the bottom.
+  const byTop = [...layout.placed].sort((a, b) => a.top - b.top);
+  const nextTop = new Map<string, number>();
+  const below = { host: Infinity, client: Infinity };
+  for (let i = byTop.length - 1; i >= 0; i--) {
+    const entry = byTop[i];
+    const columns = entry.column === 'both' ? (['host', 'client'] as const) : [entry.column];
+    nextTop.set(entry.line.id, Math.min(...columns.map((c) => below[c])));
+    for (const c of columns) below[c] = entry.top;
+  }
+
+  const result = new Map<string, LineGeometry>();
+  for (const entry of layout.placed) {
+    const { line, top } = entry;
+    const pieces = piecesOf.get(line.id) ?? [line.text];
+    const heights = pieceHeights(line);
+    const packed =
+      heights.reduce((sum, h) => sum + h, 0) + PIECE_GAP * Math.max(0, heights.length - 1);
+
+    // How far the text may spread: to the end of the line's time, but not
+    // into the next line of the same column.
+    const end = Math.max(line.start, line.end ?? line.start);
+    const spanEnd = yAt(layout, end);
+    const limit = Math.min(spanEnd, nextTop.get(line.id)! - LABEL_ROW / 2 - LAYOUT.gap);
+    // The text area ends here, measured from where the text begins.
+    const textRoom = Math.max(packed, limit - top - TEXT_ORIGIN - PAD_Y - BORDER);
+
+    const duration = end - line.start;
+    const offsetAt = (fraction: number) => {
+      if (duration <= 0) return 0;
+      return Math.max(0, yAt(layout, line.start + fraction * duration) - top - TEXT_ORIGIN);
+    };
+    const pieceTops = placePieces(pieces, heights, offsetAt, PIECE_GAP, textRoom);
+    const lastBottom = pieceTops.length
+      ? pieceTops[pieceTops.length - 1] + heights[heights.length - 1]
+      : 0;
+    const textBottom = Math.max(lastBottom, packed);
+    const stretched = limit - (top - LABEL_ROW / 2 + LABEL_ROW + LABEL_GAP);
+    result.set(line.id, {
+      pieceTops,
+      boxHeight: Math.max(textBottom + PAD_Y * 2 + BORDER * 2, stretched),
+    });
+  }
+  return result;
 }

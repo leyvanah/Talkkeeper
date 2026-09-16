@@ -166,3 +166,52 @@ const near = (actual, expected, message) =>
 }
 
 console.log('transcript-table: ok');
+
+// Text is cut into sentences, and long sentences further.
+{
+  const { splitForTimeline } = loadTsModule(modulePath);
+  assert.deepEqual(
+    Array.from(splitForTimeline('Первое. Второе?  Третье!')),
+    ['Первое.', 'Второе?', 'Третье!'],
+  );
+  const long = 'слово '.repeat(40).trim();
+  const cut = Array.from(splitForTimeline(long, 30));
+  assert.ok(cut.length > 1);
+  assert.ok(cut.every((piece) => piece.length <= 30), 'no piece is longer than asked');
+  assert.equal(cut.join(' '), long, 'nothing is lost or reordered');
+  assert.deepEqual(
+    Array.from(splitForTimeline('раз, два, три, четыре, пять, шесть', 20)),
+    ['раз, два, три,', 'четыре, пять, шесть'],
+    'a comma is preferred',
+  );
+  assert.deepEqual(Array.from(splitForTimeline('ооооооооооооооооооооооо', 5)), ['ооооооооооооооооооооооо']);
+}
+
+// Pieces sit at the share of the line their text takes, unless the piece above
+// is in the way.
+{
+  const { placePieces } = loadTsModule(modulePath);
+  const straight = (fraction) => fraction * 300;
+  near(
+    placePieces(['aaaa', 'bbbb', 'cccc'], [20, 20, 20], straight)[1],
+    100,
+    'a third of the text is a third of the way down',
+  );
+  const crowded = Array.from(placePieces(['aaaa', 'bbbb', 'cccc'], [150, 150, 150], straight, 4));
+  assert.deepEqual(crowded, [0, 154, 308], 'too much text stacks instead of overlapping');
+}
+
+console.log('transcript-table pieces: ok');
+
+// Near the end of the box, pieces move up only as far as they must to fit.
+{
+  const { placePieces } = loadTsModule(modulePath);
+  const straight = (fraction) => fraction * 300;
+  const fitted = Array.from(placePieces(['aaaa', 'bbbb', 'cccc'], [20, 20, 90], straight, 4, 260));
+  assert.deepEqual(fitted.slice(0, 2), [0, 100], 'pieces with room stay on their time');
+  assert.equal(fitted[2], 170, 'the last one is lifted just enough to end at the bottom');
+  const tight = Array.from(placePieces(['aaaa', 'bbbb'], [100, 100], straight, 4, 204));
+  assert.deepEqual(tight, [0, 104], 'exactly enough room packs them');
+}
+
+console.log('transcript-table fit: ok');
