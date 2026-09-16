@@ -27,46 +27,16 @@ pub fn read_wav(path: &Path) -> Result<(Vec<f32>, u32)> {
     // A recording may be encrypted on disk; `std::fs::read` would hand back
     // ciphertext and the RIFF check below would fail on it.
     let bytes = crate::audio::encrypted_audio::read_all(path)?;
-    if bytes.len() < 44 || &bytes[0..4] != b"RIFF" || &bytes[8..12] != b"WAVE" {
-        return Err(anyhow!("Not a RIFF/WAVE file: {}", path.display()));
-    }
-
-    // Walk chunks to find "fmt " and "data".
-    let mut pos = 12usize;
-    let mut fmt: Option<(u16, u16, u32, u16)> = None; // (audio_format, channels, sample_rate, bits)
-    let mut data: Option<(usize, usize)> = None; // (offset, len)
-
-    while pos + 8 <= bytes.len() {
-        let id = &bytes[pos..pos + 4];
-        let sz = u32::from_le_bytes([
-            bytes[pos + 4],
-            bytes[pos + 5],
-            bytes[pos + 6],
-            bytes[pos + 7],
-        ]) as usize;
-        let body = pos + 8;
-        if id == b"fmt " && body + 16 <= bytes.len() {
-            let audio_format = u16::from_le_bytes([bytes[body], bytes[body + 1]]);
-            let channels = u16::from_le_bytes([bytes[body + 2], bytes[body + 3]]);
-            let sample_rate = u32::from_le_bytes([
-                bytes[body + 4],
-                bytes[body + 5],
-                bytes[body + 6],
-                bytes[body + 7],
-            ]);
-            let bits = u16::from_le_bytes([bytes[body + 14], bytes[body + 15]]);
-            fmt = Some((audio_format, channels, sample_rate, bits));
-        } else if id == b"data" {
-            let len = sz.min(bytes.len().saturating_sub(body));
-            data = Some((body, len));
-        }
-        // Chunks are word-aligned (padded to even size).
-        pos = body + sz + (sz & 1);
-    }
-
-    let (audio_format, channels, sample_rate, bits) =
-        fmt.ok_or_else(|| anyhow!("WAV missing fmt chunk"))?;
-    let (off, len) = data.ok_or_else(|| anyhow!("WAV missing data chunk"))?;
+    let layout =
+        wav_layout(&bytes).map_err(|error| anyhow!("{}: {error}", path.display()))?;
+    let WavLayout {
+        audio_format,
+        channels,
+        sample_rate,
+        bits,
+        data_offset: off,
+        data_len: len,
+    } = layout;
     let channels = channels.max(1) as usize;
     let raw = &bytes[off..off + len];
 
@@ -108,6 +78,103 @@ pub fn read_wav(path: &Path) -> Result<(Vec<f32>, u32)> {
     };
 
     Ok((mono, sample_rate))
+}
+
+/// Where a WAV file keeps its format and its samples.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct WavLayout {
+    pub audio_format: u16,
+    pub channels: u16,
+    pub sample_rate: u32,
+    pub bits: u16,
+    pub data_offset: usize,
+    pub data_len: usize,
+}
+
+/// Walk the RIFF chunks for "fmt " and "data".
+///
+/// The header is not assumed to be 44 bytes: ffmpeg writes a LIST chunk
+/// between the two when asked for WAV on a pipe.
+pub fn wav_layout(bytes: &[u8]) -> Result<WavLayout> {
+    if bytes.len() < 44 || &bytes[0..4] != b"RIFF" || &bytes[8..12] != b"WAVE" {
+        return Err(anyhow!("not a RIFF/WAVE file"));
+    }
+
+    let mut pos = 12usize;
+    let mut fmt: Option<(u16, u16, u32, u16)> = None; // (audio_format, channels, sample_rate, bits)
+    let mut data: Option<(usize, usize)> = None; // (offset, len)
+
+    while pos + 8 <= bytes.len() {
+        let id = &bytes[pos..pos + 4];
+        let sz = u32::from_le_bytes([
+            bytes[pos + 4],
+            bytes[pos + 5],
+            bytes[pos + 6],
+            bytes[pos + 7],
+        ]) as usize;
+        let body = pos + 8;
+        if id == b"fmt " && body + 16 <= bytes.len() {
+            let audio_format = u16::from_le_bytes([bytes[body], bytes[body + 1]]);
+            let channels = u16::from_le_bytes([bytes[body + 2], bytes[body + 3]]);
+            let sample_rate = u32::from_le_bytes([
+                bytes[body + 4],
+                bytes[body + 5],
+                bytes[body + 6],
+                bytes[body + 7],
+            ]);
+            let bits = u16::from_le_bytes([bytes[body + 14], bytes[body + 15]]);
+            fmt = Some((audio_format, channels, sample_rate, bits));
+        } else if id == b"data" {
+            let len = sz.min(bytes.len().saturating_sub(body));
+            data = Some((body, len));
+        }
+        // Chunks are word-aligned (padded to even size).
+        pos = body.saturating_add(sz).saturating_add(sz & 1);
+    }
+
+    let (audio_format, channels, sample_rate, bits) =
+        fmt.ok_or_else(|| anyhow!("WAV missing fmt chunk"))?;
+    let (data_offset, data_len) = data.ok_or_else(|| anyhow!("WAV missing data chunk"))?;
+    Ok(WavLayout {
+        audio_format,
+        channels,
+        sample_rate,
+        bits,
+        data_offset,
+        data_len,
+    })
+}
+
+/// Zero the samples of a 16-bit mono WAV inside the given spans (in ms).
+///
+/// Only the one format our own decode produces is accepted; anything else is
+/// refused rather than guessed at, because the caller is about to erase audio
+/// on the strength of this arithmetic. Returns how much was silenced.
+pub fn silence_pcm16_mono(bytes: &mut [u8], spans_ms: &[(f64, f64)]) -> Result<f64> {
+    let layout = wav_layout(bytes)?;
+    if (layout.audio_format, layout.bits, layout.channels) != (1, 16, 1) {
+        return Err(anyhow!(
+            "expected 16-bit mono PCM, found format {} / {} bits / {} channels",
+            layout.audio_format,
+            layout.bits,
+            layout.channels
+        ));
+    }
+    let rate = layout.sample_rate.max(1) as f64;
+    let samples = layout.data_len / 2;
+    let data = &mut bytes[layout.data_offset..layout.data_offset + samples * 2];
+
+    let mut silenced = 0usize;
+    for &(from_ms, to_ms) in spans_ms {
+        let first = ((from_ms / 1000.0) * rate).round().max(0.0) as usize;
+        let last = (((to_ms / 1000.0) * rate).round().max(0.0) as usize).min(samples);
+        if first >= last {
+            continue;
+        }
+        data[first * 2..last * 2].fill(0);
+        silenced += last - first;
+    }
+    Ok(silenced as f64 / rate * 1000.0)
 }
 
 /// Povey window of length `n`: (0.5 - 0.5*cos(2πi/(n-1)))^0.85
@@ -257,4 +324,92 @@ pub fn compute_fbank(samples: &[f32]) -> Vec<Vec<f32>> {
     }
 
     feats
+}
+
+#[cfg(test)]
+pub(crate) mod tests {
+    use super::*;
+
+    /// A 16-bit mono WAV the way ffmpeg writes one to a pipe: with a LIST
+    /// chunk between "fmt " and "data", so the header is not 44 bytes.
+    pub(crate) fn pcm16_wav(samples: &[i16], sample_rate: u32) -> Vec<u8> {
+        let list: &[u8] = b"INFOISFT\x0e\x00\x00\x00Lavf62.3.100\x00\x00";
+        let data_len = samples.len() * 2;
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(b"RIFF");
+        let riff_len = 4 + (8 + 16) + (8 + list.len()) + (8 + data_len);
+        bytes.extend_from_slice(&(riff_len as u32).to_le_bytes());
+        bytes.extend_from_slice(b"WAVE");
+        bytes.extend_from_slice(b"fmt ");
+        bytes.extend_from_slice(&16u32.to_le_bytes());
+        bytes.extend_from_slice(&1u16.to_le_bytes());
+        bytes.extend_from_slice(&1u16.to_le_bytes());
+        bytes.extend_from_slice(&sample_rate.to_le_bytes());
+        bytes.extend_from_slice(&(sample_rate * 2).to_le_bytes());
+        bytes.extend_from_slice(&2u16.to_le_bytes());
+        bytes.extend_from_slice(&16u16.to_le_bytes());
+        bytes.extend_from_slice(b"LIST");
+        bytes.extend_from_slice(&(list.len() as u32).to_le_bytes());
+        bytes.extend_from_slice(list);
+        bytes.extend_from_slice(b"data");
+        bytes.extend_from_slice(&(data_len as u32).to_le_bytes());
+        for sample in samples {
+            bytes.extend_from_slice(&sample.to_le_bytes());
+        }
+        bytes
+    }
+
+    fn samples_of(bytes: &[u8]) -> Vec<i16> {
+        let layout = wav_layout(bytes).unwrap();
+        bytes[layout.data_offset..layout.data_offset + layout.data_len]
+            .chunks_exact(2)
+            .map(|pair| i16::from_le_bytes([pair[0], pair[1]]))
+            .collect()
+    }
+
+    #[test]
+    fn the_samples_are_found_past_a_list_chunk() {
+        let bytes = pcm16_wav(&[1, 2, 3], SAMPLE_RATE);
+        let layout = wav_layout(&bytes).unwrap();
+        assert!(layout.data_offset > 44);
+        assert_eq!(layout.data_len, 6);
+        assert_eq!(samples_of(&bytes), vec![1, 2, 3]);
+    }
+
+    #[test]
+    fn a_span_is_silenced_and_nothing_either_side_of_it() {
+        // One second at 16 kHz.
+        let mut bytes = pcm16_wav(&vec![1000i16; SAMPLE_RATE as usize], SAMPLE_RATE);
+        let silenced = silence_pcm16_mono(&mut bytes, &[(250.0, 500.0)]).unwrap();
+
+        assert_eq!(silenced, 250.0);
+        let samples = samples_of(&bytes);
+        assert!(samples[..4000].iter().all(|s| *s == 1000));
+        assert!(samples[4000..8000].iter().all(|s| *s == 0));
+        assert!(samples[8000..].iter().all(|s| *s == 1000));
+    }
+
+    #[test]
+    fn a_span_past_the_end_stops_at_the_last_sample() {
+        let mut bytes = pcm16_wav(&vec![1000i16; 1600], SAMPLE_RATE);
+        let silenced = silence_pcm16_mono(&mut bytes, &[(50.0, 10_000.0)]).unwrap();
+
+        assert_eq!(silenced, 50.0);
+        let samples = samples_of(&bytes);
+        assert!(samples[..800].iter().all(|s| *s == 1000));
+        assert!(samples[800..].iter().all(|s| *s == 0));
+    }
+
+    /// Erasing audio on arithmetic made for another layout would be silent
+    /// damage; the call refuses instead.
+    #[test]
+    fn a_format_other_than_our_own_decode_is_refused() {
+        let mut bytes = pcm16_wav(&[1, 2, 3, 4], SAMPLE_RATE);
+        // Claim two channels.
+        let channels_at = 12 + 8 + 2;
+        bytes[channels_at] = 2;
+        let before = bytes.clone();
+        assert!(silence_pcm16_mono(&mut bytes, &[(0.0, 1000.0)]).is_err());
+        assert_eq!(bytes, before);
+    }
 }
