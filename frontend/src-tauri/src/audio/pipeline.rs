@@ -54,6 +54,7 @@ use super::audio_processing::{
 use super::devices::AudioDevice;
 use super::recording_preferences;
 use super::recording_state::{AudioChunk, AudioError, DeviceType, RecordingState};
+use super::own_speech::measure_segment;
 use super::vad::{ContinuousVadProcessor, SpeechSegment};
 use super::working_track::{working_track_path, WorkingTrack, WORKING_SAMPLE_RATE};
 
@@ -1192,26 +1193,6 @@ impl AudioCapture {
     }
 }
 
-/// How long the owner was audible under a microphone segment, and how long the
-/// speakers were playing under it.
-///
-/// The two unanswered-window rules are opposites on purpose, and both lean the
-/// same way in the end: an unobserved window counts as the owner speaking and
-/// as the speakers being silent, so a gap in either timeline can only keep a
-/// segment, never lose one. Losing a word he actually said is the one failure
-/// this whole arrangement is not allowed to have.
-fn measure_segment(
-    own_speech: &super::own_speech::WindowTimeline,
-    far_end: &super::own_speech::WindowTimeline,
-    from_ms: f64,
-    to_ms: f64,
-) -> (f64, f64) {
-    (
-        own_speech.active_ms_between(from_ms, to_ms, true),
-        far_end.active_ms_between(from_ms, to_ms, false),
-    )
-}
-
 /// Whether the speakers were playing during this window.
 ///
 /// Plain loudness rather than voice detection on purpose: an echo can come
@@ -1293,6 +1274,9 @@ pub struct AudioPipeline {
     /// The second microphone stream, read only for whether the owner is the
     /// one speaking. Closed unless he asked for it; see `own_speech`.
     own_speech: super::own_speech::OwnSpeechGate,
+    /// Both detectors, window by window, for the passes that come after this
+    /// recording; see `own_speech_record`.
+    own_speech_record: super::own_speech_record::GateRecorder,
     /// What that detector said about each window, along the recording's clock.
     own_speech_timeline: super::own_speech::WindowTimeline,
     /// Whether the speakers were playing in each window. Without this the
@@ -1437,6 +1421,7 @@ impl AudioPipeline {
             echo_canceller,
             echo_left_to_windows: None,
             own_speech: super::own_speech::OwnSpeechGate::shared(),
+            own_speech_record: super::own_speech_record::GateRecorder::new(MIXING_WINDOW_MS),
             own_speech_timeline: super::own_speech::WindowTimeline::new(window_ms),
             far_end_timeline: super::own_speech::WindowTimeline::new(window_ms),
             echo_segments_dropped: 0,
@@ -1455,6 +1440,9 @@ impl AudioPipeline {
     /// the recording is being saved. Without this the conversion still runs —
     /// VAD needs it — but nothing is written down.
     fn open_working_tracks(&mut self, meeting_folder: &std::path::Path) {
+        // Same folder, same moment, same publish-by-rename: what the detector
+        // answered is only useful next to the track it answered about.
+        self.own_speech_record.open_in(meeting_folder);
         let chunk = mixing_window_samples(self.sample_rate);
         for (label, name) in [("microphone", "mic"), ("system", "system")] {
             let path = working_track_path(meeting_folder, name);
@@ -1803,6 +1791,7 @@ impl AudioPipeline {
         // passes but not put through a VAD that has already been flushed.
         self.mic_work.finish();
         self.system_work.finish();
+        self.own_speech_record.finish();
 
         info!(
             "🧵 Capture seams for this recording - {}",
@@ -1824,11 +1813,15 @@ impl AudioPipeline {
     /// Called once per mixing window, in order, so the two timelines and the
     /// microphone VAD share one clock without any of them having to read it.
     fn observe_window(&mut self, sys_window: &[f32]) {
-        self.far_end_timeline
-            .push(Some(far_end_is_playing(sys_window)));
-        let window_ms = MIXING_WINDOW_MS as f64;
-        self.own_speech_timeline
-            .push(self.own_speech.take_window(window_ms));
+        let far_end = Some(far_end_is_playing(sys_window));
+        let own_speech = self.own_speech.take_window(MIXING_WINDOW_MS as f64);
+        self.far_end_timeline.push(far_end);
+        self.own_speech_timeline.push(own_speech);
+        // The same two answers, kept for whoever reads this recording later.
+        // Written here rather than from the timelines above because those are
+        // laid out in recording time, which runs on across a break in capture
+        // while the stored track does not.
+        self.own_speech_record.observe(own_speech, far_end);
     }
 
     /// Microphone speech, minus whatever was only the speakers coming back.
@@ -3048,13 +3041,22 @@ mod audio_bench {
             crate::audio::own_speech::WindowTimeline::new(MIXING_WINDOW_MS as f64);
         let mut far_timeline =
             crate::audio::own_speech::WindowTimeline::new(MIXING_WINDOW_MS as f64);
+        // A real meeting folder this time: the second half of the bench reads
+        // the track back off disk the way a retranscription does.
+        let meeting = tempfile::tempdir().expect("meeting folder");
         let mut mic_work = WorkingTrack::new(
             "microphone",
             sample_rate,
             mixing_window_samples(sample_rate),
-            None,
+            Some(crate::audio::working_track::working_track_path(
+                meeting.path(),
+                "mic",
+            )),
         )
         .expect("working track");
+        let mut record =
+            crate::audio::own_speech_record::GateRecorder::new(MIXING_WINDOW_MS);
+        record.open_in(meeting.path());
         let mut vad = ContinuousVadProcessor::new_with_thresholds(WORKING_SAMPLE_RATE, 800, 0.20, 0.10)
             .expect("VAD");
 
@@ -3096,8 +3098,11 @@ mod audio_bench {
             ring.add_samples(DeviceType::System, far_block, arrival);
 
             while let Some((mic_window, sys_window)) = ring.extract_window() {
-                far_timeline.push(Some(far_end_is_playing(&sys_window)));
-                own_timeline.push(gate.take_window(MIXING_WINDOW_MS as f64));
+                let far_end = Some(far_end_is_playing(&sys_window));
+                let own_speech = gate.take_window(MIXING_WINDOW_MS as f64);
+                far_timeline.push(far_end);
+                own_timeline.push(own_speech);
+                record.observe(own_speech, far_end);
 
                 let cleaned = canceller.process(&mic_window, &sys_window);
                 let mic_16k = mic_work.push(&cleaned);
@@ -3109,6 +3114,8 @@ mod audio_bench {
         if let Ok(found) = vad.flush() {
             segments.extend(found);
         }
+        mic_work.finish();
+        record.finish();
 
         let mut echo_kept_ms = 0.0;
         let mut own_kept_ms = 0.0;
@@ -3155,6 +3162,110 @@ mod audio_bench {
         assert!(
             own_kept_ms > 3_000.0,
             "only {own_kept_ms:.0} ms of his own speech was kept; the detector is eating him"
+        );
+
+        // The same recording, read again from disk — which is the half this
+        // whole record exists for. The live pass had the detector running; a
+        // retranscription has only the file, and until the record was written
+        // down the two reached different verdicts about the same session.
+        //
+        // Nothing here is reused from above: the track is decoded off disk,
+        // segmented by the offline VAD with the settings retranscription uses,
+        // and judged by the same function retranscription calls.
+        let stored = crate::audio::working_track::find_working_track(meeting.path(), "mic")
+            .expect("the working track was published");
+        let decoded = crate::audio::decoder::decode_audio_file(&stored).expect("decodes");
+        let mut samples = decoded.to_whisper_format();
+        let his_half = (near_starts_ms / 1000.0 * WORKING_SAMPLE_RATE as f64) as usize;
+        let stored_echo_before = energy(&samples[..his_half.min(samples.len())]);
+        let his_half_before = energy(&samples[his_half.min(samples.len())..]);
+
+        let (own_read, far_read) =
+            crate::audio::own_speech_record::read_timelines(meeting.path())
+                .expect("the record was published beside the track");
+        let spans = crate::audio::own_speech::echo_spans(&own_read, &far_read).len();
+        let untouched = crate::audio::vad::get_speech_chunks_with_thresholds_and_progress(
+            &samples,
+            2_000,
+            0.20,
+            0.10,
+            |_, _| true,
+        )
+        .expect("offline VAD");
+        let his_speech_untouched: f64 = untouched
+            .iter()
+            .map(|segment| {
+                (segment.end_timestamp_ms - segment.start_timestamp_ms.max(near_starts_ms)).max(0.0)
+            })
+            .sum();
+
+        let silenced_ms = crate::audio::retranscription::silence_the_speakers(
+            &mut samples,
+            WORKING_SAMPLE_RATE,
+            &own_read,
+            &far_read,
+        );
+        let offline = crate::audio::vad::get_speech_chunks_with_thresholds_and_progress(
+            &samples,
+            2_000,
+            0.20,
+            0.10,
+            |_, _| true,
+        )
+        .expect("offline VAD");
+
+        let stored_echo_after = energy(&samples[..his_half.min(samples.len())]);
+        let his_half_after = energy(&samples[his_half.min(samples.len())..]);
+        let his_speech_ms: f64 = offline
+            .iter()
+            .map(|segment| {
+                (segment.end_timestamp_ms - segment.start_timestamp_ms.max(near_starts_ms)).max(0.0)
+            })
+            .sum();
+
+        let echo_left = stored_echo_after / stored_echo_before;
+        let his_speech_kept = his_speech_ms / his_speech_untouched.max(1.0);
+        let too_early = offline
+            .iter()
+            .filter(|segment| segment.end_timestamp_ms <= near_starts_ms)
+            .count();
+
+        println!("\n=== the same recording, read again from disk ===");
+        println!("  stretches silenced:         {spans} ({silenced_ms:.0} ms)");
+        println!("  far end left in the track:  {stored_echo_before:.4} → {stored_echo_after:.4} ({:.0}% left)", echo_left * 100.0);
+        println!("  his own half of the track:  {his_half_before:.1} → {his_half_after:.1}");
+        println!(
+            "  speech found after {:.0}s:     {his_speech_untouched:.0} → {his_speech_ms:.0} ms",
+            near_starts_ms / 1000.0
+        );
+        println!("  segments before he spoke:   {too_early}");
+
+        // First: the stored track really does carry the far end. Without this
+        // the rest would pass on a scene with nothing in it.
+        assert!(
+            stored_echo_before > 1e-4,
+            "the stored track holds no leftover far end, so reading it back proves nothing"
+        );
+        // Second: what is left of it cannot be taken for speech. Not zero —
+        // the record says when the speakers *played*, and the echo of that
+        // arrives about 120 ms later, so the tail after each pause survives —
+        // but far too little to be recognized, and the pass finds no speech at
+        // all before he starts.
+        assert!(
+            echo_left < 0.25,
+            "{:.0}% of the far end is still in the track a later pass would transcribe",
+            echo_left * 100.0
+        );
+        assert_eq!(
+            too_early, 0,
+            "the second reading still found speech in the stretch where only the speakers played"
+        );
+        // Third, and the one that matters most: his own speech survives. A
+        // record that ate any of it would be worse than no record at all.
+        assert!(
+            his_speech_kept > 0.95,
+            "the second reading kept only {:.0}% of what he said",
+            his_speech_kept * 100.0
         );
     }
 

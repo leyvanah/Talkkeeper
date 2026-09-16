@@ -751,6 +751,45 @@ fn ensure_wav(path: &Path) -> Result<(PathBuf, bool)> {
     Ok((out, true))
 }
 
+/// Take out of a decoded microphone WAV what the recording's detector said was
+/// only the speakers coming back.
+///
+/// The microphone track is "You" by construction here, and it is also what
+/// the owner's voiceprint is learned from. Leftover echo in it would be
+/// labelled as him and, worse, averaged into the profile that is supposed to
+/// recognise him. The spans come from [`crate::audio::own_speech::echo_spans`]
+/// — the same stretches retranscription silences — and are applied to our own
+/// temporary decode, never to a recording.
+///
+/// Written back through the same sink the decode used, so it stays encrypted
+/// when the archive is, and by rename so a failure leaves the decode as it was.
+fn silence_the_speakers_in_wav(wav: &Path, spans_ms: &[(f64, f64)]) -> Result<f64> {
+    use std::io::Write;
+
+    let mut bytes = crate::audio::encrypted_audio::read_all(wav)?;
+    let silenced = dsp::silence_pcm16_mono(&mut bytes, spans_ms)?;
+    if silenced <= 0.0 {
+        return Ok(0.0);
+    }
+
+    let mut partial = wav.as_os_str().to_os_string();
+    partial.push(".part");
+    let partial = PathBuf::from(partial);
+    let written = (|| -> Result<()> {
+        let mut sink = crate::audio::encrypted_audio::AudioSink::create(&partial)?;
+        sink.write_all(&bytes)?;
+        sink.finish()?;
+        drop(sink);
+        std::fs::rename(&partial, wav)?;
+        Ok(())
+    })();
+    if let Err(error) = written {
+        let _ = std::fs::remove_file(&partial);
+        return Err(error);
+    }
+    Ok(silenced)
+}
+
 /// Diarize a meeting's recording and assign "Speaker N" labels to its
 /// transcript segments (by maximum time overlap), persisting them.
 #[tauri::command]
@@ -811,6 +850,16 @@ pub async fn diarize_meeting(
             let system = crate::audio::find_working_track(p, "system")?;
             Some((mic, system))
         });
+        // What the detector answered while this was recorded. Only the working
+        // track is judged by it: the record counts that track's windows one
+        // for one, and the delivery track would be measured against a clock
+        // only nearly its own.
+        let echo_spans = match (&working_pair, parent.as_ref()) {
+            (Some(_), Some(folder)) => crate::audio::own_speech_record::read_timelines(folder)
+                .map(|(own, far)| crate::audio::own_speech::echo_spans(&own, &far))
+                .unwrap_or_default(),
+            _ => Vec::new(),
+        };
         let (mic_source, system_source) = match working_pair {
             Some((mic, system)) => (Some(mic), Some(system)),
             None => (
@@ -836,6 +885,22 @@ pub async fn diarize_meeting(
                         return Err(error);
                     }
                 };
+
+                // Before anything reads it as him — the labels or the voiceprint.
+                // Only our own decode is ever touched, never a recording.
+                if !echo_spans.is_empty() && mic_temp {
+                    match silence_the_speakers_in_wav(&mic_wav, &echo_spans) {
+                        Ok(silenced) if silenced > 0.0 => log::info!(
+                            "🔇 Silenced {:.1}s of the microphone track the speakers had played under alone",
+                            silenced / 1000.0
+                        ),
+                        Ok(_) => {}
+                        // Not fatal: diarization runs as it did before the record existed.
+                        Err(error) => log::warn!(
+                            "Could not apply the own-speech record to the microphone track: {error}"
+                        ),
+                    }
+                }
 
                 let dual_result = (|| -> Result<DiarizationResult> {
                     // Enroll each recording at most once so manual reruns cannot
@@ -1276,6 +1341,81 @@ fn collect_turns(models: &mut DiarizationModels, samples: &[f32]) -> Result<Vec<
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The decode diarization reads as "You" loses the stretches the record
+    /// marked, keeps everything else, and nothing is left under a temporary
+    /// name.
+    #[test]
+    fn the_microphone_decode_loses_only_the_speakers() {
+        let dir = tempfile::tempdir().unwrap();
+        let wav = dir.path().join("decode.wav");
+        std::fs::write(
+            &wav,
+            dsp::tests::pcm16_wav(&vec![1000i16; dsp::SAMPLE_RATE as usize], dsp::SAMPLE_RATE),
+        )
+        .unwrap();
+
+        let silenced = silence_the_speakers_in_wav(&wav, &[(0.0, 500.0)]).unwrap();
+        assert_eq!(silenced, 500.0);
+
+        let (samples, _) = dsp::read_wav(&wav).unwrap();
+        let half = dsp::SAMPLE_RATE as usize / 2;
+        assert!(samples[..half].iter().all(|s| *s == 0.0));
+        assert!(samples[half..].iter().all(|s| *s > 0.0));
+        assert!(!dir.path().join("decode.wav.part").exists());
+    }
+
+    /// The same, on a decode ffmpeg really made from a working track — its
+    /// WAV header is the one the arithmetic has to get right. Skipped where
+    /// FFmpeg is not installed, like the working-track tests.
+    #[test]
+    fn a_real_decode_of_the_working_track_is_silenced_in_place() {
+        if crate::audio::ffmpeg::find_ffmpeg_path().is_none() {
+            eprintln!("skipping: FFmpeg is not installed");
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let track_path = crate::audio::working_track::working_track_path(dir.path(), "mic");
+        let mut track =
+            crate::audio::WorkingTrack::new("microphone", 48_000, 2_400, Some(track_path.clone()))
+                .unwrap();
+        // Two seconds of a steady tone.
+        let tone: Vec<f32> = (0..96_000)
+            .map(|i| ((i as f32 / 48_000.0) * 440.0 * std::f32::consts::TAU).sin() * 0.5)
+            .collect();
+        for chunk in tone.chunks(2_400) {
+            track.push(chunk);
+        }
+        track.finish();
+
+        let (wav, is_temp) = ensure_wav(&track_path).unwrap();
+        assert!(is_temp);
+        let silenced = silence_the_speakers_in_wav(&wav, &[(500.0, 1_000.0)]);
+        let (samples, rate) = dsp::read_wav(&wav).unwrap();
+        let _ = std::fs::remove_file(&wav);
+
+        assert_eq!(silenced.unwrap(), 500.0);
+        assert_eq!(rate, dsp::SAMPLE_RATE);
+        let at = |ms: usize| ms * dsp::SAMPLE_RATE as usize / 1000;
+        let energy = |range: &[f32]| range.iter().map(|s| s * s).sum::<f32>() / range.len() as f32;
+        assert_eq!(energy(&samples[at(500)..at(1_000)]), 0.0);
+        // Either side is the tone, untouched (a margin keeps clear of the
+        // resampler's start-up and the file's end).
+        assert!(energy(&samples[at(100)..at(500)]) > 0.05);
+        assert!(energy(&samples[at(1_000)..at(1_800)]) > 0.05);
+    }
+
+    /// With nothing to silence the decode is not rewritten at all.
+    #[test]
+    fn no_spans_leave_the_decode_untouched() {
+        let dir = tempfile::tempdir().unwrap();
+        let wav = dir.path().join("decode.wav");
+        let bytes = dsp::tests::pcm16_wav(&[5, 6, 7, 8], dsp::SAMPLE_RATE);
+        std::fs::write(&wav, &bytes).unwrap();
+
+        assert_eq!(silence_the_speakers_in_wav(&wav, &[]).unwrap(), 0.0);
+        assert_eq!(std::fs::read(&wav).unwrap(), bytes);
+    }
 
     #[test]
     fn dual_track_user_hint_survives_missing_mic_segmentation() {

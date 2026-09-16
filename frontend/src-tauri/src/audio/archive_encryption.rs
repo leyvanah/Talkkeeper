@@ -28,8 +28,9 @@
 //!
 //! ## What is converted
 //!
-//! The three delivery tracks, the two lossless working tracks, and anything
-//! imported into a meeting's folder. The walk goes one level into each
+//! The three delivery tracks, the two lossless working tracks, the detector
+//! record that sits beside them, and anything imported into a meeting's
+//! folder. The walk goes one level into each
 //! recording folder plus its `.work/` — deliberately not a recursive sweep of
 //! everything under the archive root, which is also where the models live.
 
@@ -39,6 +40,7 @@ use sha2::{Digest, Sha256};
 
 use super::constants::AUDIO_EXTENSIONS;
 use super::encrypted_audio::{AudioSink, AudioSource};
+use super::own_speech_record;
 use super::streaming_encoder::PARTIAL_EXT;
 use crate::security::stream::file_looks_encrypted;
 
@@ -347,7 +349,12 @@ fn collect_audio_in(folder: &Path, found: &mut Vec<PathBuf>) {
                     .any(|known| known.eq_ignore_ascii_case(extension))
             })
             .unwrap_or(false);
-        if is_audio {
+        // Not audio, but it says who was speaking when, and it has to follow
+        // the password the same way: left behind, it would be a plaintext
+        // sketch of a session whose audio is sealed — or an unreadable file
+        // once the password is removed.
+        let is_detector_record = name == own_speech_record::RECORD_NAME;
+        if is_audio || is_detector_record {
             found.push(path);
         }
     }
@@ -432,6 +439,52 @@ mod tests {
         // Nothing left over.
         assert!(!meeting.join("audio.mp4.tkconv").exists());
         assert!(!meeting.join("audio.mp4.tkold").exists());
+    }
+
+    /// The detector record is not audio, but it says who was speaking when,
+    /// and it has to follow the password the same way the audio does.
+    #[test]
+    fn the_detector_record_is_converted_with_the_recordings() {
+        let dir = tempfile::tempdir().unwrap();
+        let key = generate_dek();
+        let (meeting, _) = archive(dir.path(), &session_audio(FRAME_LEN + 3));
+
+        let mut written = own_speech_record::GateRecord::new(50.0);
+        for _ in 0..40 {
+            written.observe(Some(false), Some(true));
+        }
+        let written = written.encode();
+        let record = meeting
+            .join(".work")
+            .join(own_speech_record::RECORD_NAME);
+        std::fs::write(&record, &written).unwrap();
+        // One still being written, which is not a record yet.
+        let partial = meeting.join(".work").join("own-speech.tkgate.part");
+        std::fs::write(&partial, b"half a record").unwrap();
+
+        let report = convert_all(
+            &[dir.path().to_path_buf()],
+            key.as_ref(),
+            Direction::Encrypt,
+            |_, _| {},
+        );
+        assert!(report.is_complete(), "{:?}", report.failed);
+        assert!(
+            file_looks_encrypted(&record),
+            "the detector record was left in the clear beside sealed audio"
+        );
+        assert_eq!(std::fs::read(&partial).unwrap(), b"half a record");
+
+        // And a password removed gives it back as it was, or the recordings it
+        // describes would come back readable with the record unreadable.
+        let report = convert_all(
+            &[dir.path().to_path_buf()],
+            key.as_ref(),
+            Direction::Decrypt,
+            |_, _| {},
+        );
+        assert!(report.is_complete(), "{:?}", report.failed);
+        assert_eq!(std::fs::read(&record).unwrap(), written);
     }
 
     #[test]
