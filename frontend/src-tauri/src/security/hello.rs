@@ -112,7 +112,13 @@ mod tests {
     /// The prompt needs a real window, so this can only be exercised from the
     /// running app. Kept as a note rather than a test that would pass by
     /// accident in an environment where it proves nothing.
+    ///
+    /// Not run with the suite: on a machine where Hello is set up, Windows does
+    /// not always refuse the null handle — it can put a real verification
+    /// prompt on the screen and wait for a face or a PIN, which stalls the
+    /// whole run and asks the owner for something no one requested.
     #[test]
+    #[ignore = "can open a real Windows Hello prompt and wait on it; run by hand"]
     fn a_prompt_without_a_window_is_refused_rather_than_hanging() {
         // A null handle is not a window; Windows should say so promptly.
         let outcome = request_verification(0, "test");

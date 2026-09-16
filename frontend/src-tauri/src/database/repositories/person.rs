@@ -463,6 +463,15 @@ impl PeopleRepository {
         } else if count > 0 {
             Self::reconcile_speaker_identity(&mut tx, meeting_id, from, &resolved_to).await?;
         }
+        if count > 0 {
+            super::speaker_role::SpeakerRolesRepository::follow_rename(
+                &mut tx,
+                meeting_id,
+                from,
+                &resolved_to,
+            )
+            .await?;
+        }
         tx.commit().await?;
         Ok(SpeakerRenameOutcome {
             count,
@@ -1134,6 +1143,9 @@ mod tests {
                  updated_at TEXT NOT NULL); \
              CREATE TABLE person_speakers (person_id TEXT NOT NULL, meeting_id TEXT NOT NULL, \
                  speaker_label TEXT NOT NULL, UNIQUE(meeting_id, speaker_label)); \
+             CREATE TABLE meeting_speaker_roles (meeting_id TEXT NOT NULL, \
+                 speaker_label TEXT NOT NULL, role TEXT NOT NULL, \
+                 PRIMARY KEY (meeting_id, speaker_label)); \
              CREATE TABLE transcripts (id TEXT PRIMARY KEY, meeting_id TEXT NOT NULL, speaker TEXT); \
              INSERT INTO people VALUES \
                  ('person-alice', 'Alice', 'alice', NULL, 'now', 'now'), \
@@ -1200,6 +1212,9 @@ mod tests {
                  updated_at TEXT NOT NULL); \
              CREATE TABLE person_speakers (person_id TEXT NOT NULL, meeting_id TEXT NOT NULL, \
                  speaker_label TEXT NOT NULL, UNIQUE(meeting_id, speaker_label)); \
+             CREATE TABLE meeting_speaker_roles (meeting_id TEXT NOT NULL, \
+                 speaker_label TEXT NOT NULL, role TEXT NOT NULL, \
+                 PRIMARY KEY (meeting_id, speaker_label)); \
              CREATE TABLE transcripts (id TEXT PRIMARY KEY, meeting_id TEXT NOT NULL, speaker TEXT); \
              INSERT INTO people VALUES ('person-carol', 'Carol', 'carol', NULL, 'now', 'now'); \
              INSERT INTO person_speakers VALUES \
@@ -1246,6 +1261,9 @@ mod tests {
                  updated_at TEXT NOT NULL); \
              CREATE TABLE person_speakers (person_id TEXT NOT NULL, meeting_id TEXT NOT NULL, \
                  speaker_label TEXT NOT NULL, UNIQUE(meeting_id, speaker_label)); \
+             CREATE TABLE meeting_speaker_roles (meeting_id TEXT NOT NULL, \
+                 speaker_label TEXT NOT NULL, role TEXT NOT NULL, \
+                 PRIMARY KEY (meeting_id, speaker_label)); \
              CREATE TABLE transcripts (id TEXT PRIMARY KEY, meeting_id TEXT NOT NULL, speaker TEXT); \
              INSERT INTO people VALUES ('person-elodie', 'Élodie', 'Élodie', NULL, 'now', 'now'); \
              INSERT INTO transcripts VALUES ('t1', 'm1', 'Speaker 1');",
@@ -1277,6 +1295,9 @@ mod tests {
             "CREATE TABLE people (id TEXT PRIMARY KEY); \
              CREATE TABLE person_speakers (person_id TEXT NOT NULL, meeting_id TEXT NOT NULL, \
                  speaker_label TEXT NOT NULL, UNIQUE(meeting_id, speaker_label)); \
+             CREATE TABLE meeting_speaker_roles (meeting_id TEXT NOT NULL, \
+                 speaker_label TEXT NOT NULL, role TEXT NOT NULL, \
+                 PRIMARY KEY (meeting_id, speaker_label)); \
              INSERT INTO people VALUES ('only-m1'), ('shared'); \
              INSERT INTO person_speakers VALUES \
                  ('only-m1', 'm1', 'Alice'), ('shared', 'm1', 'Bob'), ('shared', 'm2', 'Bob');",
@@ -1339,6 +1360,9 @@ mod tests {
             "CREATE TABLE people (id TEXT PRIMARY KEY); \
              CREATE TABLE person_speakers (person_id TEXT NOT NULL, meeting_id TEXT NOT NULL, \
                  speaker_label TEXT NOT NULL, UNIQUE(meeting_id, speaker_label)); \
+             CREATE TABLE meeting_speaker_roles (meeting_id TEXT NOT NULL, \
+                 speaker_label TEXT NOT NULL, role TEXT NOT NULL, \
+                 PRIMARY KEY (meeting_id, speaker_label)); \
              CREATE TABLE transcripts (id TEXT PRIMARY KEY, meeting_id TEXT NOT NULL, speaker TEXT); \
              INSERT INTO people (id) VALUES ('person-alice'); \
              INSERT INTO person_speakers (person_id, meeting_id, speaker_label) VALUES \
@@ -1393,6 +1417,9 @@ mod tests {
                  updated_at TEXT NOT NULL); \
              CREATE TABLE person_speakers (person_id TEXT NOT NULL, meeting_id TEXT NOT NULL, \
                  speaker_label TEXT NOT NULL, UNIQUE(meeting_id, speaker_label)); \
+             CREATE TABLE meeting_speaker_roles (meeting_id TEXT NOT NULL, \
+                 speaker_label TEXT NOT NULL, role TEXT NOT NULL, \
+                 PRIMARY KEY (meeting_id, speaker_label)); \
              CREATE TABLE meetings (id TEXT PRIMARY KEY, title TEXT NOT NULL, \
                  created_at TEXT NOT NULL, updated_at TEXT NOT NULL); \
              CREATE TABLE transcripts (id TEXT PRIMARY KEY, meeting_id TEXT NOT NULL, \
