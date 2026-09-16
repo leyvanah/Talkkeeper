@@ -4,7 +4,8 @@ use std::path::{PathBuf};
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use tokio::sync::RwLock;
-use whisper_rs::{WhisperContext, WhisperContextParameters, WhisperToken, FullParams, SamplingStrategy};
+use whisper_rs::{DtwMode, DtwModelPreset, DtwParameters, WhisperContext, WhisperContextParameters, WhisperState, WhisperToken, FullParams, SamplingStrategy};
+use crate::audio::word_timing::{spell, words_from_pieces, TimedPiece, WordTiming};
 use serde::{Serialize, Deserialize};
 use anyhow::{Result, anyhow};
 use reqwest::Client;
@@ -14,6 +15,35 @@ use crate::config::WHISPER_MODEL_CATALOG;
 use super::acceleration::{whisper_context_acceleration_for, WhisperCompiledBackend};
 
 const MAX_INITIAL_PROMPT_TOKENS: usize = 224;
+
+/// large-v3-turbo's alignment heads, from whisper.cpp's own table
+/// (`g_aheads_large_v3_turbo`): whisper-rs 0.13 has no preset for it.
+static AHEADS_LARGE_V3_TURBO: [whisper_rs::whisper_rs_sys::whisper_ahead; 6] = [
+    whisper_rs::whisper_rs_sys::whisper_ahead { n_text_layer: 2, n_head: 4 },
+    whisper_rs::whisper_rs_sys::whisper_ahead { n_text_layer: 2, n_head: 11 },
+    whisper_rs::whisper_rs_sys::whisper_ahead { n_text_layer: 3, n_head: 3 },
+    whisper_rs::whisper_rs_sys::whisper_ahead { n_text_layer: 3, n_head: 6 },
+    whisper_rs::whisper_rs_sys::whisper_ahead { n_text_layer: 3, n_head: 11 },
+    whisper_rs::whisper_rs_sys::whisper_ahead { n_text_layer: 3, n_head: 14 },
+];
+
+/// Which cross-attention heads say when a token was spoken, for the models
+/// they are known for. Aligning on the wrong heads gives confident nonsense,
+/// so any other model gets none and keeps the decoder's estimates.
+fn dtw_mode_for(model_name: &str) -> Option<DtwMode<'static>> {
+    let name = model_name.to_ascii_lowercase();
+    if name.starts_with("large-v3-turbo") {
+        Some(DtwMode::Custom {
+            aheads: &AHEADS_LARGE_V3_TURBO,
+        })
+    } else if name.starts_with("large-v3") {
+        Some(DtwMode::ModelPreset {
+            model_preset: DtwModelPreset::LargeV3,
+        })
+    } else {
+        None
+    }
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum ModelStatus {
@@ -306,12 +336,25 @@ impl WhisperEngine {
                     hardware_profile.performance_tier,
                 );
 
-                let context_param = WhisperContextParameters {
+                let mut context_param = WhisperContextParameters {
                     use_gpu: acceleration.use_gpu,
                     gpu_device: acceleration.gpu_device,
                     flash_attn: acceleration.flash_attn,
                     ..Default::default()
                 };
+                // Word times from the alignment heads. whisper.cpp turns this
+                // off by itself under flash attention, so it is not asked for
+                // there: the GPU decision stands, and the words fall back to
+                // the decoder's rough estimates.
+                if !acceleration.flash_attn {
+                    if let Some(mode) = dtw_mode_for(model_name) {
+                        context_param.dtw_parameters(DtwParameters {
+                            mode,
+                            ..Default::default()
+                        });
+                        log::info!("Whisper word timings: alignment heads for {}", model_name);
+                    }
+                }
 
                 log::info!(
                     "Whisper acceleration decision: compiled_backend={} runtime_detected_gpu={:?} use_gpu={} flash_attn={} gpu_device={}",
@@ -537,6 +580,25 @@ impl WhisperEngine {
         language: Option<String>,
         initial_prompt: Option<&str>,
     ) -> Result<(String, f32, bool)> {
+        let (text, confidence, is_partial, _) = self
+            .transcribe_audio_with_words(audio_data, language, initial_prompt)
+            .await?;
+        Ok((text, confidence, is_partial))
+    }
+
+    /// As [`Self::transcribe_audio_with_confidence`], plus when each word was
+    /// said, in seconds from the start of `audio_data`.
+    ///
+    /// The timings are whisper.cpp's token timestamps, which are estimates
+    /// from the decoder rather than an alignment — good to a few tenths of a
+    /// second. `None` when there are none, or when the text was edited after
+    /// decoding and the words no longer spell it.
+    pub async fn transcribe_audio_with_words(
+        &self,
+        audio_data: Vec<f32>,
+        language: Option<String>,
+        initial_prompt: Option<&str>,
+    ) -> Result<(String, f32, bool, Option<Vec<WordTiming>>)> {
         let ctx_lock = self.current_context.read().await;
         let ctx = ctx_lock.as_ref()
             .ok_or_else(|| anyhow!("No model loaded. Please load a model first."))?;
@@ -655,7 +717,62 @@ impl WhisperEngine {
             0.0
         };
 
-        Ok((cleaned_result, avg_confidence, is_partial))
+        let words = Self::word_timings(ctx, &state, num_segments);
+        let words = (!words.is_empty() && spell(&words, &cleaned_result)).then_some(words);
+
+        Ok((cleaned_result, avg_confidence, is_partial, words))
+    }
+
+    /// Every text token of the decode, joined into words with their times.
+    ///
+    /// Token ids from `token_eot` up are control and timestamp tokens, not
+    /// text. Token times are in hundredths of a second.
+    ///
+    /// With alignment heads loaded, each token has a `t_dtw`: the moment the
+    /// model attended to while writing it, which tracks the speech closely.
+    /// A token then lasts until the next one's. Without them, `t0`/`t1` are
+    /// the decoder's own estimates, which drift over a long window.
+    fn word_timings(ctx: &WhisperContext, state: &WhisperState, num_segments: i32) -> Vec<WordTiming> {
+        let text_tokens_end = ctx.token_eot();
+        let mut pieces: Vec<TimedPiece> = Vec::new();
+        let mut aligned = true;
+        for segment in 0..num_segments {
+            let Ok(count) = state.full_n_tokens(segment) else {
+                continue;
+            };
+            for token in 0..count {
+                let Ok(id) = state.full_get_token_id(segment, token) else {
+                    continue;
+                };
+                if id >= text_tokens_end {
+                    continue;
+                }
+                let Ok(bytes) = ctx.token_to_cstr(id) else {
+                    continue;
+                };
+                let Ok(data) = state.full_get_token_data(segment, token) else {
+                    continue;
+                };
+                aligned &= data.t_dtw >= 0;
+                pieces.push(TimedPiece {
+                    bytes: bytes.to_bytes().to_vec(),
+                    start: if data.t_dtw >= 0 { data.t_dtw as f64 / 100.0 } else { data.t0 as f64 / 100.0 },
+                    end: data.t1 as f64 / 100.0,
+                });
+            }
+        }
+        if aligned {
+            // An aligned token has a moment, not a span: it lasts until the
+            // next token starts. The last one keeps the decoder's end, but no
+            // more than a second of it.
+            for index in 0..pieces.len() {
+                let next = pieces.get(index + 1).map(|piece| piece.start);
+                let piece = &mut pieces[index];
+                let end = next.unwrap_or_else(|| piece.end.min(piece.start + 1.0));
+                piece.end = end.max(piece.start);
+            }
+        }
+        words_from_pieces(pieces)
     }
 
     pub async fn transcribe_audio(

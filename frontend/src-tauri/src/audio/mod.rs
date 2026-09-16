@@ -10,6 +10,8 @@ pub mod own_speech;
 // Keeping what that detector answered, so a later pass over the stored audio
 // reaches the same verdict the live one did.
 pub mod own_speech_record;
+// When each word of a transcript was said, as the recognizers report it.
+pub mod word_timing;
 pub mod encode;
 pub mod encrypted_audio;
 pub mod ffmpeg;
