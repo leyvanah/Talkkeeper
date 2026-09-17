@@ -23,7 +23,7 @@
  */
 
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
-import { Minus, Plus } from 'lucide-react';
+import { Minus, Pencil, Plus } from 'lucide-react';
 import { useTranslations } from 'next-intl';
 import { TranscriptSegmentData } from '@/types';
 import {
@@ -50,6 +50,8 @@ import {
 } from '@/lib/transcript-table';
 import { getSpeakerSides, sideOf, SpeakerSide } from '@/services/speakerRoleService';
 import { Playhead } from '@/lib/playhead';
+import { TranscriptLineEditor } from './TranscriptLineEditor';
+import type { LineEdits as TableLineEdits } from '@/services/transcriptEditService';
 
 interface TranscriptTableViewProps {
   segments: TranscriptSegmentData[];
@@ -62,6 +64,7 @@ interface TranscriptTableViewProps {
   followActiveSegment?: boolean;
   /** The player's position, drawn as a pointer moving down the ruler. */
   playhead?: Playhead;
+  lineEdits?: TableLineEdits;
   hasMore?: boolean;
   isLoadingMore?: boolean;
   totalCount?: number;
@@ -185,6 +188,7 @@ const Bubble = memo(function Bubble({
   onSeekTo,
   onRenameSpeaker,
   onMeasure,
+  lineEdits,
 }: {
   placed: PlacedLine;
   pieces: Piece[];
@@ -195,8 +199,11 @@ const Bubble = memo(function Bubble({
   onSeekTo?: (seconds: number) => void;
   onRenameSpeaker?: (speaker: string) => void;
   onMeasure: (key: string, element: HTMLElement | null) => void;
+  lineEdits?: TableLineEdits;
 }) {
   const t = useTranslations('recording');
+  const tm = useTranslations('meetingDetails');
+  const [editing, setEditing] = useState(false);
   const { line, column } = placed;
   const host = column !== 'client';
   const seek = onSeekTo ? () => onSeekTo(line.start) : undefined;
@@ -204,7 +211,7 @@ const Bubble = memo(function Bubble({
   return (
     <div
       id={`table-line-${line.id}`}
-      className="absolute"
+      className={`group absolute ${editing ? 'z-30' : ''}`}
       // The name-and-time row is centred on the line's position, so the start
       // reads on the ruler mark it belongs to.
       style={{ top: placed.top - LABEL_ROW / 2, ...columnBox(column, ruler) }}
@@ -230,12 +237,40 @@ const Bubble = memo(function Bubble({
           {clock(line.start, true)}
           {line.end != null && line.end > line.start && ` – ${clock(line.end, true)}`}
         </span>
+        {line.edited && (
+          <span className="shrink-0 italic text-[var(--af-text-3)]" title={tm('transcriptEditedHint')}>
+            {tm('transcriptEdited')}
+          </span>
+        )}
+        {lineEdits && !editing && (
+          <button
+            type="button"
+            onClick={() => setEditing(true)}
+            title={tm('transcriptEdit')}
+            aria-label={tm('transcriptEdit')}
+            className="shrink-0 rounded p-0.5 text-[var(--af-text-3)] opacity-0 transition-opacity hover:text-[var(--af-text)] focus:opacity-100 group-hover:opacity-100"
+          >
+            <Pencil size={11} />
+          </button>
+        )}
       </div>
+      {editing && lineEdits && (
+        // Above the box: its text comes later in the page and would show through.
+        <div className="absolute left-0 right-0 z-10" style={{ top: LABEL_ROW + LABEL_GAP }}>
+          <TranscriptLineEditor
+            initialText={line.text}
+            onSave={(text) => lineEdits.onEditLine(line, text)}
+            onRemove={() => lineEdits.onRemoveLine(line)}
+            onClose={() => setEditing(false)}
+          />
+        </div>
+      )}
       <div
         role={seek ? 'button' : undefined}
         tabIndex={seek ? 0 : undefined}
         title={seek ? t('playFromHere') : undefined}
         onClick={seek}
+        onDoubleClick={lineEdits ? () => setEditing(true) : undefined}
         onKeyDown={
           seek
             ? (event) => {
@@ -289,6 +324,7 @@ export function TranscriptTableView({
   onSeekTo,
   followActiveSegment = false,
   playhead,
+  lineEdits,
   hasMore = false,
   isLoadingMore = false,
   totalCount = 0,
@@ -344,6 +380,8 @@ export function TranscriptTableView({
         speaker: segment.speaker,
         confidence: segment.confidence,
         words: segment.words,
+        ids: segment.ids,
+        edited: segment.edited,
       })),
     [segments],
   );
@@ -701,11 +739,11 @@ export function TranscriptTableView({
               style={{ visibility: 'hidden', willChange: 'transform' }}
             >
               {/* A pointer on the ruler, its tip on the moment being heard. The
-                  accent can be white or black depending on the theme, so the
-                  time takes the page colour to stay readable on it. */}
+                  accent is white in one theme, so the time takes the theme's
+                  own colour for text on the accent. */}
               <span
                 ref={lineLabelRef}
-                className="block -translate-y-1/2 whitespace-nowrap bg-[var(--af-accent)] pl-0.5 text-[9px] font-semibold tabular-nums leading-[14px] text-[var(--af-bg)]"
+                className="block -translate-y-1/2 whitespace-nowrap bg-[var(--af-accent)] pl-0.5 text-[9px] font-semibold tabular-nums leading-[14px] text-[var(--af-accent-contrast)]"
                 style={{
                   width: ruler + POINTER_TIP,
                   paddingRight: POINTER_TIP,
@@ -727,6 +765,7 @@ export function TranscriptTableView({
               onSeekTo={onSeekTo}
               onRenameSpeaker={onRenameSpeaker}
               onMeasure={onMeasure}
+              lineEdits={lineEdits}
             />
           ))}
         </div>

@@ -39,6 +39,7 @@ function convertTranscriptsToSegments(transcripts: Transcript[]): TranscriptSegm
         confidence: t.confidence,
         speaker: t.speaker,
         words: t.words,
+        edited: t.edited,
     }));
 }
 

@@ -22,6 +22,7 @@ use app_lib::database::repositories::meeting::MeetingsRepository;
 use app_lib::database::repositories::person::PeopleRepository;
 use app_lib::database::repositories::speaker_role::{Role, Side, SpeakerRolesRepository};
 use app_lib::database::repositories::transcript::TranscriptsRepository;
+use app_lib::database::repositories::transcript_edit::TranscriptEditsRepository;
 use app_lib::security::envelope::generate_dek;
 use app_lib::security::session::{self, KeySession};
 use sqlx::SqlitePool;
@@ -48,7 +49,10 @@ async fn archive() -> SqlitePool {
          CREATE TABLE transcripts (id TEXT PRIMARY KEY, meeting_id TEXT NOT NULL, \
              transcript TEXT NOT NULL, timestamp TEXT NOT NULL, summary TEXT, \
              action_items TEXT, key_points TEXT, audio_start_time REAL, \
-             audio_end_time REAL, duration REAL, speaker TEXT, words TEXT); \
+             audio_end_time REAL, duration REAL, speaker TEXT, words TEXT, edited_at TEXT); \
+         CREATE TABLE transcript_removals (id TEXT PRIMARY KEY, meeting_id TEXT NOT NULL, \
+             audio_start_time REAL NOT NULL, audio_end_time REAL NOT NULL, track TEXT NOT NULL, \
+             removed_at TEXT NOT NULL); \
          CREATE TABLE summary_processes (meeting_id TEXT PRIMARY KEY, result TEXT, \n             result_backup TEXT); \
          CREATE TABLE transcript_chunks (meeting_id TEXT PRIMARY KEY, meeting_name TEXT, \n             transcript_text TEXT NOT NULL DEFAULT ''); \
          CREATE TABLE people (id TEXT PRIMARY KEY, display_name TEXT NOT NULL, \
@@ -316,6 +320,70 @@ async fn a_role_assigned_to_a_named_speaker_is_found_again() {
             .unwrap();
     assert_eq!(stored.len(), 1);
     assert!(!stored[0].contains("Анна"));
+}
+
+/// A correction is sealed like the line it replaces, and so are the word
+/// timings carried over to it; a removal leaves no words at all.
+#[tokio::test]
+async fn a_correction_is_sealed_and_a_removal_leaves_no_words() {
+    let pool = archive().await;
+    let meeting_id = TranscriptsRepository::save_transcript(
+        &pool,
+        "Третья",
+        &[
+            segment("s1", "первая реплика", "Анна", 0.0),
+            segment("s2", "вторая реплика", "You", 3.0),
+        ],
+        None,
+        None,
+    )
+    .await
+    .unwrap();
+    let ids: Vec<String> = sqlx::query_scalar(
+        "SELECT id FROM transcripts WHERE meeting_id = ? ORDER BY audio_start_time",
+    )
+    .bind(&meeting_id)
+    .fetch_all(&pool)
+    .await
+    .unwrap();
+    let words = r#"[{"w":"первая","s":0.1,"e":0.6},{"w":"реплика","s":0.6,"e":1.4}]"#;
+    sqlx::query("UPDATE transcripts SET words = ? WHERE meeting_id = ? AND id = ?")
+        .bind(fields::seal(fields::TRANSCRIPT_WORDS, words))
+        .bind(&meeting_id)
+        .bind(&ids[0])
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    let edited = TranscriptEditsRepository::edit(&pool, &meeting_id, &ids[0], "первая смета", &[])
+        .await
+        .unwrap();
+    assert_eq!(edited.words.as_ref().map(|w| w.len()), Some(2));
+    TranscriptEditsRepository::remove(&pool, &meeting_id, &ids[1..]).await.unwrap();
+
+    let stored: Vec<(String, Option<String>)> =
+        sqlx::query_as("SELECT transcript, words FROM transcripts WHERE meeting_id = ?")
+            .bind(&meeting_id)
+            .fetch_all(&pool)
+            .await
+            .unwrap();
+    assert_eq!(stored.len(), 1, "the removed line is gone");
+    let (text, words) = &stored[0];
+    for raw in [text, words.as_ref().unwrap()] {
+        assert!(!raw.contains("смета"), "a correction is stored in the clear: {raw}");
+    }
+    let removals: Vec<String> = sqlx::query_scalar("SELECT track FROM transcript_removals")
+        .fetch_all(&pool)
+        .await
+        .unwrap();
+    assert_eq!(removals, vec!["mic".to_string()]);
+
+    let meeting = MeetingsRepository::get_meeting(&pool, &meeting_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(meeting.transcripts[0].text, "первая смета");
+    assert!(meeting.transcripts[0].edited);
 }
 
 #[tokio::test]

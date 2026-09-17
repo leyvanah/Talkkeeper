@@ -33,6 +33,10 @@ export interface TimelineLine {
   confidence?: number;
   /** When each word was said, where the recognizer reported it. */
   words?: TimedWord[];
+  /** The stored lines this one shows, when several were merged. */
+  ids?: string[];
+  /** A person corrected it. */
+  edited?: boolean;
 }
 
 export interface PlacedLine {

@@ -44,6 +44,8 @@ pub struct Transcript {
     pub speaker: Option<String>,
     /// When each word was said, where the recognizer reported it.
     pub words: Option<Vec<crate::audio::word_timing::WordTiming>>,
+    /// When a person last changed the line; `None` for the recognizer's text.
+    pub edited_at: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -196,6 +198,7 @@ impl<'r> FromRow<'r, SqliteRow> for Transcript {
                 .flatten()
                 .and_then(|stored| fields::open(fields::TRANSCRIPT_WORDS, &stored).ok())
                 .and_then(|json| crate::audio::word_timing::from_json(&json)),
+            edited_at: row.try_get::<Option<String>, _>("edited_at").ok().flatten(),
         })
     }
 }

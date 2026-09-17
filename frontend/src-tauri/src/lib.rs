@@ -792,6 +792,8 @@ pub fn run() {
             database::repositories::client::api_set_meeting_client,
             database::repositories::speaker_role::api_get_speaker_sides,
             database::repositories::speaker_role::api_assign_speaker_role,
+            database::repositories::transcript_edit::api_edit_transcript_line,
+            database::repositories::transcript_edit::api_remove_transcript_lines,
             meeting_detection::get_meeting_detection_settings,
             meeting_detection::set_meeting_detection_settings,
             meeting_detection::start_meeting_detection,
