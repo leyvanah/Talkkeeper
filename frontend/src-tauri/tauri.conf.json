@@ -19,7 +19,8 @@
                 "resizable": true,
                 "fullscreen": false,
                 "theme": "Dark",
-                "decorations": true
+                "decorations": false,
+                "shadow": true
             }
         ],
         "macOSPrivateApi": true,
@@ -64,6 +65,12 @@
                         "core:menu:default",
                         "core:tray:default",
                         "core:window:allow-set-title",
+                        "core:window:allow-minimize",
+                        "core:window:allow-toggle-maximize",
+                        "core:window:allow-is-maximized",
+                        "core:window:allow-start-dragging",
+                        "core:window:allow-start-resize-dragging",
+                        "core:window:allow-close",
                         "store:default",
                         "dialog:allow-save",
                         "notification:default",

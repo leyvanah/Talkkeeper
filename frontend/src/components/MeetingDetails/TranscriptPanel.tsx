@@ -199,12 +199,10 @@ export function TranscriptPanel({
 
   return (
     <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden bg-[var(--af-bg)]">
-      {/* Header: title + date/time */}
-      <div className="min-w-0 px-4 pt-5 sm:px-6 sm:pt-6 lg:px-8">
-        <h1 className="truncate text-xl font-bold text-[var(--af-text)] sm:text-2xl">
-          {title || t('untitledMeeting')}
-        </h1>
-        <div className="mt-2 flex min-w-0 flex-wrap items-center gap-x-4 gap-y-1 text-sm text-[var(--af-text-2)]">
+      {/* Header: what this recording is. Its name is in the window's own
+          header, which every page has. */}
+      <div className="min-w-0 px-4 pt-4 sm:px-6 sm:pt-5 lg:px-8">
+        <div className="flex min-w-0 flex-wrap items-center gap-x-4 gap-y-1 text-sm text-[var(--af-text-2)]">
           <MeetingClientBadge meetingId={meetingId} />
           {dateLabel && (
             <span className="inline-flex min-w-0 items-center gap-1.5">

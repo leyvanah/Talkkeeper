@@ -6,6 +6,12 @@
     "cancel": "Cancel",
     "save": "Save"
   },
+  "window": {
+    "minimize": "Minimize",
+    "maximize": "Maximize",
+    "restore": "Restore",
+    "close": "Close to tray"
+  },
   "sidebar": {
     "resizeSidebar": "Sidebar width: drag (to the edge to collapse) or use the arrow keys, double-click to reset",
     "searchEverything": "Search everything",

@@ -5,6 +5,8 @@ import { Source_Sans_3 } from 'next/font/google'
 import Sidebar from '@/components/Sidebar'
 import { SidebarProvider } from '@/components/Sidebar/SidebarProvider'
 import { PanelLayoutProvider } from '@/components/PanelLayoutProvider'
+import { WindowTitleProvider } from '@/components/AppHeader'
+import { WindowResizeEdges } from '@/components/WindowResizeEdges'
 import MainContent from '@/components/MainContent'
 import AnalyticsProvider from '@/components/AnalyticsProvider'
 import { Toaster, toast } from 'sonner'
@@ -403,6 +405,7 @@ export default function RootLayout({
                   <OllamaDownloadProvider>
                     <OnboardingProvider>
                       <PanelLayoutProvider>
+                      <WindowTitleProvider>
                       <SidebarProvider>
                         <TooltipProvider>
                           <RetranscriptionProvider>
@@ -412,6 +415,11 @@ export default function RootLayout({
                               <ImportDialogProvider onOpen={handleOpenImportDialog}>
                                 {/* Download progress toast provider - listens for background downloads */}
                                 <DownloadProgressToastProvider />
+
+                                {/* The window has no frame of its own, so the
+                                    app draws the edges to resize it by. Its
+                                    buttons live in the header. */}
+                                <WindowResizeEdges />
 
                                 {/* Show onboarding or main app */}
                                 {showOnboarding ? (
@@ -435,6 +443,7 @@ export default function RootLayout({
                           </RetranscriptionProvider>
                         </TooltipProvider>
                       </SidebarProvider>
+                      </WindowTitleProvider>
                       </PanelLayoutProvider>
                     </OnboardingProvider>
                   </OllamaDownloadProvider>
