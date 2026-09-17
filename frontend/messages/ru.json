@@ -7,6 +7,7 @@
     "save": "Сохранить"
   },
   "sidebar": {
+    "resizeSidebar": "Ширина панели: перетащите или используйте стрелки, двойной щелчок — по умолчанию",
     "searchEverything": "Поиск по всему",
     "searchEverythingShortcut": "Поиск по всему (Ctrl+K)",
     "startRecording": "Начать запись",
@@ -281,6 +282,13 @@
     "modelReadyClosingWindow": "Модель готова! Закрываю окно…"
   },
   "meetingDetails": {
+    "transcriptPane": "Транскрипт",
+    "summaryPane": "Саммари",
+    "showTranscriptPane": "Показать транскрипт",
+    "showSummaryPane": "Показать саммари",
+    "hideTranscriptPane": "Скрыть транскрипт",
+    "hideSummaryPane": "Скрыть саммари",
+    "resizePanes": "Граница колонок: перетащите или используйте стрелки, двойной щелчок — по умолчанию",
     "untitledMeeting": "Встреча без названия",
     "transcriptTab": "Транскрипт",
     "transcriptViewLabel": "Вид транскрипта",

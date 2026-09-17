@@ -278,7 +278,7 @@ export function SummaryPanel({
   );
 
   return (
-    <div className="flex min-h-0 min-w-0 w-full flex-[1.15] flex-col overflow-hidden border-t border-[var(--af-border)] bg-[var(--af-bg)] md:min-w-[280px] md:border-l md:border-t-0 lg:max-w-[960px]">
+    <div className="flex min-h-0 min-w-0 w-full flex-1 flex-col overflow-hidden border-t border-[var(--af-border)] bg-[var(--af-bg)] md:border-t-0">
       <div className="flex min-h-12 items-center gap-2 overflow-x-auto border-b border-[var(--af-border)] bg-[var(--af-panel)] px-3 py-2">
         <div className="flex-shrink-0">
           <SummaryGeneratorButtonGroup

@@ -7,6 +7,7 @@
     "save": "Save"
   },
   "sidebar": {
+    "resizeSidebar": "Sidebar width: drag or use the arrow keys, double-click to reset",
     "searchEverything": "Search everything",
     "searchEverythingShortcut": "Search everything (Ctrl+K)",
     "startRecording": "Start Recording",
@@ -281,6 +282,13 @@
     "modelReadyClosingWindow": "Model ready! Closing window..."
   },
   "meetingDetails": {
+    "transcriptPane": "Transcript",
+    "summaryPane": "Summary",
+    "showTranscriptPane": "Show transcript",
+    "showSummaryPane": "Show summary",
+    "hideTranscriptPane": "Hide transcript",
+    "hideSummaryPane": "Hide summary",
+    "resizePanes": "Column border: drag or use the arrow keys, double-click to reset",
     "untitledMeeting": "Untitled meeting",
     "transcriptTab": "Transcript",
     "transcriptViewLabel": "Transcript layout",

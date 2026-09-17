@@ -9,6 +9,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { toast } from 'sonner';
 import { TranscriptPanel } from '@/components/MeetingDetails/TranscriptPanel';
 import { SummaryPanel } from '@/components/MeetingDetails/SummaryPanel';
+import { MeetingSplitLayout } from '@/components/MeetingDetails/MeetingSplitLayout';
 import { TemplateEditorModal } from '@/components/MeetingDetails/TemplateEditorModal';
 import { ModelConfig } from '@/components/ModelSettingsModal';
 
@@ -236,84 +237,88 @@ export default function PageContent({
       transition={{ duration: 0.3, ease: 'easeOut' }}
       className="flex flex-col h-full bg-[var(--af-bg)]"
     >
-      <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden bg-[var(--af-bg)] md:flex-row">
-        <TranscriptPanel
-          transcripts={meetingData.transcripts}
-          title={meetingData.meetingTitle}
-          createdAt={meeting.created_at}
-          customPrompt={customPrompt}
-          onPromptChange={setCustomPrompt}
-          onCopyTranscript={copyOperations.handleCopyTranscript}
-          onOpenExport={() => setExportOpen(true)}
-          onSpeakerRenamed={({ from, to, removedName }) => {
-            if (!meetingData.aiSummary) return;
-            setRegenerationRequest({
+      <MeetingSplitLayout
+        transcript={
+          <TranscriptPanel
+            transcripts={meetingData.transcripts}
+            title={meetingData.meetingTitle}
+            createdAt={meeting.created_at}
+            customPrompt={customPrompt}
+            onPromptChange={setCustomPrompt}
+            onCopyTranscript={copyOperations.handleCopyTranscript}
+            onOpenExport={() => setExportOpen(true)}
+            onSpeakerRenamed={({ from, to, removedName }) => {
+              if (!meetingData.aiSummary) return;
+              setRegenerationRequest({
+                open: true,
+                initialContext: removedName
+                  ? `The person name "${from}" was removed. Use the restored meeting-local label "${to}" and do not associate it with a person profile.`
+                  : `Use the updated speaker name "${to}" and the other speaker labels from the transcript when writing the summary.`,
+                speakerNamesChanged: true,
+              });
+            }}
+            onOpenMeetingFolder={meetingOperations.handleOpenMeetingFolder}
+            isRecording={isRecording}
+            disableAutoScroll={true}
+            // Pagination props for efficient loading
+            usePagination={true}
+            segments={segments}
+            hasMore={hasMore}
+            isLoadingMore={isLoadingMore}
+            totalCount={totalCount}
+            loadedCount={loadedCount}
+            onLoadMore={onLoadMore}
+            // Retranscription props
+            meetingId={meeting.id}
+            meetingFolderPath={meeting.folder_path}
+            onRefetchTranscripts={onRefetchTranscripts}
+          />
+        }
+        summary={
+          <SummaryPanel
+            meeting={meeting}
+            meetingTitle={meetingData.meetingTitle}
+            onTitleChange={meetingData.handleTitleChange}
+            isEditingTitle={meetingData.isEditingTitle}
+            onStartEditTitle={() => meetingData.setIsEditingTitle(true)}
+            onFinishEditTitle={() => meetingData.setIsEditingTitle(false)}
+            isTitleDirty={meetingData.isTitleDirty}
+            summaryRef={meetingData.blockNoteSummaryRef}
+            isSaving={meetingData.isSaving}
+            onSaveAll={meetingData.saveAllChanges}
+            onCopySummary={copyOperations.handleCopySummary}
+            onCopyTranscript={copyOperations.handleCopyTranscript}
+            onOpenExport={() => setExportOpen(true)}
+            onOpenFolder={meetingOperations.handleOpenMeetingFolder}
+            aiSummary={meetingData.aiSummary}
+            summaryStatus={summaryGeneration.summaryStatus}
+            transcripts={meetingData.transcripts}
+            modelConfig={modelConfig}
+            setModelConfig={setModelConfig}
+            onSaveModelConfig={handleSaveModelConfig}
+            onGenerateSummary={summaryGeneration.handleGenerateSummary}
+            onStopGeneration={summaryGeneration.handleStopGeneration}
+            customPrompt={customPrompt}
+            summaryResponse={summaryResponse}
+            onSaveSummary={meetingData.handleSaveSummary}
+            onSummaryChange={meetingData.handleSummaryChange}
+            onDirtyChange={meetingData.setIsSummaryDirty}
+            summaryError={summaryGeneration.summaryError}
+            onRequestRegenerate={() => setRegenerationRequest({
               open: true,
-              initialContext: removedName
-                ? `The person name "${from}" was removed. Use the restored meeting-local label "${to}" and do not associate it with a person profile.`
-                : `Use the updated speaker name "${to}" and the other speaker labels from the transcript when writing the summary.`,
-              speakerNamesChanged: true,
-            });
-          }}
-          onOpenMeetingFolder={meetingOperations.handleOpenMeetingFolder}
-          isRecording={isRecording}
-          disableAutoScroll={true}
-          // Pagination props for efficient loading
-          usePagination={true}
-          segments={segments}
-          hasMore={hasMore}
-          isLoadingMore={isLoadingMore}
-          totalCount={totalCount}
-          loadedCount={loadedCount}
-          onLoadMore={onLoadMore}
-          // Retranscription props
-          meetingId={meeting.id}
-          meetingFolderPath={meeting.folder_path}
-          onRefetchTranscripts={onRefetchTranscripts}
-        />
-        <SummaryPanel
-          meeting={meeting}
-          meetingTitle={meetingData.meetingTitle}
-          onTitleChange={meetingData.handleTitleChange}
-          isEditingTitle={meetingData.isEditingTitle}
-          onStartEditTitle={() => meetingData.setIsEditingTitle(true)}
-          onFinishEditTitle={() => meetingData.setIsEditingTitle(false)}
-          isTitleDirty={meetingData.isTitleDirty}
-          summaryRef={meetingData.blockNoteSummaryRef}
-          isSaving={meetingData.isSaving}
-          onSaveAll={meetingData.saveAllChanges}
-          onCopySummary={copyOperations.handleCopySummary}
-          onCopyTranscript={copyOperations.handleCopyTranscript}
-          onOpenExport={() => setExportOpen(true)}
-          onOpenFolder={meetingOperations.handleOpenMeetingFolder}
-          aiSummary={meetingData.aiSummary}
-          summaryStatus={summaryGeneration.summaryStatus}
-          transcripts={meetingData.transcripts}
-          modelConfig={modelConfig}
-          setModelConfig={setModelConfig}
-          onSaveModelConfig={handleSaveModelConfig}
-          onGenerateSummary={summaryGeneration.handleGenerateSummary}
-          onStopGeneration={summaryGeneration.handleStopGeneration}
-          customPrompt={customPrompt}
-          summaryResponse={summaryResponse}
-          onSaveSummary={meetingData.handleSaveSummary}
-          onSummaryChange={meetingData.handleSummaryChange}
-          onDirtyChange={meetingData.setIsSummaryDirty}
-          summaryError={summaryGeneration.summaryError}
-          onRequestRegenerate={() => setRegenerationRequest({
-            open: true,
-            initialContext: '',
-            speakerNamesChanged: false,
-          })}
-          getSummaryStatusMessage={summaryGeneration.getSummaryStatusMessage}
-          availableTemplates={templates.availableTemplates}
-          selectedTemplate={templates.selectedTemplate}
-          onTemplateSelect={templates.handleTemplateSelection}
-          onManageTemplates={() => setTemplateEditorOpen(true)}
-          isModelConfigLoading={false}
-          onOpenModelSettings={handleRegisterModalOpen}
-        />
-      </div>
+              initialContext: '',
+              speakerNamesChanged: false,
+            })}
+            getSummaryStatusMessage={summaryGeneration.getSummaryStatusMessage}
+            availableTemplates={templates.availableTemplates}
+            selectedTemplate={templates.selectedTemplate}
+            onTemplateSelect={templates.handleTemplateSelection}
+            onManageTemplates={() => setTemplateEditorOpen(true)}
+            isModelConfigLoading={false}
+            onOpenModelSettings={handleRegisterModalOpen}
+          />
+        }
+      />
 
       <TemplateEditorModal
         open={templateEditorOpen}

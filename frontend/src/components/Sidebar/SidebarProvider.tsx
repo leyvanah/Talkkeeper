@@ -6,6 +6,7 @@ import { useTranslations } from 'next-intl';
 import Analytics from '@/lib/analytics';
 import { invoke } from '@tauri-apps/api/core';
 import { useRecordingState } from '@/contexts/RecordingStateContext';
+import { usePanelLayout } from '@/components/PanelLayoutProvider';
 
 
 export interface SidebarItem {
@@ -104,7 +105,8 @@ export const useSidebar = () => {
 export function SidebarProvider({ children }: { children: React.ReactNode }) {
   const t = useTranslations('sidebar');
   const [currentMeeting, setCurrentMeeting] = useState<CurrentMeeting | null>({ id: 'intro-call', title: '+ ' + t('newCall') });
-  const [isCollapsed, setIsCollapsed] = useState(false);
+  const { layout: panelLayout, toggleSidebar } = usePanelLayout();
+  const isCollapsed = panelLayout.sidebarCollapsed;
   const [meetings, setMeetings] = useState<CurrentMeeting[]>([]);
   const [clients, setClients] = useState<ClientSummary[]>([]);
   const [sidebarItems, setSidebarItems] = useState<SidebarItem[]>([]);
@@ -245,9 +247,7 @@ export function SidebarProvider({ children }: { children: React.ReactNode }) {
   })();
 
 
-  const toggleCollapse = () => {
-    setIsCollapsed(!isCollapsed);
-  };
+  const toggleCollapse = toggleSidebar;
 
   // Update current meeting when on home page
   useEffect(() => {

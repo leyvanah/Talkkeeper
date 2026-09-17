@@ -4,6 +4,7 @@ import './globals.css'
 import { Source_Sans_3 } from 'next/font/google'
 import Sidebar from '@/components/Sidebar'
 import { SidebarProvider } from '@/components/Sidebar/SidebarProvider'
+import { PanelLayoutProvider } from '@/components/PanelLayoutProvider'
 import MainContent from '@/components/MainContent'
 import AnalyticsProvider from '@/components/AnalyticsProvider'
 import { Toaster, toast } from 'sonner'
@@ -401,6 +402,7 @@ export default function RootLayout({
                 <ConfigProvider>
                   <OllamaDownloadProvider>
                     <OnboardingProvider>
+                      <PanelLayoutProvider>
                       <SidebarProvider>
                         <TooltipProvider>
                           <RetranscriptionProvider>
@@ -433,6 +435,7 @@ export default function RootLayout({
                           </RetranscriptionProvider>
                         </TooltipProvider>
                       </SidebarProvider>
+                      </PanelLayoutProvider>
                     </OnboardingProvider>
                   </OllamaDownloadProvider>
                 </ConfigProvider>
