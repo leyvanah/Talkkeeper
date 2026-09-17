@@ -70,7 +70,7 @@ export function About() {
                 <div className="mt-3">
                     {platform === 'macos' ? (
                         <Button
-                            onClick={() => openExternal('https://github.com/TylerBuza/Meetily-ActuallyFree/releases')}
+                            onClick={() => openExternal('https://github.com/leyvanah/Talkkeeper/releases')}
                             variant="outline"
                             size="sm"
                             className="text-xs"
@@ -136,22 +136,18 @@ export function About() {
                     {t('footerLicense')}
                 </p>
                 <p className="mt-1 text-xs text-gray-500">
-                    Tyler Buza ·{' '}
-                    <button
-                        type="button"
-                        className="underline underline-offset-2 transition-colors hover:text-blue-500"
-                        onClick={() => openExternal('https://github.com/TylerBuza')}
-                    >
-                        GitHub
-                    </button>
-                    {' '}·{' '}
-                    <button
-                        type="button"
-                        className="underline underline-offset-2 transition-colors hover:text-blue-500"
-                        onClick={() => openExternal('https://buza.dev')}
-                    >
-                        buza.dev
-                    </button>
+                    {t.rich('developerCredit', {
+                        handle: () => (
+                            <button
+                                type="button"
+                                title={t('profileOnGithub')}
+                                className="underline underline-offset-2 transition-colors hover:text-blue-500"
+                                onClick={() => openExternal('https://github.com/leyvanah')}
+                            >
+                                leyvanah
+                            </button>
+                        ),
+                    })}
                 </p>
             </div>
 

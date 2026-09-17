@@ -633,6 +633,7 @@ pub fn run() {
             security::commands::security_unlock,
             security::commands::security_unlock_with_recovery,
             security::commands::security_lock,
+            security::commands::security_export_key_backup,
             security::commands::security_touch,
             security::commands::security_change_password,
             security::commands::security_reset_password,

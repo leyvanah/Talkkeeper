@@ -77,7 +77,7 @@ export function SetupOverviewStep() {
 
   const openIssues = () => {
     invoke('open_external_url', {
-      url: 'https://github.com/TylerBuza/Meetily-ActuallyFree',
+      url: 'https://github.com/leyvanah/Talkkeeper',
     }).catch((error) => console.error('Failed to open GitHub issues:', error));
   };
 

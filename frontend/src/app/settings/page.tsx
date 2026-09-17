@@ -2,8 +2,8 @@
 
 import React, { useState, useEffect, useLayoutEffect, useRef } from 'react';
 import { useTranslations } from 'next-intl';
-import { useWindowTitle } from '@/components/AppHeader';
-import { ArrowLeft, Settings2, Mic, Database as DatabaseIcon, SparkleIcon, Radar, Info, Cpu, Lock } from 'lucide-react';
+import { useWindowBack, useWindowTitle } from '@/components/AppHeader';
+import { Settings2, Mic, Database as DatabaseIcon, SparkleIcon, Radar, Info, Cpu, Lock } from 'lucide-react';
 import { useRouter } from 'next/navigation';
 import { invoke } from '@tauri-apps/api/core';
 import { motion } from 'framer-motion';
@@ -37,6 +37,7 @@ export default function SettingsPage() {
   const t = useTranslations('settings');
   useWindowTitle(t('pageTitle'));
   const router = useRouter();
+  useWindowBack(t('back'), () => router.back());
   const { transcriptModelConfig, setTranscriptModelConfig } = useConfig();
 
   const [activeTab, setActiveTab] = useState('general');
@@ -103,22 +104,6 @@ export default function SettingsPage() {
 
   return (
     <div className="flex h-full min-h-0 min-w-0 max-w-full flex-col overflow-hidden bg-gray-50">
-      {/* Header */}
-      <div className="flex-shrink-0 border-b border-gray-200 bg-gray-50">
-        <div className="mx-auto w-full max-w-6xl px-4 py-4 sm:px-6 sm:py-6 lg:px-8">
-          <div className="flex min-w-0 items-center gap-3 sm:gap-4">
-            <button
-              onClick={() => router.back()}
-              className="flex shrink-0 items-center gap-2 text-gray-600 transition-colors hover:text-gray-900"
-            >
-              <ArrowLeft className="h-5 w-5" />
-              <span className="hidden sm:inline">{t('back')}</span>
-            </button>
-            <h1 className="truncate text-2xl font-bold sm:text-3xl">{t('pageTitle')}</h1>
-          </div>
-        </div>
-      </div>
-
       {/* Body */}
       <div className="min-h-0 min-w-0 flex-1 overflow-y-auto overflow-x-hidden">
         <div className="mx-auto w-full max-w-6xl px-4 py-4 sm:px-6 sm:py-6 lg:px-8">

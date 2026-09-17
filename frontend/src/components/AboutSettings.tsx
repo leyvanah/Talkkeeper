@@ -28,9 +28,8 @@ export function AboutSettings() {
     invoke('open_external_url', { url }).catch((e) => console.error('Failed to open URL:', e));
   };
 
-  const REPO_URL = 'https://github.com/TylerBuza/Meetily-ActuallyFree';
-  const ORIGINAL_MEETILY_URL = 'https://github.com/Zackriya-Solutions/meeting-minutes';
-  const AUTHOR_URL = 'https://buza.dev';
+  const REPO_URL = 'https://github.com/leyvanah/Talkkeeper';
+  const PROFILE_URL = 'https://github.com/leyvanah';
 
   return (
     <div className="space-y-6">
@@ -90,26 +89,22 @@ export function AboutSettings() {
         </button>
       </div>
 
-      <div className="text-center text-xs text-gray-400 space-y-1">
+      <div className="text-center text-xs text-gray-400">
         <p>
-          {t('builtOnPrefix')}
-          <button
-            type="button"
-            onClick={() => openUrl(ORIGINAL_MEETILY_URL)}
-            className="text-blue-500 hover:underline"
-          >
-            {t('openSourceProject')}
-          </button>
-          {t('builtOnSuffix')}
-        </p>
-        <p>
-          <button
-            type="button"
-            onClick={() => openUrl(AUTHOR_URL)}
-            className="text-blue-500 hover:underline"
-          >
-            {t('forkCredit')}
-          </button>
+          {t.rich('developerCredit', {
+            handle: () => (
+              <button
+                type="button"
+                onClick={() => openUrl(PROFILE_URL)}
+                title={t('profileOnGithub')}
+                className="text-blue-500 hover:underline"
+              >
+                leyvanah
+              </button>
+            ),
+          })}
+          {' · '}
+          {t('footerLicense')}
         </p>
       </div>
     </div>

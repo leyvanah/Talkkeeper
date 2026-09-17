@@ -929,6 +929,8 @@ FunctionEnd
 ; 1. Confirm uninstall page
 Var DeleteAppDataCheckbox
 Var DeleteAppDataCheckboxState
+; Whether the key reached its copy, and so whether the data may be wiped.
+Var KeyRescued
 !define /ifndef WS_EX_LAYOUTRTL         0x00400000
 !define MUI_PAGE_CUSTOMFUNCTION_SHOW un.ConfirmShow
 Function un.ConfirmShow ; Add add a `Delete app data` check box
@@ -963,6 +965,15 @@ FunctionEnd
 !define MUI_PAGE_CUSTOMFUNCTION_LEAVE un.ConfirmLeave
 Function un.ConfirmLeave
   SendMessage $DeleteAppDataCheckbox ${BM_GETCHECK} 0 0 $DeleteAppDataCheckboxState
+  ; Deleting the data takes the key to every recording with it, while the
+  ; recordings themselves stay on disk. Say so plainly, and make it its own
+  ; yes rather than a tick box read in passing.
+  ${If} $DeleteAppDataCheckboxState = 1
+  ${AndIf} $PassiveMode <> 1
+  ${AndIf} ${FileExists} "$INSTDIR\data\keystore.json"
+    MessageBox MB_ICONEXCLAMATION|MB_YESNO|MB_DEFBUTTON2 "$(tkKeyWarning)" IDYES +2
+    StrCpy $DeleteAppDataCheckboxState 0
+  ${EndIf}
 FunctionEnd
 !define MUI_PAGE_CUSTOMFUNCTION_PRE un.SkipIfPassive
 !insertmacro MUI_UNPAGE_CONFIRM
@@ -1467,16 +1478,25 @@ Section Uninstall
     ; live OUTSIDE $INSTDIR, so wiping it here leaves files on disk that nobody
     ; can ever read again — silently, and with no way back. It cost the owner
     ; his whole archive once; copy it out first and say where it went.
+    StrCpy $KeyRescued 1
     ${If} ${FileExists} "$INSTDIR\data\keystore.json"
+      StrCpy $KeyRescued 0
       CreateDirectory "$DOCUMENTS\Talkkeeper-key-backup"
       CopyFiles /SILENT "$INSTDIR\data\keystore.json" "$DOCUMENTS\Talkkeeper-key-backup\keystore.json"
       ${If} ${FileExists} "$DOCUMENTS\Talkkeeper-key-backup\keystore.json"
-      ${AndIf} $PassiveMode <> 1
-        MessageBox MB_ICONINFORMATION|MB_OK "$(tkKeyRescued)"
+        StrCpy $KeyRescued 1
+        ${If} $PassiveMode <> 1
+          MessageBox MB_ICONINFORMATION|MB_OK "$(tkKeyRescued)"
+        ${EndIf}
       ${EndIf}
     ${EndIf}
 
-    RmDir /r "$INSTDIR\data"
+    ; Only wipe the data once the key is safe somewhere else.
+    ${If} $KeyRescued = 1
+      RmDir /r "$INSTDIR\data"
+    ${ElseIf} $PassiveMode <> 1
+      MessageBox MB_ICONEXCLAMATION|MB_OK "$(tkKeyKept)"
+    ${EndIf}
     RmDir "$INSTDIR"
   ${EndIf}
 
