@@ -8,6 +8,13 @@ import ruMessages from '../../messages/ru.json';
 export type AppLocale = 'ru' | 'en';
 
 const LOCALE_STORAGE_KEY = 'meetily_locale';
+
+/**
+ * The machine's own time zone. Without one next-intl reports an error on
+ * every start (shown as the red badge in development), and dates would be
+ * formatted in whatever zone the renderer guessed.
+ */
+const TIME_ZONE = Intl.DateTimeFormat().resolvedOptions().timeZone;
 const VALID_LOCALES: readonly AppLocale[] = ['ru', 'en'];
 
 // First run has no stored preference, so follow the system language: a Russian
@@ -54,7 +61,7 @@ export function LocaleProvider({ children }: { children: ReactNode }) {
 
   return (
     <LocaleContext.Provider value={{ locale, setLocale }}>
-      <NextIntlClientProvider locale={locale} messages={MESSAGES[locale]}>
+      <NextIntlClientProvider locale={locale} messages={MESSAGES[locale]} timeZone={TIME_ZONE}>
         {children}
       </NextIntlClientProvider>
     </LocaleContext.Provider>

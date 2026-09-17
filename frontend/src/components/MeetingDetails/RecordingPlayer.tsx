@@ -14,6 +14,7 @@ import { useTranslations } from 'next-intl';
 import { Pause, Play } from 'lucide-react';
 import { useAudioPlayer } from '@/hooks/useAudioPlayer';
 import { TranscriptSegmentData } from '@/types';
+import { Playhead } from '@/lib/playhead';
 
 export interface RecordingPlayerHandle {
   /** Move the playhead, as clicking a line in the transcript does. */
@@ -29,6 +30,10 @@ interface RecordingPlayerProps {
   onActiveSegmentChange?: (segmentId: string | null) => void;
   /** Called when playback starts or stops, so the transcript can follow along. */
   onPlayingChange?: (isPlaying: boolean) => void;
+  /** Where the position is published every frame, for views that draw it. */
+  playhead?: Playhead;
+  /** Called with whether this meeting has a recording to play at all. */
+  onAvailabilityChange?: (available: boolean) => void;
 }
 
 /** `H:MM:SS` past an hour, `MM:SS` before it. */
@@ -60,7 +65,7 @@ function activeSegmentAt(segments: TranscriptSegmentData[], time: number): strin
 
 export const RecordingPlayer = forwardRef<RecordingPlayerHandle, RecordingPlayerProps>(
   function RecordingPlayer(
-    { meetingFolderPath, segments, onActiveSegmentChange, onPlayingChange },
+    { meetingFolderPath, segments, onActiveSegmentChange, onPlayingChange, playhead, onAvailabilityChange },
     ref,
   ) {
     const t = useTranslations('meetingDetails');
@@ -91,6 +96,10 @@ export const RecordingPlayer = forwardRef<RecordingPlayerHandle, RecordingPlayer
       };
     }, [meetingFolderPath]);
 
+    useEffect(() => {
+      onAvailabilityChange?.(!!audioPath);
+    }, [audioPath, onAvailabilityChange]);
+
     useImperativeHandle(ref, () => ({ seek }), [seek]);
 
     // Ordered once here so the search for the current line is a walk forward.
@@ -116,6 +125,12 @@ export const RecordingPlayer = forwardRef<RecordingPlayerHandle, RecordingPlayer
     useEffect(() => {
       onPlayingChange?.(isPlaying);
     }, [isPlaying, onPlayingChange]);
+
+    // The exact position, for the views that draw a moving line. They move
+    // their own element, so this does not re-render them.
+    useEffect(() => {
+      playhead?.update(currentTime, isPlaying);
+    }, [playhead, currentTime, isPlaying]);
 
     useEffect(() => {
       if (error) console.warn('Recording playback failed:', error);
