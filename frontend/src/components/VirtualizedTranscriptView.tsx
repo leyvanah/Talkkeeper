@@ -33,6 +33,9 @@ import { Tooltip, TooltipContent, TooltipTrigger } from "./ui/tooltip";
 import { motion } from "framer-motion";
 import { TranscriptSegmentData } from "@/types";
 import { useTranslations } from "next-intl";
+import { Pencil } from "lucide-react";
+import type { LineEdits } from "@/services/transcriptEditService";
+import { TranscriptLineEditor } from "./MeetingDetails/TranscriptLineEditor";
 
 export interface VirtualizedTranscriptViewProps {
     /** Transcript segments to display */
@@ -76,6 +79,8 @@ export interface VirtualizedTranscriptViewProps {
     onSeekTo?: (seconds: number) => void;
     /** Keep the current line in view. On while the recording is playing. */
     followActiveSegment?: boolean;
+    /** Correcting and removing lines, on a saved meeting. */
+    lineEdits?: LineEdits;
 }
 
 // Threshold for enabling virtualization (below this, use simple rendering)
@@ -198,6 +203,9 @@ export function mergeAdjacentSameSpeaker(
             // Word timings survive a merge only if both halves had them;
             // half a list would describe half the text.
             last.words = last.words && seg.words ? [...last.words, ...seg.words] : undefined;
+            // An edit of the merged line has to reach every stored line in it.
+            last.ids = [...(last.ids ?? [last.id]), ...(seg.ids ?? [seg.id])];
+            last.edited = last.edited || seg.edited;
             if (seg.confidence != null && last.confidence != null) {
                 last.confidence = Math.min(last.confidence, seg.confidence);
             } else if (seg.confidence != null) {
@@ -237,6 +245,9 @@ const TranscriptSegment = memo(function TranscriptSegment({
     onRenameSpeaker,
     isActive = false,
     onSeekTo,
+    lineIds,
+    edited = false,
+    lineEdits,
 }: {
     id: string;
     timestamp: number;
@@ -252,8 +263,16 @@ const TranscriptSegment = memo(function TranscriptSegment({
     isActive?: boolean;
     /** When provided, the line can be clicked to play from there. */
     onSeekTo?: (seconds: number) => void;
+    /** The stored lines this bubble shows, when several were merged. */
+    lineIds?: string[];
+    /** A person corrected the line. */
+    edited?: boolean;
+    lineEdits?: LineEdits;
 }) {
     const t = useTranslations('recording');
+    const tm = useTranslations('meetingDetails');
+    const [editing, setEditing] = useState(false);
+    const lineRef = { id, ids: lineIds };
     const displayText = cleanStopWords(text) || (text.trim() === '' ? t('silencePlaceholder') : text);
 
     // Split conversation: local user ("You" + their name) on the right in blue,
@@ -265,7 +284,7 @@ const TranscriptSegment = memo(function TranscriptSegment({
     return (
         <div
             id={`segment-${id}`}
-            className={`relative flex pb-4 ${isYou ? 'justify-end pl-10' : 'justify-start pr-10'}`}
+            className={`group relative flex pb-4 ${isYou ? 'justify-end pl-10' : 'justify-start pr-10'}`}
         >
             <div className={`max-w-[85%] min-w-0 flex flex-col gap-1 ${isYou ? 'items-end' : 'items-start'}`}>
                 <div className={`flex items-baseline gap-2 ${isYou ? 'flex-row-reverse' : 'flex-row'}`}>
@@ -301,13 +320,41 @@ const TranscriptSegment = memo(function TranscriptSegment({
                             )}
                         </TooltipContent>
                     </Tooltip>
+                    {edited && (
+                        <span className="text-[11px] italic text-[var(--af-text-3)]" title={tm('transcriptEditedHint')}>
+                            {tm('transcriptEdited')}
+                        </span>
+                    )}
+                    {lineEdits && !editing && (
+                        <button
+                            type="button"
+                            onClick={() => setEditing(true)}
+                            title={tm('transcriptEdit')}
+                            aria-label={tm('transcriptEdit')}
+                            className="rounded p-0.5 text-[var(--af-text-3)] opacity-0 transition-opacity hover:text-[var(--af-text)] focus:opacity-100 group-hover:opacity-100"
+                        >
+                            <Pencil size={12} />
+                        </button>
+                    )}
                 </div>
+
+                {editing && lineEdits ? (
+                    <div className="w-[36rem] max-w-full">
+                        <TranscriptLineEditor
+                            initialText={text}
+                            onSave={(next) => lineEdits.onEditLine(lineRef, next)}
+                            onRemove={() => lineEdits.onRemoveLine(lineRef)}
+                            onClose={() => setEditing(false)}
+                        />
+                    </div>
+                ) : (
 
                 <div
                     role={onSeekTo ? 'button' : undefined}
                     tabIndex={onSeekTo ? 0 : undefined}
                     title={onSeekTo ? t('playFromHere') : undefined}
                     onClick={onSeekTo ? () => onSeekTo(timestamp) : undefined}
+                    onDoubleClick={lineEdits ? () => setEditing(true) : undefined}
                     onKeyDown={
                         onSeekTo
                             ? (event) => {
@@ -338,6 +385,7 @@ const TranscriptSegment = memo(function TranscriptSegment({
                         {displayText}
                     </p>
                 </div>
+                )}
             </div>
         </div>
     );
@@ -362,6 +410,7 @@ export const VirtualizedTranscriptView: React.FC<VirtualizedTranscriptViewProps>
     activeSegmentId = null,
     onSeekTo,
     followActiveSegment = false,
+    lineEdits,
 }) => {
     const t = useTranslations('recording');
     // Greet the user by name when they've set one (Settings → General → Your
@@ -582,6 +631,9 @@ export const VirtualizedTranscriptView: React.FC<VirtualizedTranscriptViewProps>
                                         onRenameSpeaker={onRenameSpeaker}
                                         isActive={segment.id === activeSegmentId}
                                         onSeekTo={onSeekTo}
+                                        lineIds={segment.ids}
+                                        edited={segment.edited}
+                                        lineEdits={isRecording ? undefined : lineEdits}
                                     />
                                 </div>
                             );
@@ -646,6 +698,9 @@ export const VirtualizedTranscriptView: React.FC<VirtualizedTranscriptViewProps>
                                         onRenameSpeaker={onRenameSpeaker}
                                         isActive={segment.id === activeSegmentId}
                                         onSeekTo={onSeekTo}
+                                        lineIds={segment.ids}
+                                        edited={segment.edited}
+                                        lineEdits={isRecording ? undefined : lineEdits}
                                     />
                                 </motion.div>
                             );

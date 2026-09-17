@@ -28,6 +28,12 @@ import { RecordingPlayer, RecordingPlayerHandle } from './RecordingPlayer';
 import { MeetingClientBadge } from '@/components/MeetingClientBadge';
 import { TranscriptTableView } from './TranscriptTableView';
 import { createPlayhead } from '@/lib/playhead';
+import { toast } from 'sonner';
+import {
+  editTranscriptLine,
+  LineEdits,
+  removeTranscriptLine,
+} from '@/services/transcriptEditService';
 
 type TranscriptLayout = 'chat' | 'table';
 
@@ -103,6 +109,26 @@ export function TranscriptPanel({
   const [hasAudio, setHasAudio] = useState(false);
   const playerRef = useRef<RecordingPlayerHandle>(null);
   const seekTo = useCallback((seconds: number) => playerRef.current?.seek(seconds), []);
+  // Corrections, on a saved meeting only. The transcript is read again after
+  // each, so both layouts show what was stored rather than a local guess.
+  const lineEdits = useMemo<LineEdits | undefined>(() => {
+    if (!meetingId || isRecording) return undefined;
+    const report = (key: 'transcriptEditFailed' | 'transcriptRemoveFailed') => (error: unknown) => {
+      toast.error(t(key), { description: error instanceof Error ? error.message : String(error) });
+      throw error;
+    };
+    return {
+      onEditLine: async (line, text) => {
+        await editTranscriptLine(meetingId, line, text).catch(report('transcriptEditFailed'));
+        await onRefetchTranscripts?.();
+      },
+      onRemoveLine: async (line) => {
+        await removeTranscriptLine(meetingId, line).catch(report('transcriptRemoveFailed'));
+        await onRefetchTranscripts?.();
+      },
+    };
+  }, [meetingId, isRecording, onRefetchTranscripts, t]);
+
   // One per meeting: a new recording starts from the top.
   const playhead = useMemo(() => createPlayhead(), [meetingId]);
 
@@ -137,6 +163,7 @@ export function TranscriptPanel({
       confidence: t.confidence,
       speaker: t.speaker,
       words: t.words,
+      edited: t.edited,
     }));
   }, [transcripts, usePagination, segments]);
 
@@ -267,6 +294,7 @@ export function TranscriptPanel({
             onSeekTo={seekTo}
             followActiveSegment={isPlaying}
             playhead={hasAudio ? playhead : undefined}
+            lineEdits={lineEdits}
             hasMore={hasMore}
             isLoadingMore={isLoadingMore}
             totalCount={totalCount}
@@ -276,6 +304,7 @@ export function TranscriptPanel({
         ) : (
         <VirtualizedTranscriptView
           onRenameSpeaker={meetingId ? setRenameTarget : undefined}
+          lineEdits={lineEdits}
           activeSegmentId={activeSegmentId}
           onSeekTo={isRecording ? undefined : seekTo}
           followActiveSegment={isPlaying}

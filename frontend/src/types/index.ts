@@ -28,6 +28,8 @@ export interface Transcript {
   duration?: number;          // Segment duration in seconds (e.g., 3.3)
   speaker?: string;           // Speaker label: "You" (mic) or "Guest" (system audio)
   words?: WordTiming[];
+  /** A person corrected the line; re-recognition leaves it alone. */
+  edited?: boolean;
 }
 
 export interface TranscriptUpdate {
@@ -137,6 +139,13 @@ export interface TranscriptSegmentData {
   speaker?: string;
   /** When each word was said, where the recognizer reported it. */
   words?: WordTiming[];
+  /** A person corrected the line (or one of the lines merged into it). */
+  edited?: boolean;
+  /**
+   * The stored lines this one shows, when back-to-back lines were merged for
+   * display. Absent for a single line, whose only id is `id`.
+   */
+  ids?: string[];
 }
 
 export type GlobalSearchResultKind = 'person' | 'meeting' | 'transcript' | 'summary';
