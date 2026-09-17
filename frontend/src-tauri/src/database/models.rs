@@ -42,6 +42,8 @@ pub struct Transcript {
     pub duration: Option<f64>,
     /// Speaker label: capture source ("You"/"Guest") or diarization ("Speaker N")
     pub speaker: Option<String>,
+    /// When each word was said, where the recognizer reported it.
+    pub words: Option<Vec<crate::audio::word_timing::WordTiming>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -186,6 +188,14 @@ impl<'r> FromRow<'r, SqliteRow> for Transcript {
             audio_end_time: row.try_get("audio_end_time")?,
             duration: row.try_get("duration")?,
             speaker: fields::open_opt(fields::TRANSCRIPT_SPEAKER, row.try_get("speaker")?)?,
+            // An extra: a row without it, or one that will not open or parse,
+            // still loads — without word timings.
+            words: row
+                .try_get::<Option<String>, _>("words")
+                .ok()
+                .flatten()
+                .and_then(|stored| fields::open(fields::TRANSCRIPT_WORDS, &stored).ok())
+                .and_then(|json| crate::audio::word_timing::from_json(&json)),
         })
     }
 }

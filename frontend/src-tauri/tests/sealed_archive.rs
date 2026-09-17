@@ -48,7 +48,7 @@ async fn archive() -> SqlitePool {
          CREATE TABLE transcripts (id TEXT PRIMARY KEY, meeting_id TEXT NOT NULL, \
              transcript TEXT NOT NULL, timestamp TEXT NOT NULL, summary TEXT, \
              action_items TEXT, key_points TEXT, audio_start_time REAL, \
-             audio_end_time REAL, duration REAL, speaker TEXT); \
+             audio_end_time REAL, duration REAL, speaker TEXT, words TEXT); \
          CREATE TABLE summary_processes (meeting_id TEXT PRIMARY KEY, result TEXT, \n             result_backup TEXT); \
          CREATE TABLE transcript_chunks (meeting_id TEXT PRIMARY KEY, meeting_name TEXT, \n             transcript_text TEXT NOT NULL DEFAULT ''); \
          CREATE TABLE people (id TEXT PRIMARY KEY, display_name TEXT NOT NULL, \

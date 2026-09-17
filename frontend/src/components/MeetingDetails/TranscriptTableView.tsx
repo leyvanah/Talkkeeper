@@ -36,12 +36,16 @@ import {
 import {
   layoutTimeline,
   PlacedLine,
+  piecesFromWords,
+  placeAt,
   placePieces,
   splitForTimeline,
+  TimedWord,
   ticksBetween,
   timeAt,
   TimelineLayout,
   TimelineLine,
+  wordsAt,
   yAt,
 } from '@/lib/transcript-table';
 import { getSpeakerSides, sideOf, SpeakerSide } from '@/services/speakerRoleService';
@@ -135,6 +139,42 @@ interface LineGeometry {
   boxHeight: number;
 }
 
+/**
+ * A piece of a line's text. With word timings it knows when it began and which
+ * words it holds; without, it is placed by an even-pace estimate.
+ */
+interface Piece {
+  text: string;
+  start?: number;
+  words?: TimedWord[];
+  /** Index of the piece's first word within the line. */
+  firstWord?: number;
+}
+
+function piecesForLine(line: TimelineLine): Piece[] {
+  if (line.words?.length) {
+    let first = 0;
+    return piecesFromWords(line.words).map((piece) => {
+      const entry = { ...piece, firstWord: first };
+      first += piece.words.length;
+      return entry;
+    });
+  }
+  return splitForTimeline(line.text).map((text) => ({ text }));
+}
+
+function wordId(lineId: string, index: number): string {
+  return `table-word-${lineId}-${index}`;
+}
+
+/** The mark on the word being heard: a soft wash of the accent. */
+function markWord(element: HTMLElement, on: boolean) {
+  const wash = 'color-mix(in srgb, var(--af-accent) 24%, transparent)';
+  element.style.backgroundColor = on ? wash : '';
+  element.style.boxShadow = on ? `0 0 0 2px ${wash}` : '';
+  element.style.borderRadius = on ? '3px' : '';
+}
+
 const Bubble = memo(function Bubble({
   placed,
   pieces,
@@ -147,7 +187,7 @@ const Bubble = memo(function Bubble({
   onMeasure,
 }: {
   placed: PlacedLine;
-  pieces: string[];
+  pieces: Piece[];
   geometry: LineGeometry;
   ruler: number;
   userName: string;
@@ -225,7 +265,14 @@ const Bubble = memo(function Bubble({
             className="absolute"
             style={{ top: PAD_Y + (geometry.pieceTops[index] ?? 0), left: PAD_X, right: PAD_X }}
           >
-            {piece}
+            {piece.words
+              ? piece.words.map((word, offset) => (
+                  <span key={offset}>
+                    {offset > 0 && ' '}
+                    <span id={wordId(line.id, (piece.firstWord ?? 0) + offset)}>{word.w}</span>
+                  </span>
+                ))
+              : piece.text}
           </p>
         ))}
       </div>
@@ -289,14 +336,19 @@ export function TranscriptTableView({
         id: segment.id,
         start: segment.timestamp ?? 0,
         end: segment.endTime,
-        text: cleanStopWords(segment.text) || segment.text,
+        // A timed line shows exactly the words that were timed; the filler
+        // cleanup would leave words with no place in the text.
+        text: segment.words?.length
+          ? segment.words.map((word) => word.w).join(' ')
+          : cleanStopWords(segment.text) || segment.text,
         speaker: segment.speaker,
         confidence: segment.confidence,
+        words: segment.words,
       })),
     [segments],
   );
   const piecesOf = useMemo(
-    () => new Map(lines.map((line) => [line.id, splitForTimeline(line.text)])),
+    () => new Map(lines.map((line) => [line.id, piecesForLine(line)])),
     [lines],
   );
 
@@ -353,7 +405,8 @@ export function TranscriptTableView({
   const pieceHeights = useCallback(
     (line: TimelineLine) =>
       (piecesOf.get(line.id) ?? []).map(
-        (piece, index) => heights.current.get(pieceKey(line.id, index)) ?? estimatePiece(piece),
+        (piece, index) =>
+          heights.current.get(pieceKey(line.id, index)) ?? estimatePiece(piece.text),
       ),
     [piecesOf],
   );
@@ -445,6 +498,18 @@ export function TranscriptTableView({
   // The playhead pointer. It is positioned straight on its element every frame;
   // re-rendering the table sixty times a second is what the playhead store
   // exists to avoid.
+  // Every timed word of the meeting, in order, for marking the one being heard.
+  const timedWords = useMemo(() => {
+    const all: Array<TimedWord & { id: string }> = [];
+    for (const line of lines) {
+      line.words?.forEach((word, index) => all.push({ ...word, id: wordId(line.id, index) }));
+    }
+    return all.sort((a, b) => a.s - b.s);
+  }, [lines]);
+  const timedWordsRef = useRef(timedWords);
+  timedWordsRef.current = timedWords;
+  const markedWords = useRef<string[]>([]);
+
   const lineRef = useRef<HTMLDivElement>(null);
   const lineLabelRef = useRef<HTMLSpanElement>(null);
   const layoutRef = useRef(layout);
@@ -457,6 +522,25 @@ export function TranscriptTableView({
     line.style.transform = `translateY(${y}px)`;
     line.style.visibility = playing || seconds > 0 ? 'visible' : 'hidden';
     if (lineLabelRef.current) lineLabelRef.current.textContent = clock(seconds, true);
+
+    // The words being heard. Only a change touches the page.
+    const words = timedWordsRef.current;
+    const now = playing || seconds > 0 ? wordsAt(words, seconds).map((index) => words[index].id) : [];
+    const before = markedWords.current;
+    if (now.length !== before.length || now.some((id, index) => id !== before[index])) {
+      for (const id of before) {
+        if (!now.includes(id)) {
+          const element = document.getElementById(id);
+          if (element) markWord(element, false);
+        }
+      }
+      for (const id of now) {
+        const element = document.getElementById(id);
+        if (element) markWord(element, true);
+      }
+      markedWords.current = now;
+    }
+
     if (!follow || !playing) return;
     // Keep it in view while playing: when it leaves the lower part of the
     // screen, bring it back to the upper third in one step.
@@ -635,7 +719,7 @@ export function TranscriptTableView({
             <Bubble
               key={placed.line.id}
               placed={placed}
-              pieces={piecesOf.get(placed.line.id) ?? [placed.line.text]}
+              pieces={piecesOf.get(placed.line.id) ?? [{ text: placed.line.text }]}
               geometry={geometry.get(placed.line.id) ?? { pieceTops: [], boxHeight: 0 }}
               ruler={ruler}
               userName={userName}
@@ -670,7 +754,7 @@ export function TranscriptTableView({
  */
 function spreadLines(
   layout: TimelineLayout,
-  piecesOf: Map<string, string[]>,
+  piecesOf: Map<string, Piece[]>,
   pieceHeights: (line: TimelineLine) => number[],
 ): Map<string, LineGeometry> {
   // The next top in each column, walking up from the bottom.
@@ -687,7 +771,7 @@ function spreadLines(
   const result = new Map<string, LineGeometry>();
   for (const entry of layout.placed) {
     const { line, top } = entry;
-    const pieces = piecesOf.get(line.id) ?? [line.text];
+    const pieces = piecesOf.get(line.id) ?? [{ text: line.text }];
     const heights = pieceHeights(line);
     const packed =
       heights.reduce((sum, h) => sum + h, 0) + PIECE_GAP * Math.max(0, heights.length - 1);
@@ -700,12 +784,30 @@ function spreadLines(
     // The text area ends here, measured from where the text begins.
     const textRoom = Math.max(packed, limit - top - TEXT_ORIGIN - PAD_Y - BORDER);
 
-    const duration = end - line.start;
-    const offsetAt = (fraction: number) => {
-      if (duration <= 0) return 0;
-      return Math.max(0, yAt(layout, line.start + fraction * duration) - top - TEXT_ORIGIN);
-    };
-    const pieceTops = placePieces(pieces, heights, offsetAt, PIECE_GAP, textRoom);
+    // Where the text of a moment goes, measured from where the text begins.
+    const offsetOf = (seconds: number) => Math.max(0, yAt(layout, seconds) - top - TEXT_ORIGIN);
+    let pieceTops: number[];
+    if (pieces.every((piece) => piece.start != null)) {
+      // Timed: each piece at the moment its first word was said.
+      pieceTops = placeAt(
+        pieces.map((piece) => offsetOf(piece.start!)),
+        heights,
+        PIECE_GAP,
+        textRoom,
+      );
+    } else {
+      // Untimed: at the share of the line's time its text takes.
+      const duration = end - line.start;
+      const offsetAt = (fraction: number) =>
+        duration <= 0 ? 0 : offsetOf(line.start + fraction * duration);
+      pieceTops = placePieces(
+        pieces.map((piece) => piece.text),
+        heights,
+        offsetAt,
+        PIECE_GAP,
+        textRoom,
+      );
+    }
     const lastBottom = pieceTops.length
       ? pieceTops[pieceTops.length - 1] + heights[heights.length - 1]
       : 0;

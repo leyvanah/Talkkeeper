@@ -215,3 +215,45 @@ console.log('transcript-table pieces: ok');
 }
 
 console.log('transcript-table fit: ok');
+
+// Timed words become pieces at sentence ends, each starting when its first word did.
+{
+  const { piecesFromWords } = loadTsModule(modulePath);
+  const words = [
+    { w: 'Первое', s: 0.5, e: 0.9 },
+    { w: 'слово.', s: 0.9, e: 1.4 },
+    { w: 'Второе', s: 3.2, e: 3.6 },
+    { w: 'предложение', s: 3.6, e: 4.4 },
+  ];
+  const pieces = Array.from(piecesFromWords(words));
+  assert.deepEqual(pieces.map((p) => p.text), ['Первое слово.', 'Второе предложение']);
+  assert.deepEqual(pieces.map((p) => p.start), [0.5, 3.2]);
+  const short = Array.from(piecesFromWords(words, 12));
+  assert.ok(short.every((p) => p.text.length <= 12 || p.words.length === 1));
+  assert.equal(Array.from(piecesFromWords([])).length, 0);
+}
+
+// Placing at given offsets follows the same rules as the estimates.
+{
+  const { placeAt } = loadTsModule(modulePath);
+  assert.deepEqual(Array.from(placeAt([0, 100, 110], [20, 20, 20], 4)), [0, 100, 124]);
+  assert.deepEqual(Array.from(placeAt([0, 100, 200], [20, 20, 90], 4, 260)), [0, 100, 170]);
+}
+
+// The words sounding at a moment, from both sides.
+{
+  const { wordsAt } = loadTsModule(modulePath);
+  const words = [
+    { w: 'a', s: 0, e: 1 },
+    { w: 'b', s: 1, e: 3 },
+    { w: 'c', s: 2, e: 2.5 },
+    { w: 'd', s: 4, e: 5 },
+  ];
+  assert.deepEqual(Array.from(wordsAt(words, 0.5)), [0]);
+  assert.deepEqual(Array.from(wordsAt(words, 2.2)), [1, 2], 'overlapping words both sound');
+  assert.deepEqual(Array.from(wordsAt(words, 3.5)), [], 'a pause sounds nothing');
+  assert.deepEqual(Array.from(wordsAt(words, 1)), [1], 'a word ends where the next begins');
+  assert.deepEqual(Array.from(wordsAt([], 1)), []);
+}
+
+console.log('transcript-table words: ok');

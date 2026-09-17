@@ -7,3 +7,4 @@ frontend/src-tauri/migrations/20260830000000_add_title_provenance.sql text eol=l
 frontend/src-tauri/migrations/20260905000000_add_external_stt_config.sql text eol=lf
 frontend/src-tauri/migrations/20260909000000_add_clients.sql text eol=lf
 frontend/src-tauri/migrations/20260916000000_add_speaker_roles.sql text eol=lf
+frontend/src-tauri/migrations/20260917000000_add_transcript_words.sql text eol=lf

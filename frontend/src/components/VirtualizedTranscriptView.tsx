@@ -195,6 +195,9 @@ export function mergeAdjacentSameSpeaker(
             const joined = `${last.text.trim()} ${seg.text.trim()}`.replace(/\s+/g, ' ').trim();
             last.text = joined;
             last.endTime = seg.endTime ?? seg.timestamp;
+            // Word timings survive a merge only if both halves had them;
+            // half a list would describe half the text.
+            last.words = last.words && seg.words ? [...last.words, ...seg.words] : undefined;
             if (seg.confidence != null && last.confidence != null) {
                 last.confidence = Math.min(last.confidence, seg.confidence);
             } else if (seg.confidence != null) {

@@ -212,6 +212,17 @@ impl GigaamEngine {
 
     /// Transcribe 16 kHz mono samples with the loaded model.
     pub async fn transcribe_audio(&self, audio_data: Vec<f32>) -> Result<String> {
+        Ok(self.transcribe_audio_with_words(audio_data).await?.0)
+    }
+
+    /// As [`Self::transcribe_audio`], plus when each word was said, in seconds
+    /// from the start of `audio_data`. The transducer places every token on an
+    /// encoder frame, so the times are good to 40 ms. `None` when there are no
+    /// words or they do not spell the text.
+    pub async fn transcribe_audio_with_words(
+        &self,
+        audio_data: Vec<f32>,
+    ) -> Result<(String, Option<Vec<crate::audio::word_timing::WordTiming>>)> {
         let mut guard = self.model.write().await;
         let model = guard
             .as_mut()
@@ -221,7 +232,10 @@ impl GigaamEngine {
             .transcribe_samples(&audio_data)
             .map_err(|e| anyhow!("GigaAM transcription failed: {}", e))?;
 
-        Ok(result.text)
+        let words = result.words();
+        let words = (!words.is_empty() && crate::audio::word_timing::spell(&words, &result.text))
+            .then_some(words);
+        Ok((result.text, words))
     }
 
     pub fn cancel_download(&self) {

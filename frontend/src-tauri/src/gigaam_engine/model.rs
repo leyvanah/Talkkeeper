@@ -22,6 +22,7 @@ use std::fs;
 use std::path::Path;
 
 use super::features::{FeatureExtractor, N_MELS};
+use crate::audio::word_timing::{words_from_pieces, TimedPiece, WordTiming};
 
 /// Frames the encoder collapses into one output step.
 const SUBSAMPLING_FACTOR: usize = 4;
@@ -58,6 +59,30 @@ pub struct TimestampedResult {
     pub text: String,
     pub timestamps: Vec<f32>,
     pub tokens: Vec<String>,
+}
+
+impl TimestampedResult {
+    /// The tokens joined into words, each with when it was said.
+    ///
+    /// A token carries only the frame it was emitted on, so it is taken to
+    /// last until the next token begins; the last one gets one encoder frame.
+    pub fn words(&self) -> Vec<WordTiming> {
+        let frame = (WINDOW_STEP * SUBSAMPLING_FACTOR as f32) as f64;
+        let pieces = self.tokens.iter().enumerate().map(|(index, token)| {
+            let start = self.timestamps.get(index).copied().unwrap_or(0.0) as f64;
+            let end = self
+                .timestamps
+                .get(index + 1)
+                .map(|&next| next as f64)
+                .unwrap_or(start + frame);
+            TimedPiece {
+                bytes: token.as_bytes().to_vec(),
+                start,
+                end,
+            }
+        });
+        words_from_pieces(pieces)
+    }
 }
 
 /// Names of the files a GigaAM model directory must contain, quantized first.
