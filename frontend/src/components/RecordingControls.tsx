@@ -58,10 +58,16 @@ interface RecordingControlsProps {
  *  unhandled runtime error over the whole interface. */
 function safelyUnsubscribe(unsubscribe: (() => void) | undefined) {
   if (typeof unsubscribe !== 'function') return;
+  const warn = (error: unknown) => console.warn('Failed to remove a recording event listener:', error);
   try {
-    unsubscribe();
+    // Tauri's unlisten is asynchronous: a failure inside it comes back as a
+    // rejected promise, which try/catch alone would let through.
+    const removal = unsubscribe() as unknown;
+    if (removal && typeof (removal as PromiseLike<unknown>).then === 'function') {
+      void Promise.resolve(removal).catch(warn);
+    }
   } catch (error) {
-    console.warn('Failed to remove a recording event listener:', error);
+    warn(error);
   }
 }
 
