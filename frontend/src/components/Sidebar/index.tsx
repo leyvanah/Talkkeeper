@@ -936,7 +936,7 @@ const Sidebar: React.FC = () => {
         <div className="flex-shrink-0">
           {!isCollapsed && (
             <div className="px-3 pt-5 pb-4 space-y-4">
-              <div className="pt-1 pb-1">
+              <div data-tauri-drag-region="deep" className="pt-1 pb-1">
                 <Logo isCollapsed={isCollapsed} />
               </div>
 

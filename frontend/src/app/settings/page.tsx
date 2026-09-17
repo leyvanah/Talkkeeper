@@ -2,6 +2,7 @@
 
 import React, { useState, useEffect, useLayoutEffect, useRef } from 'react';
 import { useTranslations } from 'next-intl';
+import { useWindowTitle } from '@/components/AppHeader';
 import { ArrowLeft, Settings2, Mic, Database as DatabaseIcon, SparkleIcon, Radar, Info, Cpu, Lock } from 'lucide-react';
 import { useRouter } from 'next/navigation';
 import { invoke } from '@tauri-apps/api/core';
@@ -34,6 +35,7 @@ const TABS = [
 
 export default function SettingsPage() {
   const t = useTranslations('settings');
+  useWindowTitle(t('pageTitle'));
   const router = useRouter();
   const { transcriptModelConfig, setTranscriptModelConfig } = useConfig();
 

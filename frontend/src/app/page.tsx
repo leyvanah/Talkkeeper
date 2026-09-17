@@ -2,6 +2,7 @@
 
 import { useState, useEffect } from 'react';
 import { useTranslations } from 'next-intl';
+import { useWindowTitle } from '@/components/AppHeader';
 import { motion } from 'framer-motion';
 import { RecordingControls } from '@/components/RecordingControls';
 import { useSidebar } from '@/components/Sidebar/SidebarProvider';
@@ -32,6 +33,9 @@ export default function Home() {
 
   // Use contexts for state management
   const { meetingTitle } = useTranscripts();
+
+  // What is on screen, for the window header and the taskbar.
+  useWindowTitle(meetingTitle || null);
   const { transcriptModelConfig, selectedDevices } = useConfig();
   const recordingState = useRecordingState();
 

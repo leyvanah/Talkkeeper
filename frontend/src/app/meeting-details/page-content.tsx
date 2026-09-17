@@ -10,6 +10,7 @@ import { toast } from 'sonner';
 import { TranscriptPanel } from '@/components/MeetingDetails/TranscriptPanel';
 import { SummaryPanel } from '@/components/MeetingDetails/SummaryPanel';
 import { MeetingSplitLayout } from '@/components/MeetingDetails/MeetingSplitLayout';
+import { useWindowTitle } from '@/components/AppHeader';
 import { TemplateEditorModal } from '@/components/MeetingDetails/TemplateEditorModal';
 import { ModelConfig } from '@/components/ModelSettingsModal';
 
@@ -95,6 +96,9 @@ export default function PageContent({
   // Custom hooks
   const meetingData = useMeetingData({ meeting, summaryData, onMeetingUpdated });
   const templates = useTemplates();
+
+  // The recording's name goes in the window's header and its title.
+  useWindowTitle(meetingData.meetingTitle || t('untitledMeeting'));
 
   // Callback to register the modal open function
   const handleRegisterModalOpen = (openFn: () => void) => {
