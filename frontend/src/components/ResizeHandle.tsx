@@ -9,7 +9,7 @@
  * re-render the panels on every move.
  */
 
-import React, { useRef } from 'react';
+import React, { useEffect, useRef } from 'react';
 import { setPanelResizing } from './PanelLayoutProvider';
 
 interface ResizeHandleProps {
@@ -40,6 +40,11 @@ export function ResizeHandle({
   style,
 }: ResizeHandleProps) {
   const dragging = useRef(false);
+
+  // A column that collapses under the drag takes this handle with it, and
+  // the pointer never comes back up on it. Without this the page would keep
+  // the resizing cursor and no animations.
+  useEffect(() => () => setPanelResizing(false), []);
 
   const finish = (event: React.PointerEvent<HTMLDivElement>) => {
     if (!dragging.current) return;

@@ -2,8 +2,9 @@
 
 /**
  * The meeting page's two columns, transcript and summary, with a divider
- * between them. Either column can be hidden; a narrow strip on its side
- * brings it back. Sizes and visibility are remembered.
+ * between them. Pulling the divider far enough over a column hides it,
+ * leaving a narrow strip that brings it back. Sizes and visibility are
+ * remembered.
  *
  * A hidden column stays mounted, so the player keeps playing and the summary
  * editor keeps its unsaved state.
@@ -11,13 +12,18 @@
 
 import React, { useRef } from 'react';
 import { useTranslations } from 'next-intl';
-import { PanelLeftClose, PanelLeftOpen, PanelRightClose, PanelRightOpen } from 'lucide-react';
+import { PanelLeftOpen, PanelRightOpen } from 'lucide-react';
 import { ResizeHandle } from '@/components/ResizeHandle';
 import { usePanelLayout } from '@/components/PanelLayoutProvider';
-import { SPLIT_DEFAULT, SPLIT_MAX, SPLIT_MIN, clampSplit, isPaneShown, splitAt } from '@/lib/panel-layout';
-
-const iconButton =
-  'rounded-md p-1 text-[var(--af-text-3)] transition-colors hover:bg-[var(--af-hover)] hover:text-[var(--af-text)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--af-accent)]';
+import {
+  PANE_MIN_WIDTH,
+  SPLIT_DEFAULT,
+  SPLIT_MAX,
+  SPLIT_MIN,
+  clampSplit,
+  isPaneShown,
+  panesFromDrag,
+} from '@/lib/panel-layout';
 
 function Rail({
   side,
@@ -56,17 +62,24 @@ export function MeetingSplitLayout({
   summary: React.ReactNode;
 }) {
   const t = useTranslations('meetingDetails');
-  const { layout, setSplit, togglePane } = usePanelLayout();
+  const { layout, setSplit, setPanes, togglePane } = usePanelLayout();
   const row = useRef<HTMLDivElement>(null);
   const showTranscript = isPaneShown(layout.panes, 'transcript');
   const showSummary = isPaneShown(layout.panes, 'summary');
   const both = showTranscript && showSummary;
 
-  const splitFor = (x: number) => {
+  // Dragging the divider: the widths are previewed on the page itself, and
+  // only hiding a column (which changes what the page shows) goes through
+  // React while the pointer is still down.
+  const dragTo = (x: number, commit: boolean) => {
     const box = row.current?.getBoundingClientRect();
-    return box ? splitAt(x, box.left, box.width) : layout.split;
+    if (!box) return;
+    const next = panesFromDrag(x, box.left, box.width);
+    if (next.panes !== layout.panes) setPanes(next.panes);
+    if (next.panes !== 'both') return;
+    row.current?.style.setProperty('--split', String(next.split));
+    if (commit) setSplit(next.split);
   };
-  const preview = (split: number) => row.current?.style.setProperty('--split', String(split));
 
   return (
     <div
@@ -79,56 +92,31 @@ export function MeetingSplitLayout({
       )}
 
       <div
-        className={`min-h-0 min-w-0 flex-col md:min-w-[280px] ${showTranscript ? 'flex' : 'hidden'}`}
-        style={{ flex: both ? 'var(--split) 1 0' : '1 1 0' }}
+        className={`min-h-0 min-w-0 flex-col ${showTranscript ? 'flex' : 'hidden'}`}
+        style={{ flex: both ? 'var(--split) 1 0' : '1 1 0', minWidth: both ? PANE_MIN_WIDTH : 0 }}
       >
         {transcript}
       </div>
 
       {both && (
-        <div className="relative hidden shrink-0 md:flex">
+        <div className="hidden shrink-0 md:flex">
           <ResizeHandle
             label={t('resizePanes')}
             valueNow={layout.split * 100}
             valueMin={SPLIT_MIN * 100}
             valueMax={SPLIT_MAX * 100}
-            onDrag={(x) => preview(splitFor(x))}
-            onDragEnd={(x) => {
-              const split = splitFor(x);
-              preview(split);
-              setSplit(split);
-            }}
+            onDrag={(x) => dragTo(x, false)}
+            onDragEnd={(x) => dragTo(x, true)}
             onStep={(direction, big) => setSplit(clampSplit(layout.split + direction * (big ? 0.1 : 0.02)))}
             onReset={() => setSplit(SPLIT_DEFAULT)}
             className="-mx-1 h-full"
           />
-          {/* Hide either side from the divider. */}
-          <div className="absolute left-1/2 top-2 z-30 flex -translate-x-1/2 flex-col gap-0.5 rounded-lg border border-[var(--af-border)] bg-[var(--af-panel)] p-0.5 shadow-sm">
-            <button
-              type="button"
-              onClick={() => togglePane('transcript')}
-              title={t('hideTranscriptPane')}
-              aria-label={t('hideTranscriptPane')}
-              className={iconButton}
-            >
-              <PanelLeftClose size={14} />
-            </button>
-            <button
-              type="button"
-              onClick={() => togglePane('summary')}
-              title={t('hideSummaryPane')}
-              aria-label={t('hideSummaryPane')}
-              className={iconButton}
-            >
-              <PanelRightClose size={14} />
-            </button>
-          </div>
         </div>
       )}
 
       <div
-        className={`min-h-0 min-w-0 flex-col md:min-w-[280px] ${showSummary ? 'flex' : 'hidden'}`}
-        style={{ flex: both ? 'calc(1 - var(--split)) 1 0' : '1 1 0' }}
+        className={`min-h-0 min-w-0 flex-col ${showSummary ? 'flex' : 'hidden'}`}
+        style={{ flex: both ? 'calc(1 - var(--split)) 1 0' : '1 1 0', minWidth: both ? PANE_MIN_WIDTH : 0 }}
       >
         {summary}
       </div>

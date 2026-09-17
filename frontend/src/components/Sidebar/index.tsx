@@ -25,7 +25,7 @@
  */
 
 import React, { useState, useMemo, useEffect } from 'react';
-import { ChevronDown, ChevronRight, FileText, AudioLines, ArrowRight, Settings, ChevronLeftCircle, ChevronRightCircle, Trash2, Mic, Square, Plus, Search, Pencil, NotebookPen, Upload, User, Users, FolderInput, Inbox } from 'lucide-react';
+import { ChevronDown, ChevronRight, FileText, AudioLines, ArrowRight, Settings, Trash2, Mic, Square, Plus, Search, Pencil, NotebookPen, Upload, User, Users, FolderInput, Inbox } from 'lucide-react';
 import { useTranslations } from 'next-intl';
 import { useRouter, usePathname } from 'next/navigation';
 import { useSidebar, UNASSIGNED_FOLDER_ID, clientFolderId } from './SidebarProvider';
@@ -55,10 +55,11 @@ import Logo from '../Logo';
 import { ResizeHandle } from '../ResizeHandle';
 import { setSidebarOffsetVariable, usePanelLayout } from '../PanelLayoutProvider';
 import {
+  SIDEBAR_COLLAPSED_WIDTH,
   SIDEBAR_DEFAULT_WIDTH,
   SIDEBAR_MAX_WIDTH,
   SIDEBAR_MIN_WIDTH,
-  clampSidebarWidth,
+  sidebarFromDrag,
 } from '@/lib/panel-layout';
 import { ComplianceNotification } from '../ComplianceNotification';
 
@@ -131,7 +132,21 @@ const Sidebar: React.FC = () => {
     refetchClients,
     refetchMeetings,
   } = useSidebar();
-  const { layout: panelLayout, setSidebarWidth } = usePanelLayout();
+  const { layout: panelLayout, setSidebarWidth, collapseSidebar } = usePanelLayout();
+
+  // Dragging the sidebar's edge: the width is previewed on the page itself,
+  // and only collapsing (which changes what the sidebar shows) goes through
+  // React while the pointer is still down.
+  const dragSidebarTo = (x: number, commit: boolean) => {
+    const next = sidebarFromDrag(x);
+    if (next.collapsed !== panelLayout.sidebarCollapsed) collapseSidebar(next.collapsed);
+    if (next.collapsed) {
+      setSidebarOffsetVariable(SIDEBAR_COLLAPSED_WIDTH);
+      return;
+    }
+    setSidebarOffsetVariable(next.width);
+    if (commit) setSidebarWidth(next.width);
+  };
 
   // Get recording state from RecordingStateContext (single source of truth)
   const { isRecording } = useRecordingState();
@@ -892,37 +907,26 @@ const Sidebar: React.FC = () => {
 
   return (
     <div className="fixed top-0 left-0 h-screen z-40">
-      {/* Floating collapse button */}
-      <button
-        onClick={toggleCollapse}
-        className="absolute -right-6 top-20 z-50 p-1 rounded-full shadow-lg border bg-[var(--af-panel,#fff)] border-[var(--af-border,#e5e7eb)] text-[var(--af-text,#374151)] hover:bg-[var(--af-hover,#f3f4f6)] transition-colors"
-        style={{ transform: 'translateX(50%)' }}
-      >
-        {isCollapsed ? (
-          <ChevronRightCircle className="w-6 h-6" />
-        ) : (
-          <ChevronLeftCircle className="w-6 h-6" />
-        )}
-      </button>
-
-      {!isCollapsed && (
-        <ResizeHandle
-          label={t('resizeSidebar')}
-          valueNow={panelLayout.sidebarWidth}
-          valueMin={SIDEBAR_MIN_WIDTH}
-          valueMax={SIDEBAR_MAX_WIDTH}
-          // The sidebar starts at the window's edge, so the pointer is its width.
-          onDrag={(x) => setSidebarOffsetVariable(clampSidebarWidth(x))}
-          onDragEnd={(x) => {
-            const width = clampSidebarWidth(x);
-            setSidebarOffsetVariable(width);
-            setSidebarWidth(width);
-          }}
-          onStep={(direction, big) => setSidebarWidth(panelLayout.sidebarWidth + direction * (big ? 64 : 16))}
-          onReset={() => setSidebarWidth(SIDEBAR_DEFAULT_WIDTH)}
-          className="absolute top-0 -right-1 h-full"
-        />
-      )}
+      <ResizeHandle
+        label={t('resizeSidebar')}
+        valueNow={isCollapsed ? SIDEBAR_COLLAPSED_WIDTH : panelLayout.sidebarWidth}
+        valueMin={SIDEBAR_COLLAPSED_WIDTH}
+        valueMax={SIDEBAR_MAX_WIDTH}
+        // The sidebar starts at the window's edge, so the pointer is its width.
+        onDrag={(x) => dragSidebarTo(x, false)}
+        onDragEnd={(x) => dragSidebarTo(x, true)}
+        onStep={(direction, big) => {
+          if (isCollapsed) {
+            if (direction > 0) collapseSidebar(false);
+            return;
+          }
+          const width = panelLayout.sidebarWidth + direction * (big ? 64 : 16);
+          if (width < SIDEBAR_MIN_WIDTH) collapseSidebar(true);
+          else setSidebarWidth(width);
+        }}
+        onReset={() => setSidebarWidth(SIDEBAR_DEFAULT_WIDTH)}
+        className="absolute top-0 -right-1 h-full"
+      />
 
       <div
         className="h-screen bg-white border-r shadow-sm flex flex-col transition-[width] duration-300"

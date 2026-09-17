@@ -38,6 +38,7 @@ export function setPanelResizing(on: boolean): void {
 interface PanelLayoutContextType {
   layout: PanelLayout;
   toggleSidebar: () => void;
+  collapseSidebar: (collapsed: boolean) => void;
   setSidebarWidth: (width: number) => void;
   setSplit: (split: number) => void;
   togglePane: (pane: 'transcript' | 'summary') => void;
@@ -81,6 +82,7 @@ export function PanelLayoutProvider({ children }: { children: React.ReactNode })
     () => ({
       layout,
       toggleSidebar: () => update((c) => ({ sidebarCollapsed: !c.sidebarCollapsed })),
+      collapseSidebar: (collapsed) => update(() => ({ sidebarCollapsed: collapsed })),
       setSidebarWidth: (width) => update(() => ({ sidebarWidth: clampSidebarWidth(width), sidebarCollapsed: false })),
       setSplit: (split) => update(() => ({ split: clampSplit(split) })),
       togglePane: (pane) => update((c) => ({ panes: togglePane(c.panes, pane) })),
