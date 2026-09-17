@@ -1311,6 +1311,10 @@
     "localStackReadFailed": "Could not read local stack status"
   },
   "security": {
+    "keyBackupTitle": "Key backup",
+    "keyBackupDescription": "Saves the file that opens the archive. It stays sealed by your password, so keep it apart from the recordings: together they let someone guess the password offline. Windows Hello quick unlock is left out of the copy — it only works on this computer.",
+    "keyBackupAction": "Save a copy of the key…",
+    "noticeKeyBackupSaved": "The key backup was saved",
     "loading": "Loading…",
     "working": "Working…",
     "lockTitle": "Archive locked",

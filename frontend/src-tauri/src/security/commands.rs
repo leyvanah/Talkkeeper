@@ -129,6 +129,26 @@ impl SecurityState {
 
         Ok(code.map(|code| code.to_string()))
     }
+
+    /// Writes a copy of the keystore to `target`.
+    ///
+    /// What travels is the password envelope (and the recovery one, when there
+    /// is one): still sealed, still argon2id-slow to guess at. The quick-unlock
+    /// envelope stays behind on purpose — its secret is sealed by DPAPI to this
+    /// Windows account and is dead weight anywhere else.
+    fn export_key_backup(&self, target: &std::path::Path) -> Result<(), SecurityError> {
+        let Some(mut keystore) = Keystore::load_from(&self.path)? else {
+            return Err(SecurityError::not_configured());
+        };
+
+        #[cfg(windows)]
+        {
+            keystore.quick = None;
+        }
+
+        keystore.save_to(target)?;
+        Ok(())
+    }
 }
 
 /// Run one pass over the recordings on disk, off the UI thread.
@@ -592,6 +612,21 @@ pub fn security_unlock_with_recovery(
     Ok(())
 }
 
+/// Writes a copy of the keystore where the owner asked for it.
+///
+/// Because that copy is what an offline attack against the password needs, it
+/// belongs somewhere other than with the recordings. The interface says so
+/// where the owner chooses the file.
+#[tauri::command]
+pub fn security_export_key_backup(
+    path: String,
+    state: State<'_, SecurityState>,
+) -> Result<(), SecurityError> {
+    state.export_key_backup(std::path::Path::new(&path))?;
+    log::info!("Key backup written");
+    Ok(())
+}
+
 /// Drops the key. Refused while recording: it would end the session.
 #[tauri::command]
 pub async fn security_lock<R: Runtime>(app: AppHandle<R>) -> Result<(), SecurityError> {
@@ -870,6 +905,33 @@ mod tests {
         assert!(code.is_some());
         assert_eq!(state.session.state(), LockState::Unlocked);
         assert!(state.session.with_dek(|key| key.len()).unwrap() == 32);
+    }
+
+    #[test]
+    fn a_key_backup_opens_with_the_same_password_and_leaves_quick_unlock_behind() {
+        let (directory, state) = temporary_state();
+        state.create("correct horse", true).unwrap();
+        let target = directory.path().join("backup").join("keystore.json");
+        std::fs::create_dir_all(target.parent().unwrap()).unwrap();
+
+        state.export_key_backup(&target).unwrap();
+
+        let mut copy = Keystore::load_from(&target).unwrap().unwrap();
+        assert!(copy.unlock_with_password("correct horse").is_ok());
+        assert!(copy.recovery.is_some(), "the recovery envelope travels with it");
+        #[cfg(windows)]
+        assert!(copy.quick.is_none(), "quick unlock is bound to this machine");
+    }
+
+    #[test]
+    fn an_unprotected_archive_has_no_key_to_back_up() {
+        let (directory, state) = temporary_state();
+        let target = directory.path().join("backup.json");
+
+        let error = state.export_key_backup(&target).unwrap_err();
+
+        assert_eq!(error.code, "notConfigured");
+        assert!(!target.exists());
     }
 
     #[test]

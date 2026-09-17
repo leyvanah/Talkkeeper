@@ -8,6 +8,8 @@
 import { useCallback, useEffect, useState } from 'react'
 import { useTranslations } from 'next-intl'
 import { listen } from '@tauri-apps/api/event'
+import { invoke } from '@tauri-apps/api/core'
+import { save } from '@tauri-apps/plugin-dialog'
 import {
   Database,
   FileLock2,
@@ -528,6 +530,31 @@ export function SecuritySettings() {
                   )}
                 </div>
               </form>
+            </div>
+
+            <div className="border-t border-gray-200 pt-5">
+              <h4 className="mb-1 text-sm font-medium text-gray-900">{t('keyBackupTitle')}</h4>
+              <p className="mb-3 text-xs text-gray-500">{t('keyBackupDescription')}</p>
+              <Button
+                type="button"
+                variant="outline"
+                disabled={busy}
+                onClick={async () => {
+                  // Asked for before the work starts, so that closing the file
+                  // picker does not report a backup that was never written.
+                  const target = await save({
+                    defaultPath: 'talkkeeper-key-backup.json',
+                    filters: [{ name: 'JSON', extensions: ['json'] }],
+                  })
+                  if (!target) return
+                  attempt(
+                    () => invoke('security_export_key_backup', { path: target }),
+                    t('noticeKeyBackupSaved'),
+                  )
+                }}
+              >
+                {t('keyBackupAction')}
+              </Button>
             </div>
 
             <div className="flex flex-wrap gap-2 border-t border-gray-200 pt-5">
