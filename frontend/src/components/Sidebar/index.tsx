@@ -52,6 +52,14 @@ import { VisuallyHidden } from "@/components/ui/visually-hidden"
 
 import { MessageToast } from '../MessageToast';
 import Logo from '../Logo';
+import { ResizeHandle } from '../ResizeHandle';
+import { setSidebarOffsetVariable, usePanelLayout } from '../PanelLayoutProvider';
+import {
+  SIDEBAR_DEFAULT_WIDTH,
+  SIDEBAR_MAX_WIDTH,
+  SIDEBAR_MIN_WIDTH,
+  clampSidebarWidth,
+} from '@/lib/panel-layout';
 import { ComplianceNotification } from '../ComplianceNotification';
 
 /** Which folders were left open, so the tree looks the same after a restart. */
@@ -123,6 +131,7 @@ const Sidebar: React.FC = () => {
     refetchClients,
     refetchMeetings,
   } = useSidebar();
+  const { layout: panelLayout, setSidebarWidth } = usePanelLayout();
 
   // Get recording state from RecordingStateContext (single source of truth)
   const { isRecording } = useRecordingState();
@@ -896,9 +905,28 @@ const Sidebar: React.FC = () => {
         )}
       </button>
 
+      {!isCollapsed && (
+        <ResizeHandle
+          label={t('resizeSidebar')}
+          valueNow={panelLayout.sidebarWidth}
+          valueMin={SIDEBAR_MIN_WIDTH}
+          valueMax={SIDEBAR_MAX_WIDTH}
+          // The sidebar starts at the window's edge, so the pointer is its width.
+          onDrag={(x) => setSidebarOffsetVariable(clampSidebarWidth(x))}
+          onDragEnd={(x) => {
+            const width = clampSidebarWidth(x);
+            setSidebarOffsetVariable(width);
+            setSidebarWidth(width);
+          }}
+          onStep={(direction, big) => setSidebarWidth(panelLayout.sidebarWidth + direction * (big ? 64 : 16))}
+          onReset={() => setSidebarWidth(SIDEBAR_DEFAULT_WIDTH)}
+          className="absolute top-0 -right-1 h-full"
+        />
+      )}
+
       <div
-        className={`h-screen bg-white border-r shadow-sm flex flex-col transition-all duration-300 ${isCollapsed ? 'w-16' : 'w-64'
-          }`}
+        className="h-screen bg-white border-r shadow-sm flex flex-col transition-[width] duration-300"
+        style={{ width: 'var(--sidebar-offset)' }}
       >
         {/* Header: brand, search, New Recording */}
         <div className="flex-shrink-0">

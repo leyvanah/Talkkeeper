@@ -587,3 +587,19 @@ html.dark.minibar-window body {
 }
 
 .amoled ::-webkit-scrollbar-thumb:hover { background-color: #5c5c5c; }
+
+/* ============================================================
+   Resizable panels
+   The sidebar's width is a variable so that dragging it moves the page
+   without re-rendering it. While a divider is dragged, animations would lag
+   behind the pointer and text would get selected, so both are off.
+   ============================================================ */
+:root {
+  --sidebar-offset: 256px;
+}
+html[data-panel-resizing],
+html[data-panel-resizing] * {
+  cursor: col-resize !important;
+  user-select: none !important;
+  transition: none !important;
+}
