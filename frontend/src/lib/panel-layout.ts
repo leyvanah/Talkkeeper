@@ -10,10 +10,19 @@ export const SIDEBAR_MIN_WIDTH = 200;
 export const SIDEBAR_MAX_WIDTH = 480;
 export const SIDEBAR_DEFAULT_WIDTH = 256;
 
+/** Dragged nearer the window's edge than this, the sidebar collapses. */
+export const SIDEBAR_COLLAPSE_AT = 150;
+
 /** Share of the meeting page the transcript takes when both columns show. */
 export const SPLIT_MIN = 0.25;
 export const SPLIT_MAX = 0.75;
 export const SPLIT_DEFAULT = 0.47;
+
+/** Neither column of the meeting page is made narrower than this. */
+export const PANE_MIN_WIDTH = 280;
+
+/** A column dragged narrower than this is hidden instead. */
+export const PANE_COLLAPSE_AT = 170;
 
 /** Which of the meeting page's two columns are showing. */
 export type MeetingPanes = 'both' | 'transcript' | 'summary';
@@ -54,11 +63,40 @@ export function sidebarOffset(layout: Pick<PanelLayout, 'sidebarWidth' | 'sideba
 
 /**
  * The transcript's share for a pointer at `x` in a row that starts at `left`
- * and is `width` wide.
+ * and is `width` wide. Neither column goes below its minimum width, unless
+ * the row is too narrow to hold two of them.
  */
 export function splitAt(x: number, left: number, width: number): number {
   if (!(width > 0)) return SPLIT_DEFAULT;
-  return clampSplit((x - left) / width);
+  const floor = PANE_MIN_WIDTH / width;
+  if (floor >= 0.5) return 0.5;
+  return clamp((x - left) / width, Math.max(SPLIT_MIN, floor), Math.min(SPLIT_MAX, 1 - floor));
+}
+
+/**
+ * Where the sidebar lands when its edge is dragged to `x`: pulled in towards
+ * the window's edge it collapses to the icons, and dragged back out it opens
+ * again at the width the pointer is at.
+ */
+export function sidebarFromDrag(x: number): { collapsed: boolean; width: number } {
+  return x < SIDEBAR_COLLAPSE_AT
+    ? { collapsed: true, width: SIDEBAR_MIN_WIDTH }
+    : { collapsed: false, width: clampSidebarWidth(x) };
+}
+
+/**
+ * Where the meeting page's columns land when the divider is dragged to `x`:
+ * a column pulled in far enough is hidden, leaving the other one whole.
+ */
+export function panesFromDrag(
+  x: number,
+  left: number,
+  width: number
+): { panes: MeetingPanes; split: number } {
+  const split = splitAt(x, left, width);
+  if (x - left < PANE_COLLAPSE_AT) return { panes: 'summary', split };
+  if (left + width - x < PANE_COLLAPSE_AT) return { panes: 'transcript', split };
+  return { panes: 'both', split };
 }
 
 /**
