@@ -16,7 +16,10 @@ const MainContent: React.FC<MainContentProps> = ({ children }) => {
       className="flex flex-1 min-w-0 min-h-0 h-screen flex-col overflow-hidden transition-[margin] duration-300"
       style={{ marginLeft: 'var(--sidebar-offset)' }}
     >
-      <div className="min-w-0 min-h-0 flex-1 overflow-hidden pl-4 sm:pl-6 lg:pl-8">
+      {/* No gutter of its own: every page brings its own padding, and a strip
+          of page background between the sidebar and the content read as a
+          black bar in the dark themes. */}
+      <div className="min-w-0 min-h-0 flex-1 overflow-hidden">
         {children}
       </div>
       {/* Background work reports here rather than over the page. It belongs to
