@@ -121,6 +121,95 @@ pub fn from_json(json: &str) -> Option<Vec<WordTiming>> {
     serde_json::from_str(json).ok()
 }
 
+/// Carry word timings over to a corrected text.
+///
+/// A word the correction left alone keeps its time. A word it added is given
+/// a time between its neighbours, shared out by length — the neighbours were
+/// said around it, so that is where it was most likely said. Words are
+/// matched by their letters alone, so fixing a comma or a capital keeps a
+/// word's time.
+///
+/// Empty when there were no timings to carry: an estimate made from nothing
+/// is no better than the even-pace placement the table already does.
+pub fn realign(old: &[WordTiming], new_text: &str, line_start: f64, line_end: f64) -> Vec<WordTiming> {
+    let new_words: Vec<&str> = new_text.split_whitespace().collect();
+    if old.is_empty() || new_words.is_empty() {
+        return Vec::new();
+    }
+    fn key(word: &str) -> String {
+        word.chars()
+            .filter(|c| c.is_alphanumeric())
+            .flat_map(char::to_lowercase)
+            .collect()
+    }
+    let old_keys: Vec<String> = old.iter().map(|w| key(&w.text)).collect();
+    let new_keys: Vec<String> = new_words.iter().map(|w| key(w)).collect();
+
+    // Longest common subsequence of the two word lists.
+    let (n, m) = (old_keys.len(), new_keys.len());
+    let mut lengths = vec![vec![0u32; m + 1]; n + 1];
+    for i in (0..n).rev() {
+        for j in (0..m).rev() {
+            lengths[i][j] = if !old_keys[i].is_empty() && old_keys[i] == new_keys[j] {
+                lengths[i + 1][j + 1] + 1
+            } else {
+                lengths[i + 1][j].max(lengths[i][j + 1])
+            };
+        }
+    }
+    let mut matched: Vec<Option<usize>> = vec![None; m];
+    let (mut i, mut j) = (0, 0);
+    while i < n && j < m {
+        if !old_keys[i].is_empty() && old_keys[i] == new_keys[j] {
+            matched[j] = Some(i);
+            i += 1;
+            j += 1;
+        } else if lengths[i + 1][j] >= lengths[i][j + 1] {
+            i += 1;
+        } else {
+            j += 1;
+        }
+    }
+
+    let first = old.first().map(|w| w.start).unwrap_or(line_start);
+    let last = old.last().map(|w| w.end).unwrap_or(line_end);
+    let mut result: Vec<WordTiming> = Vec::with_capacity(m);
+    let mut index = 0;
+    while index < m {
+        if let Some(from) = matched[index] {
+            result.push(WordTiming {
+                text: new_words[index].to_string(),
+                start: old[from].start,
+                end: old[from].end,
+            });
+            index += 1;
+            continue;
+        }
+        // A run of new words: share out the gap between the words around it.
+        let run_end = (index..m).find(|&k| matched[k].is_some()).unwrap_or(m);
+        let gap_start = result.last().map(|w| w.end).unwrap_or(first);
+        let gap_end = if run_end < m {
+            old[matched[run_end].unwrap()].start
+        } else {
+            last
+        }
+        .max(gap_start);
+        let total: usize = new_words[index..run_end].iter().map(|w| w.chars().count()).sum();
+        let mut at = gap_start;
+        for word in &new_words[index..run_end] {
+            let share = (gap_end - gap_start) * word.chars().count() as f64 / total.max(1) as f64;
+            result.push(WordTiming {
+                text: word.to_string(),
+                start: at,
+                end: at + share,
+            });
+            at += share;
+        }
+        index = run_end;
+    }
+    result
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -326,5 +415,60 @@ mod word_timing_bench {
         // here to catch.
         assert!(median < 0.35, "the two models disagree by {median:.2}s on a typical word");
         assert!(p90 < 0.6, "one word in ten is off by {p90:.2}s or more");
+    }
+}
+
+#[cfg(test)]
+mod realign_tests {
+    use super::*;
+
+    fn timed(words: &[(&str, f64, f64)]) -> Vec<WordTiming> {
+        words
+            .iter()
+            .map(|(text, start, end)| WordTiming { text: text.to_string(), start: *start, end: *end })
+            .collect()
+    }
+
+    #[test]
+    fn untouched_words_keep_their_times() {
+        let old = timed(&[("отчет", 1.0, 1.4), ("будет", 1.4, 1.8), ("готов", 1.8, 2.2)]);
+        let new = realign(&old, "Отчёт будет готов.", 0.0, 3.0);
+        let times: Vec<(f64, f64)> = new.iter().map(|w| (w.start, w.end)).collect();
+        // "отчет" and "Отчёт" differ in a letter: that word is new, the rest are kept.
+        assert_eq!(new.iter().map(|w| w.text.as_str()).collect::<Vec<_>>(), ["Отчёт", "будет", "готов."]);
+        assert_eq!(times[1], (1.4, 1.8));
+        assert_eq!(times[2], (1.8, 2.2));
+        assert!(times[0].1 <= 1.4, "the replaced word sits before the next kept one");
+    }
+
+    #[test]
+    fn punctuation_and_case_do_not_count_as_a_change() {
+        let old = timed(&[("да", 0.5, 0.8), ("конечно", 0.8, 1.5)]);
+        let new = realign(&old, "Да, конечно!", 0.0, 2.0);
+        assert_eq!((new[0].start, new[1].start), (0.5, 0.8));
+    }
+
+    #[test]
+    fn an_inserted_word_goes_between_its_neighbours() {
+        let old = timed(&[("отчет", 1.0, 1.4), ("готов", 2.0, 2.4)]);
+        let new = realign(&old, "отчет почти готов", 0.0, 3.0);
+        assert_eq!(new[1].text, "почти");
+        assert!(new[1].start >= 1.4 && new[1].end <= 2.0);
+    }
+
+    #[test]
+    fn a_rewritten_line_is_spread_over_the_old_span() {
+        let old = timed(&[("раз", 1.0, 1.5), ("два", 1.5, 2.0)]);
+        let new = realign(&old, "совсем другие слова", 0.0, 5.0);
+        assert_eq!(new.len(), 3);
+        assert_eq!(new[0].start, 1.0);
+        assert!((new[2].end - 2.0).abs() < 1e-9);
+        assert!(new.windows(2).all(|w| w[1].start >= w[0].start));
+    }
+
+    #[test]
+    fn nothing_to_carry_gives_nothing() {
+        assert!(realign(&[], "текст", 0.0, 1.0).is_empty());
+        assert!(realign(&timed(&[("a", 0.0, 1.0)]), "   ", 0.0, 1.0).is_empty());
     }
 }

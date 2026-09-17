@@ -167,6 +167,9 @@ pub struct MeetingTranscript {
     /// When each word was said, in seconds of the recording.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub words: Option<Vec<crate::audio::word_timing::WordTiming>>,
+    /// Whether a person corrected the line.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub edited: bool,
 }
 
 /// Meeting metadata without transcripts (for pagination)
@@ -1106,6 +1109,7 @@ pub async fn api_get_meeting_transcripts<R: Runtime>(
                     duration: t.duration,
                     speaker: t.speaker,
                     words: t.words,
+                    edited: t.edited_at.is_some(),
                 })
                 .collect::<Vec<_>>();
 

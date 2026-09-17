@@ -6,4 +6,5 @@ pub mod speaker_role;
 pub mod summary;
 pub mod transcript;
 pub mod transcript_chunk;
+pub mod transcript_edit;
 pub mod vocabulary;

@@ -7,6 +7,7 @@ use super::constants::AUDIO_EXTENSIONS;
 use super::own_speech::echo_spans;
 use super::own_speech_record::read_timelines;
 use super::word_timing::{shift, to_json, WordTiming};
+use crate::database::repositories::transcript_edit::{outside_protected, NewLine, TranscriptEditsRepository, Track};
 use super::working_track::{find_working_track, WORKING_SAMPLE_RATE};
 use crate::config::{DEFAULT_WHISPER_MODEL, DEFAULT_PARAKEET_MODEL};
 use crate::database::fields;
@@ -684,6 +685,61 @@ async fn run_retranscription<R: Runtime>(
     let recording_started_at = crate::api::recording_started_at_from_folder(&meeting_folder_path)
         .unwrap_or(stored_recording_start.0);
 
+    // A person's corrections outrank the recognizer: nothing is written over a
+    // line someone edited or removed, on the track it belongs to.
+    let protected = {
+        let mut read = pool
+            .begin()
+            .await
+            .map_err(|e| anyhow!("Failed to read corrections: {}", e))?;
+        let spans = TranscriptEditsRepository::protected_spans(&mut read, &meeting_id)
+            .await
+            .map_err(|e| anyhow!("Failed to read corrections: {}", e))?;
+        read.commit()
+            .await
+            .map_err(|e| anyhow!("Failed to read corrections: {}", e))?;
+        spans
+    };
+    let tracks_known = speaker_hints.iter().any(|hint| hint.is_some());
+    if !protected.is_empty() {
+        let recognized = all_transcripts.len();
+        let mut texts = Vec::new();
+        let mut hints = Vec::new();
+        let mut timings = Vec::new();
+        for (((text, start_ms, end_ms), hint), words) in all_transcripts
+            .drain(..)
+            .zip(speaker_hints.drain(..))
+            .zip(all_words.drain(..))
+        {
+            let track = match hint {
+                Some("You") => Track::Mic,
+                Some(_) => Track::System,
+                None => Track::Any,
+            };
+            let line = NewLine {
+                text,
+                start: start_ms / 1000.0,
+                end: end_ms / 1000.0,
+                track,
+                words,
+            };
+            for kept in outside_protected(line, &protected) {
+                texts.push((kept.text, kept.start * 1000.0, kept.end * 1000.0));
+                hints.push(hint);
+                timings.push(kept.words);
+            }
+        }
+        info!(
+            "Kept clear of {} corrected stretches: {} of {} recognized lines written",
+            protected.len(),
+            texts.len(),
+            recognized
+        );
+        all_transcripts = texts;
+        speaker_hints = hints;
+        all_words = timings;
+    }
+
     // Reconstructed timestamps must remain stable across repeated runs.
     let segments =
         create_source_labeled_segments(&all_transcripts, &speaker_hints, recording_started_at)?;
@@ -709,9 +765,8 @@ async fn run_retranscription<R: Runtime>(
     .await
     .map_err(|e| anyhow!("Failed to clear person speaker mappings: {}", e))?;
 
-    sqlx::query("DELETE FROM transcripts WHERE meeting_id = ?")
-        .bind(&meeting_id)
-        .execute(&mut *tx)
+    // The recognizer's old lines go; the lines a person wrote stay.
+    TranscriptEditsRepository::clear_machine_lines(&mut tx, &meeting_id, tracks_known)
         .await
         .map_err(|e| anyhow!("Failed to delete existing transcripts: {}", e))?;
 
