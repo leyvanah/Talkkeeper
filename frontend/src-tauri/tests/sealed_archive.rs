@@ -355,11 +355,11 @@ async fn a_correction_is_sealed_and_a_removal_leaves_no_words() {
         .await
         .unwrap();
 
-    let edited = TranscriptEditsRepository::edit(&pool, &meeting_id, &ids[0], "первая смета")
+    let edited = TranscriptEditsRepository::edit(&pool, &meeting_id, &ids[0], "первая смета", &[])
         .await
         .unwrap();
     assert_eq!(edited.words.as_ref().map(|w| w.len()), Some(2));
-    TranscriptEditsRepository::remove(&pool, &meeting_id, &ids[1]).await.unwrap();
+    TranscriptEditsRepository::remove(&pool, &meeting_id, &ids[1..]).await.unwrap();
 
     let stored: Vec<(String, Option<String>)> =
         sqlx::query_as("SELECT transcript, words FROM transcripts WHERE meeting_id = ?")

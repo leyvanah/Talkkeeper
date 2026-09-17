@@ -155,11 +155,18 @@ pub struct TranscriptEditsRepository;
 
 impl TranscriptEditsRepository {
     /// Replace a line's text and mark it as a person's.
+    ///
+    /// The interface shows back-to-back lines of one speaker as one, so an edit
+    /// can cover several stored lines. `absorbed` are the others: the edited
+    /// line takes over their stretch of time and their word timings, and they
+    /// are deleted — with no removal record, since the edited line now protects
+    /// their stretch itself.
     pub async fn edit(
         pool: &SqlitePool,
         meeting_id: &str,
         transcript_id: &str,
         text: &str,
+        absorbed: &[String],
     ) -> Result<EditedLine, SqlxError> {
         let text = text.split_whitespace().collect::<Vec<_>>().join(" ");
         if text.is_empty() {
@@ -168,29 +175,59 @@ impl TranscriptEditsRepository {
             ));
         }
 
-        let row = sqlx::query(
-            "SELECT words, audio_start_time, audio_end_time FROM transcripts \
-             WHERE id = ? AND meeting_id = ?",
-        )
-        .bind(transcript_id)
-        .bind(meeting_id)
-        .fetch_optional(pool)
-        .await?
-        .ok_or(SqlxError::RowNotFound)?;
+        let mut tx = pool.begin().await?;
+        let mut ids: Vec<&str> = vec![transcript_id];
+        ids.extend(
+            absorbed
+                .iter()
+                .map(String::as_str)
+                .filter(|id| *id != transcript_id),
+        );
 
-        let old_words: Vec<WordTiming> = row
-            .try_get::<Option<String>, _>("words")?
-            .and_then(|stored| fields::open(fields::TRANSCRIPT_WORDS, &stored).ok())
-            .and_then(|json| crate::audio::word_timing::from_json(&json))
-            .unwrap_or_default();
-        let start: f64 = row.try_get::<Option<f64>, _>("audio_start_time")?.unwrap_or(0.0);
-        let end: f64 = row.try_get::<Option<f64>, _>("audio_end_time")?.unwrap_or(start);
+        let mut parts: Vec<(f64, f64, Option<Vec<WordTiming>>)> = Vec::new();
+        for id in &ids {
+            let row = sqlx::query(
+                "SELECT words, audio_start_time, audio_end_time FROM transcripts \
+                 WHERE id = ? AND meeting_id = ?",
+            )
+            .bind(id)
+            .bind(meeting_id)
+            .fetch_optional(&mut *tx)
+            .await?
+            .ok_or(SqlxError::RowNotFound)?;
+            let words = row
+                .try_get::<Option<String>, _>("words")?
+                .and_then(|stored| fields::open(fields::TRANSCRIPT_WORDS, &stored).ok())
+                .and_then(|json| crate::audio::word_timing::from_json(&json));
+            let start: f64 = row
+                .try_get::<Option<f64>, _>("audio_start_time")?
+                .unwrap_or(0.0);
+            let end: f64 = row
+                .try_get::<Option<f64>, _>("audio_end_time")?
+                .unwrap_or(start);
+            parts.push((start, end.max(start), words));
+        }
+        parts.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
+
+        let start = parts.iter().map(|part| part.0).fold(f64::INFINITY, f64::min);
+        let end = parts.iter().map(|part| part.1).fold(f64::NEG_INFINITY, f64::max);
+        // Timings carry over only if every part had them: half a list would
+        // pin the whole new text onto half the time.
+        let old_words: Vec<WordTiming> = if parts.iter().all(|part| part.2.is_some()) {
+            parts
+                .iter()
+                .flat_map(|part| part.2.clone().unwrap_or_default())
+                .collect()
+        } else {
+            Vec::new()
+        };
         let words = realign(&old_words, &text, start, end);
         let words = (!words.is_empty()).then_some(words);
         let edited_at = Utc::now().to_rfc3339();
 
         sqlx::query(
-            "UPDATE transcripts SET transcript = ?, words = ?, edited_at = ? \
+            "UPDATE transcripts SET transcript = ?, words = ?, edited_at = ?, \
+             audio_start_time = ?, audio_end_time = ?, duration = ? \
              WHERE id = ? AND meeting_id = ?",
         )
         .bind(fields::seal(fields::TRANSCRIPT_TEXT, &text))
@@ -200,10 +237,21 @@ impl TranscriptEditsRepository {
                 .map(|words| fields::seal(fields::TRANSCRIPT_WORDS, &to_json(words))),
         )
         .bind(&edited_at)
+        .bind(start)
+        .bind(end)
+        .bind(end - start)
         .bind(transcript_id)
         .bind(meeting_id)
-        .execute(pool)
+        .execute(&mut *tx)
         .await?;
+        for id in &ids[1..] {
+            sqlx::query("DELETE FROM transcripts WHERE id = ? AND meeting_id = ?")
+                .bind(id)
+                .bind(meeting_id)
+                .execute(&mut *tx)
+                .await?;
+        }
+        tx.commit().await?;
 
         Ok(EditedLine {
             id: transcript_id.to_string(),
@@ -213,47 +261,49 @@ impl TranscriptEditsRepository {
         })
     }
 
-    /// Remove a line, keeping only where it was.
+    /// Remove lines, keeping only where they were.
     pub async fn remove(
         pool: &SqlitePool,
         meeting_id: &str,
-        transcript_id: &str,
+        transcript_ids: &[String],
     ) -> Result<(), SqlxError> {
         let mut tx = pool.begin().await?;
-        let row = sqlx::query(
-            "SELECT speaker, audio_start_time, audio_end_time FROM transcripts \
-             WHERE id = ? AND meeting_id = ?",
-        )
-        .bind(transcript_id)
-        .bind(meeting_id)
-        .fetch_optional(&mut *tx)
-        .await?
-        .ok_or(SqlxError::RowNotFound)?;
-        let speaker = fields::open_opt(fields::TRANSCRIPT_SPEAKER, row.try_get("speaker")?)?;
-        let start: Option<f64> = row.try_get("audio_start_time")?;
-        let end: Option<f64> = row.try_get("audio_end_time")?;
-
-        // A line with no place in the recording has nothing to protect.
-        if let (Some(start), Some(end)) = (start, end) {
-            sqlx::query(
-                "INSERT INTO transcript_removals \
-                 (id, meeting_id, audio_start_time, audio_end_time, track, removed_at) \
-                 VALUES (?, ?, ?, ?, ?, ?)",
+        for transcript_id in transcript_ids {
+            let row = sqlx::query(
+                "SELECT speaker, audio_start_time, audio_end_time FROM transcripts \
+                 WHERE id = ? AND meeting_id = ?",
             )
-            .bind(format!("removal-{}", Uuid::new_v4()))
-            .bind(meeting_id)
-            .bind(start)
-            .bind(end.max(start))
-            .bind(Track::of_speaker(speaker.as_deref()).as_str())
-            .bind(Utc::now().to_rfc3339())
-            .execute(&mut *tx)
-            .await?;
-        }
-        sqlx::query("DELETE FROM transcripts WHERE id = ? AND meeting_id = ?")
             .bind(transcript_id)
             .bind(meeting_id)
-            .execute(&mut *tx)
-            .await?;
+            .fetch_optional(&mut *tx)
+            .await?
+            .ok_or(SqlxError::RowNotFound)?;
+            let speaker = fields::open_opt(fields::TRANSCRIPT_SPEAKER, row.try_get("speaker")?)?;
+            let start: Option<f64> = row.try_get("audio_start_time")?;
+            let end: Option<f64> = row.try_get("audio_end_time")?;
+
+            // A line with no place in the recording has nothing to protect.
+            if let (Some(start), Some(end)) = (start, end) {
+                sqlx::query(
+                    "INSERT INTO transcript_removals \
+                     (id, meeting_id, audio_start_time, audio_end_time, track, removed_at) \
+                     VALUES (?, ?, ?, ?, ?, ?)",
+                )
+                .bind(format!("removal-{}", Uuid::new_v4()))
+                .bind(meeting_id)
+                .bind(start)
+                .bind(end.max(start))
+                .bind(Track::of_speaker(speaker.as_deref()).as_str())
+                .bind(Utc::now().to_rfc3339())
+                .execute(&mut *tx)
+                .await?;
+            }
+            sqlx::query("DELETE FROM transcripts WHERE id = ? AND meeting_id = ?")
+                .bind(transcript_id)
+                .bind(meeting_id)
+                .execute(&mut *tx)
+                .await?;
+        }
         tx.commit().await
     }
 
@@ -342,8 +392,15 @@ pub async fn api_edit_transcript_line(
     meeting_id: String,
     transcript_id: String,
     text: String,
+    absorbed_ids: Option<Vec<String>>,
 ) -> Result<EditedLine, String> {
-    TranscriptEditsRepository::edit(state.db_manager.pool(), &meeting_id, &transcript_id, &text)
+    TranscriptEditsRepository::edit(
+        state.db_manager.pool(),
+        &meeting_id,
+        &transcript_id,
+        &text,
+        &absorbed_ids.unwrap_or_default(),
+    )
         .await
         .map_err(|error| match error {
             SqlxError::RowNotFound => "Transcript line not found".to_string(),
@@ -352,12 +409,12 @@ pub async fn api_edit_transcript_line(
 }
 
 #[tauri::command]
-pub async fn api_remove_transcript_line(
+pub async fn api_remove_transcript_lines(
     state: tauri::State<'_, AppState>,
     meeting_id: String,
-    transcript_id: String,
+    transcript_ids: Vec<String>,
 ) -> Result<(), String> {
-    TranscriptEditsRepository::remove(state.db_manager.pool(), &meeting_id, &transcript_id)
+    TranscriptEditsRepository::remove(state.db_manager.pool(), &meeting_id, &transcript_ids)
         .await
         .map_err(|error| match error {
             SqlxError::RowNotFound => "Transcript line not found".to_string(),
@@ -445,12 +502,12 @@ mod tests {
             "CREATE TABLE meetings (id TEXT PRIMARY KEY); \
              CREATE TABLE transcripts (id TEXT PRIMARY KEY, meeting_id TEXT NOT NULL, \
                  transcript TEXT NOT NULL, speaker TEXT, audio_start_time REAL, \
-                 audio_end_time REAL, words TEXT); \
+                 audio_end_time REAL, duration REAL, words TEXT); \
              INSERT INTO meetings VALUES ('m1'); \
              INSERT INTO transcripts VALUES \
-                 ('t1', 'm1', 'отчет будет готов', 'Guest', 1.0, 2.5, \
+                 ('t1', 'm1', 'отчет будет готов', 'Guest', 1.0, 2.5, 1.5, \
                   '[{\"w\":\"отчет\",\"s\":1.0,\"e\":1.4},{\"w\":\"будет\",\"s\":1.4,\"e\":1.9},{\"w\":\"готов\",\"s\":1.9,\"e\":2.5}]'), \
-                 ('t2', 'm1', 'угу', 'You', 1.5, 1.8, NULL);",
+                 ('t2', 'm1', 'угу', 'You', 1.5, 1.8, 0.3, NULL);",
         )
         .execute(&pool)
         .await
@@ -465,7 +522,7 @@ mod tests {
     #[tokio::test]
     async fn an_edit_replaces_the_text_and_keeps_the_timings_it_can() {
         let pool = pool().await;
-        let edited = TranscriptEditsRepository::edit(&pool, "m1", "t1", "  Отчёт  будет готов в пятницу ")
+        let edited = TranscriptEditsRepository::edit(&pool, "m1", "t1", "  Отчёт  будет готов в пятницу ", &[])
             .await
             .unwrap();
         assert_eq!(edited.text, "Отчёт будет готов в пятницу");
@@ -484,18 +541,57 @@ mod tests {
     #[tokio::test]
     async fn an_empty_edit_is_refused_and_a_foreign_line_is_not_found() {
         let pool = pool().await;
-        assert!(TranscriptEditsRepository::edit(&pool, "m1", "t1", "   ").await.is_err());
+        assert!(TranscriptEditsRepository::edit(&pool, "m1", "t1", "   ", &[]).await.is_err());
         assert!(matches!(
-            TranscriptEditsRepository::edit(&pool, "other", "t1", "x").await,
+            TranscriptEditsRepository::edit(&pool, "other", "t1", "x", &[]).await,
             Err(SqlxError::RowNotFound)
         ));
+    }
+
+    /// Editing what the screen shows as one line edits every stored line in it.
+    #[tokio::test]
+    async fn an_edit_of_merged_lines_takes_over_their_time() {
+        let pool = pool().await;
+        sqlx::query(
+            "INSERT INTO transcripts (id, meeting_id, transcript, speaker, audio_start_time, audio_end_time, words) \
+             VALUES ('t0', 'm1', 'добрый день', 'Guest', 0.0, 0.8, \
+             '[{\"w\":\"добрый\",\"s\":0.0,\"e\":0.4},{\"w\":\"день\",\"s\":0.4,\"e\":0.8}]')",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        let edited = TranscriptEditsRepository::edit(
+            &pool,
+            "m1",
+            "t0",
+            "Добрый день. Отчёт будет готов",
+            &["t1".to_string()],
+        )
+        .await
+        .unwrap();
+        let words = edited.words.expect("both parts had timings");
+        assert_eq!(words.len(), 5);
+        assert_eq!((words[4].start, words[4].end), (1.9, 2.5), "the absorbed line's words keep their times");
+
+        let rows: Vec<(String, f64, f64)> = sqlx::query_as(
+            "SELECT id, audio_start_time, audio_end_time FROM transcripts WHERE speaker = 'Guest'",
+        )
+        .fetch_all(&pool)
+        .await
+        .unwrap();
+        assert_eq!(rows, vec![("t0".to_string(), 0.0, 2.5)]);
+        let removals: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM transcript_removals")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(removals, 0, "an absorbed line is covered by the edit, not a removal");
     }
 
     #[tokio::test]
     async fn decisions_survive_the_clearing_before_re_recognition() {
         let pool = pool().await;
-        TranscriptEditsRepository::edit(&pool, "m1", "t1", "исправлено").await.unwrap();
-        TranscriptEditsRepository::remove(&pool, "m1", "t2").await.unwrap();
+        TranscriptEditsRepository::edit(&pool, "m1", "t1", "исправлено", &[]).await.unwrap();
+        TranscriptEditsRepository::remove(&pool, "m1", &["t2".to_string()]).await.unwrap();
 
         let mut tx = pool.begin().await.unwrap();
         sqlx::query("INSERT INTO transcripts (id, meeting_id, transcript) VALUES ('t3', 'm1', 'машина')")
