@@ -800,6 +800,7 @@ pub async fn diarize_meeting(
     num_speakers: Option<usize>,
     threshold: Option<f32>,
 ) -> Result<MeetingDiarizationResult, String> {
+    let _busy = crate::security::session::busy();
     let _operation_guard = operation_guard().await;
     let pool = state.db_manager.pool();
 
@@ -1204,7 +1205,7 @@ pub async fn diarize_meeting(
             .bind(fields::seal_joinable_opt(
                 fields::TRANSCRIPT_SPEAKER,
                 label.as_deref(),
-            ))
+            ).map_err(|e| format!("Failed to seal speaker label: {e}"))?)
             .bind(id)
             .execute(&mut *tx)
             .await

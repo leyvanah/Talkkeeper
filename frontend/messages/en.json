@@ -1392,6 +1392,7 @@
     "errorPasswordsDoNotMatch": "The passwords do not match.",
     "errorNoRecoveryCode": "No recovery code was issued for this archive.",
     "errorRecordingInProgress": "The archive cannot be locked while recording.",
+    "errorJobInProgress": "The archive cannot be locked while a summary, transcription or import is running. Wait for it to finish or cancel it.",
     "errorAlreadyConfigured": "The archive is already protected by a password.",
     "errorKeystoreCorrupt": "The key file is damaged. Do not set a new password — restore the file from a backup first.",
     "errorUnknown": "That did not work. Details are in the application log.",

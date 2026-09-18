@@ -35,7 +35,7 @@ impl TranscriptsRepository {
              VALUES (?, ?, ?, ?, ?, ?)",
         )
         .bind(&meeting_id)
-        .bind(fields::seal(fields::MEETING_TITLE, meeting_title))
+        .bind(fields::seal(fields::MEETING_TITLE, meeting_title)?)
         .bind(recording_started_at)
         .bind(now)
         .bind(&folder_path)
@@ -70,7 +70,7 @@ impl TranscriptsRepository {
             )
             .bind(&transcript_id)
             .bind(&meeting_id)
-            .bind(fields::seal(fields::TRANSCRIPT_TEXT, &segment.text))
+            .bind(fields::seal(fields::TRANSCRIPT_TEXT, &segment.text)?)
             .bind(timestamp)
             .bind(segment.audio_start_time)
             .bind(segment.audio_end_time)
@@ -78,7 +78,7 @@ impl TranscriptsRepository {
             .bind(fields::seal_joinable_opt(
                 fields::TRANSCRIPT_SPEAKER,
                 segment.speaker.as_deref(),
-            ))
+            )?)
             .execute(&mut *transaction)
             .await;
 

@@ -742,6 +742,9 @@ async fn stop_recording_inner<R: Runtime>(
     _args: RecordingArgs,
     restore_main: bool,
 ) -> Result<StopOutcome, String> {
+    // Saving after Stop writes the transcript; the idle lock must not land
+    // between the recording ending and the save finishing.
+    let _busy = crate::security::session::busy();
     info!(
         "ðŸ›‘ Starting optimized recording shutdown - ensuring ALL transcript chunks are preserved"
     );

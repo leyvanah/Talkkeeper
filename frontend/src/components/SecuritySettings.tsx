@@ -138,6 +138,8 @@ export function SecuritySettings() {
           return t('errorTooManyAttempts', { seconds: problem.waitSeconds ?? 0 })
         case 'recordingInProgress':
           return t('errorRecordingInProgress')
+        case 'jobInProgress':
+          return t('errorJobInProgress')
         case 'alreadyConfigured':
           return t('errorAlreadyConfigured')
         case 'quickDeclined':

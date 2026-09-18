@@ -230,11 +230,12 @@ impl TranscriptEditsRepository {
              audio_start_time = ?, audio_end_time = ?, duration = ? \
              WHERE id = ? AND meeting_id = ?",
         )
-        .bind(fields::seal(fields::TRANSCRIPT_TEXT, &text))
+        .bind(fields::seal(fields::TRANSCRIPT_TEXT, &text)?)
         .bind(
             words
                 .as_deref()
-                .map(|words| fields::seal(fields::TRANSCRIPT_WORDS, &to_json(words))),
+                .map(|words| fields::seal(fields::TRANSCRIPT_WORDS, &to_json(words)))
+                .transpose()?,
         )
         .bind(&edited_at)
         .bind(start)
@@ -377,7 +378,7 @@ impl TranscriptEditsRepository {
                 _ => "Guest",
             };
             sqlx::query("UPDATE transcripts SET speaker = ? WHERE id = ?")
-                .bind(fields::seal_joinable(fields::TRANSCRIPT_SPEAKER, label))
+                .bind(fields::seal_joinable(fields::TRANSCRIPT_SPEAKER, label)?)
                 .bind(&id)
                 .execute(&mut **tx)
                 .await?;

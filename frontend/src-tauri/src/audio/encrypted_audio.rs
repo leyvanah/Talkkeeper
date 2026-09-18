@@ -175,6 +175,11 @@ impl AudioSink {
         // Asked before the key is borrowed, because borrowing it moves the file
         // into the closure and there would be no way back to writing plainly.
         if !crate::security::session::archive_is_open() {
+            // No password: plaintext is what the owner chose. A password and
+            // a locked archive: plaintext would be an accident, so refuse.
+            if crate::security::session::archive_is_protected() {
+                return Err(anyhow!("the archive is locked; the recording file was not written"));
+            }
             return Ok(Self::Plain(buffered));
         }
         let writer = with_current_key(|key| EncryptedWriter::create(buffered, key))
