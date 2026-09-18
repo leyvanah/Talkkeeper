@@ -784,7 +784,7 @@ async fn create_meeting_with_transcripts(
     .bind(crate::database::fields::seal(
         crate::database::fields::MEETING_TITLE,
         title,
-    ))
+    )?)
     .bind(recording_started_at)
     .bind(now)
     .bind(&folder_path)
@@ -804,7 +804,7 @@ async fn create_meeting_with_transcripts(
         .bind(crate::database::fields::seal(
             crate::database::fields::TRANSCRIPT_TEXT,
             &segment.text,
-        ))
+        )?)
         .bind(&segment.timestamp)
         .bind(segment.audio_start_time)
         .bind(segment.audio_end_time)
@@ -1121,6 +1121,7 @@ pub async fn start_import_audio_command<R: Runtime>(
 
     // Spawn import in background
     tauri::async_runtime::spawn(async move {
+        let _busy = crate::security::session::busy();
         let result = start_import(app, source_path, title, language, model, provider).await;
 
         if let Err(e) = result {

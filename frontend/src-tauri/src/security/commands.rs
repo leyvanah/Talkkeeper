@@ -636,6 +636,12 @@ pub async fn security_lock<R: Runtime>(app: AppHandle<R>) -> Result<(), Security
             "the archive cannot be locked while recording",
         ));
     }
+    if super::session::background_work_running() {
+        return Err(SecurityError::new(
+            "jobInProgress",
+            "the archive cannot be locked while a summary, transcription or import is running",
+        ));
+    }
 
     let state = app.state::<SecurityState>();
     state.session.lock();
@@ -787,9 +793,12 @@ pub fn start_idle_locker<R: Runtime>(app: AppHandle<R>) {
             if !state.session.idle_expired() {
                 continue;
             }
-            if crate::audio::recording_commands::is_recording().await {
+            if crate::audio::recording_commands::is_recording().await
+                || super::session::background_work_running()
+            {
                 // Deliberately not locking, and deliberately not resetting the
-                // idle clock either: the moment recording stops, this locks.
+                // idle clock either: the moment the recording or the job
+                // stops, this locks.
                 continue;
             }
 

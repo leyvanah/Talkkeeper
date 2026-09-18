@@ -785,7 +785,7 @@ async fn run_retranscription<R: Runtime>(
         )
         .bind(&segment.id)
         .bind(&meeting_id)
-        .bind(fields::seal(fields::TRANSCRIPT_TEXT, &segment.text))
+        .bind(fields::seal(fields::TRANSCRIPT_TEXT, &segment.text)?)
         .bind(&segment.timestamp)
         .bind(segment.audio_start_time)
         .bind(segment.audio_end_time)
@@ -793,11 +793,12 @@ async fn run_retranscription<R: Runtime>(
         .bind(fields::seal_joinable_opt(
             fields::TRANSCRIPT_SPEAKER,
             segment.speaker.as_deref(),
-        ))
+        )?)
         .bind(
             words
                 .as_deref()
-                .map(|words| fields::seal(fields::TRANSCRIPT_WORDS, &to_json(words))),
+                .map(|words| fields::seal(fields::TRANSCRIPT_WORDS, &to_json(words)))
+                .transpose()?,
         )
         .execute(&mut *tx)
         .await
@@ -1196,6 +1197,7 @@ pub async fn start_retranscription_command<R: Runtime>(
 
     // Spawn the retranscription in a background task
     tauri::async_runtime::spawn(async move {
+        let _busy = crate::security::session::busy();
         let _operation_guard = crate::diarization::operation_guard().await;
         let result = start_retranscription(
             guard,

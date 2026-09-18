@@ -351,10 +351,10 @@ async fn convert_column(
         }
 
         let next = match (direction, column.kind) {
-            (Direction::Encrypt, Kind::Sealed) => fields::seal(column.field, &value),
-            (Direction::Encrypt, Kind::Joinable) => fields::seal_joinable(column.field, &value),
+            (Direction::Encrypt, Kind::Sealed) => fields::seal(column.field, &value)?,
+            (Direction::Encrypt, Kind::Joinable) => fields::seal_joinable(column.field, &value)?,
             (Direction::Encrypt, Kind::Blinded { .. }) => {
-                fields::lookup(column.field, &normalize(&value))
+                fields::lookup(column.field, &normalize(&value))?
             }
             (Direction::Decrypt, Kind::Sealed | Kind::Joinable) => {
                 fields::open(column.field, &value)?

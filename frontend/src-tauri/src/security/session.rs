@@ -9,6 +9,7 @@
 //! recording.** Wiping the key mid-session would end the session. Idle locking
 //! resumes as soon as the recording stops.
 
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
@@ -49,6 +50,46 @@ pub fn archive_is_open() -> bool {
         .get()
         .map(|session| session.is_unlocked())
         .unwrap_or(false)
+}
+
+/// Whether this machine's archive has a password at all — open or locked.
+///
+/// The difference between "no password" and "locked" is the difference between
+/// writing plaintext on purpose and writing it by accident, so writers ask this
+/// when [`with_current_key`] comes back empty.
+pub fn archive_is_protected() -> bool {
+    CURRENT
+        .get()
+        .map(|session| session.state() != LockState::Unconfigured)
+        .unwrap_or(false)
+}
+
+/// Long jobs that write to the archive and are running right now.
+static BUSY: AtomicUsize = AtomicUsize::new(0);
+
+/// Held by a job that writes to the archive — a summary, a retranscription,
+/// an import, a diarization, the save after Stop. While any is held the idle
+/// lock waits, as it waits for a recording: those jobs run for many minutes
+/// with nobody touching the window, and a lock in the middle would cost the
+/// job its result.
+#[must_use = "the job counts as running only while the guard is alive"]
+pub struct BusyGuard(());
+
+/// Marks a long job as running until the returned guard is dropped.
+pub fn busy() -> BusyGuard {
+    BUSY.fetch_add(1, Ordering::SeqCst);
+    BusyGuard(())
+}
+
+impl Drop for BusyGuard {
+    fn drop(&mut self) {
+        BUSY.fetch_sub(1, Ordering::SeqCst);
+    }
+}
+
+/// Whether a job holding a [`BusyGuard`] is running.
+pub fn background_work_running() -> bool {
+    BUSY.load(Ordering::SeqCst) > 0
 }
 
 /// How often the idle check runs. Fine-grained enough that a one-minute timeout
@@ -211,6 +252,20 @@ impl KeySession {
 mod tests {
     use super::*;
     use crate::security::envelope::generate_dek;
+
+    #[test]
+    fn a_job_counts_as_running_until_its_guard_is_dropped() {
+        // The counter is process-wide, so this checks the guard's own effect
+        // rather than an absolute value another test could be holding.
+        let before = BUSY.load(Ordering::SeqCst);
+        let outer = busy();
+        let inner = busy();
+        assert!(background_work_running());
+        assert_eq!(BUSY.load(Ordering::SeqCst), before + 2);
+        drop(inner);
+        drop(outer);
+        assert_eq!(BUSY.load(Ordering::SeqCst), before);
+    }
 
     #[test]
     fn a_fresh_session_reports_no_password_configured() {

@@ -225,15 +225,15 @@ async fn a_person_profile_still_joins_to_the_lines_they_said() {
          VALUES (?, ?, ?, NULL, 'now', 'now')",
     )
     .bind("person-anna")
-    .bind(fields::seal(fields::PERSON_NAME, "Анна"))
-    .bind(fields::lookup(fields::PERSON_LOOKUP, "анна"))
+    .bind(fields::seal(fields::PERSON_NAME, "Анна").unwrap())
+    .bind(fields::lookup(fields::PERSON_LOOKUP, "анна").unwrap())
     .execute(&pool)
     .await
     .unwrap();
     sqlx::query("INSERT INTO person_speakers VALUES (?, ?, ?)")
         .bind("person-anna")
         .bind(&meeting_id)
-        .bind(fields::seal_joinable(fields::SPEAKER_LABEL, "Анна"))
+        .bind(fields::seal_joinable(fields::SPEAKER_LABEL, "Анна").unwrap())
         .execute(&pool)
         .await
         .unwrap();
@@ -348,7 +348,7 @@ async fn a_correction_is_sealed_and_a_removal_leaves_no_words() {
     .unwrap();
     let words = r#"[{"w":"первая","s":0.1,"e":0.6},{"w":"реплика","s":0.6,"e":1.4}]"#;
     sqlx::query("UPDATE transcripts SET words = ? WHERE meeting_id = ? AND id = ?")
-        .bind(fields::seal(fields::TRANSCRIPT_WORDS, words))
+        .bind(fields::seal(fields::TRANSCRIPT_WORDS, words).unwrap())
         .bind(&meeting_id)
         .bind(&ids[0])
         .execute(&pool)
