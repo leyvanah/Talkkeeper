@@ -30,6 +30,7 @@ import {
   type RecordingEncryption,
 } from '@/contexts/SecurityContext'
 import { RecoveryCodeCard } from '@/components/security/RecoveryCodeCard'
+import { LocalOnlyCard } from '@/components/security/LocalOnlyCard'
 
 /** Idle timeouts offered, in minutes. `0` stands for "never". */
 const AUTO_LOCK_CHOICES = [0, 5, 15, 30, 60] as const
@@ -647,6 +648,8 @@ export function SecuritySettings() {
         )}
         {notice && <p className="mt-4 text-sm text-emerald-500">{notice}</p>}
       </div>
+
+      <LocalOnlyCard />
     </div>
   )
 }

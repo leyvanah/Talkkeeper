@@ -40,6 +40,7 @@ struct OpenRouterResponse {
 
 #[command]
 pub fn get_openrouter_models() -> Result<Vec<OpenRouterModel>, String> {
+    crate::network_policy::check("https://openrouter.ai/api/v1/models")?;
     let client = Client::new();
     let response = client
         .get("https://openrouter.ai/api/v1/models")

@@ -266,6 +266,8 @@ impl ExternalSttProvider {
         wav: &[u8],
         language: Option<&str>,
     ) -> Result<String, (String, bool)> {
+        // Not retried: the setting will not change between attempts.
+        crate::network_policy::check(self.config.url.trim()).map_err(|error| (error, false))?;
         let mut request = self.client.post(self.config.url.trim());
 
         if let Some(token) = self

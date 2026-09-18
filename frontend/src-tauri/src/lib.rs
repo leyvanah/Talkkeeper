@@ -53,6 +53,7 @@ pub mod logging;
 pub mod meeting_detection;
 pub mod minibar;
 pub mod model_integrity;
+pub mod network_policy;
 pub mod gigaam_engine;
 pub mod parakeet_engine;
 pub mod paths;
@@ -518,6 +519,7 @@ pub fn run() {
 
             // Read the keystore before anything can ask for the key, and start
             // watching for the archive being left open unattended.
+            crate::network_policy::load();
             crate::security::commands::initialize(&_app.handle());
 
             // Meeting detection: load persisted settings and start the monitor
@@ -630,6 +632,8 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             security::commands::security_status,
+            network_policy::get_local_only_mode,
+            network_policy::set_local_only_mode,
             security::commands::security_setup,
             security::commands::security_unlock,
             security::commands::security_unlock_with_recovery,

@@ -1305,6 +1305,7 @@ pub async fn api_test_custom_openai_connection<R: Runtime>(
 
     // Build the URL - append /chat/completions to the base endpoint
     let url = format!("{}/chat/completions", endpoint.trim_end_matches('/'));
+    crate::network_policy::check(&url)?;
 
     // Create a minimal test request
     let test_request = serde_json::json!({

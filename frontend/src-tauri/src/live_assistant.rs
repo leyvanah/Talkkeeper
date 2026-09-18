@@ -247,6 +247,7 @@ pub async fn ollama_embed(
         .filter(|e| !e.trim().is_empty())
         .unwrap_or_else(|| "http://localhost:11434".to_string());
     let endpoint = endpoint.trim_end_matches('/').to_string();
+    crate::network_policy::check(&endpoint)?;
     let model = model
         .filter(|m| !m.trim().is_empty())
         .unwrap_or_else(|| "nomic-embed-text".to_string());
