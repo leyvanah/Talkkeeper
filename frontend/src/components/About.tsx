@@ -5,6 +5,7 @@ import { invoke } from '@tauri-apps/api/core';
 import Image from 'next/image';
 import { UpdateDialog } from "./UpdateDialog";
 import { updateService, UpdateInfo } from '@/services/updateService';
+import { UPDATES_AVAILABLE } from '@/lib/updates';
 import { Button } from './ui/button';
 import { Loader2, CheckCircle2 } from 'lucide-react';
 import { toast } from 'sonner';
@@ -68,7 +69,8 @@ export function About() {
                     {t('tagline')}
                 </p>
                 <div className="mt-3">
-                    {platform === 'macos' ? (
+                    {/* No update source of our own yet: point at the releases instead. */}
+                    {platform === 'macos' || !UPDATES_AVAILABLE ? (
                         <Button
                             onClick={() => openExternal('https://github.com/leyvanah/Talkkeeper/releases')}
                             variant="outline"
@@ -76,7 +78,7 @@ export function About() {
                             className="text-xs"
                         >
                             <CheckCircle2 className="h-3 w-3 mr-2" />
-                            {t('viewMacosReleases')}
+                            {platform === 'macos' ? t('viewMacosReleases') : t('viewReleases')}
                         </Button>
                     ) : (
                         <Button

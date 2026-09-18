@@ -4,6 +4,7 @@ import React, { createContext, useContext, useState, useCallback, useEffect } fr
 import { useTranslations } from 'next-intl';
 import { useUpdateCheck } from '@/hooks/useUpdateCheck';
 import { UpdateInfo } from '@/services/updateService';
+import { UPDATES_AVAILABLE } from '@/lib/updates';
 import { UpdateDialog } from './UpdateDialog';
 import { setUpdateDialogCallback, showUpdateNotification } from './UpdateNotification';
 import { invoke } from '@tauri-apps/api/core';
@@ -31,7 +32,7 @@ export function UpdateCheckProvider({
   const platform = usePlatform();
   // macOS ships as a separate DMG release with no Tauri updater artifact or
   // latest.json entry. Calling the Windows updater path there is misleading.
-  const updatesSupported = platform !== 'macos';
+  const updatesSupported = UPDATES_AVAILABLE && platform !== 'macos';
   const [showDialog, setShowDialog] = useState(false);
   const [checkOnMount, setCheckOnMount] = useState(false);
 

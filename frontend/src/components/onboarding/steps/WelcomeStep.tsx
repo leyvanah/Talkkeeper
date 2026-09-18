@@ -6,12 +6,13 @@ import { Button } from '@/components/ui/button';
 import { OnboardingContainer } from '../OnboardingContainer';
 import { useOnboarding } from '@/contexts/OnboardingContext';
 import { usePlatform } from '@/hooks/usePlatform';
+import { UPDATES_AVAILABLE } from '@/lib/updates';
 
 export function WelcomeStep() {
   const t = useTranslations('onboarding');
   const { goNext } = useOnboarding();
   const platform = usePlatform();
-  const updatesSupported = platform !== 'macos';
+  const updatesSupported = UPDATES_AVAILABLE && platform !== 'macos';
   const [checkUpdates, setCheckUpdates] = useState<boolean | null>(null);
   const [saving, setSaving] = useState(false);
 

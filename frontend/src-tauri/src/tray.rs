@@ -391,11 +391,9 @@ fn build_menu<R: Runtime>(
         .item(&MenuItemBuilder::with_id("open_window", "Open Main Window").build(app)?)
         .item(&MenuItemBuilder::with_id("settings", "Settings").build(app)?);
 
-    #[cfg(not(target_os = "macos"))]
-    {
-        builder = builder
-            .item(&MenuItemBuilder::with_id("check_updates", "Check for Updates").build(app)?);
-    }
+    // No "Check for Updates" entry: the app has no update source of its own
+    // yet, and the inherited one would offer the original project's builds.
+    // See UPDATES_AVAILABLE in the frontend.
 
     builder
         .item(&PredefinedMenuItem::separator(app)?)
