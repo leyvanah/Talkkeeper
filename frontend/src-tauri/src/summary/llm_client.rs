@@ -253,6 +253,8 @@ pub async fn generate_summary(
         })
     };
 
+    crate::network_policy::check(&api_url)?;
+
     info!("🐞 LLM Request to {}: model={}", provider_name(provider), model_name);
 
     // Send request with timeout and cancellation support

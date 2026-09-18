@@ -122,6 +122,8 @@ pub async fn get_openai_models(api_key: Option<String>) -> Result<Vec<OpenAIMode
         }
     }
 
+    crate::network_policy::check("https://api.openai.com/v1/models")?;
+
     // Fetch from API
     log::info!("Fetching OpenAI models from API...");
     let client = reqwest::Client::new();
