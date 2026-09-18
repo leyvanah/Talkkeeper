@@ -111,7 +111,7 @@ fn dir_has_models(dir: &Path) -> bool {
     REQUIRED_FILES.iter().all(|f| dir.join(f).exists())
 }
 
-/// Where the app's *writable* diarization model directory is â€” the target for
+/// Where the app's *writable* diarization model directory is — the target for
 /// manual installs and downloads.
 pub fn diarization_user_model_dir() -> PathBuf {
     crate::paths::models_dir().join("diarization")
@@ -218,7 +218,7 @@ pub fn diarize_file_with_models(
     // 1. Load + resample to 16 kHz mono.
     let (samples, sr) = dsp::read_wav(wav_path)?;
     let samples = if sr != dsp::SAMPLE_RATE {
-        log::info!("ðŸŽšï¸ Diarization: resampling {} Hz â†’ {} Hz", sr, dsp::SAMPLE_RATE);
+        log::info!("🎚️ Diarization: resampling {} Hz → {} Hz", sr, dsp::SAMPLE_RATE);
         crate::audio::audio_processing::resample_audio(&samples, sr, dsp::SAMPLE_RATE)
     } else {
         samples
@@ -541,7 +541,7 @@ pub struct MeetingDiarizationResult {
     pub num_speakers: usize,
     /// Number of transcript segments that received a speaker label.
     pub labeled: usize,
-    /// (transcript_id, speaker_label) pairs, e.g. ("transcript-â€¦", "Speaker 1").
+    /// (transcript_id, speaker_label) pairs, e.g. ("transcript-…", "Speaker 1").
     pub assignments: Vec<(String, String)>,
 }
 
@@ -1222,7 +1222,7 @@ pub async fn diarize_meeting(
     }
 
     log::info!(
-        "âœ… Meeting {} diarized: {} speakers, {} segments labeled",
+        "✅ Meeting {} diarized: {} speakers, {} segments labeled",
         meeting_id,
         result.num_speakers,
         assignments.len()
