@@ -264,26 +264,6 @@ fn get_transcription_status() -> TranscriptionStatus {
     }
 }
 
-#[tauri::command]
-async fn save_transcript(file_path: String, content: String) -> Result<(), String> {
-    log_info!("Saving transcript to: {}", file_path);
-
-    // Ensure parent directory exists
-    if let Some(parent) = std::path::Path::new(&file_path).parent() {
-        if !parent.exists() {
-            std::fs::create_dir_all(parent)
-                .map_err(|e| format!("Failed to create directory: {}", e))?;
-        }
-    }
-
-    // Write content to file
-    std::fs::write(&file_path, content)
-        .map_err(|e| format!("Failed to write transcript: {}", e))?;
-
-    log_info!("Transcript saved successfully");
-    Ok(())
-}
-
 // Audio level monitoring commands
 #[tauri::command]
 async fn start_audio_level_monitoring<R: Runtime>(
@@ -309,11 +289,6 @@ async fn stop_audio_level_monitoring() -> Result<(), String> {
         .map_err(|e| format!("Failed to stop audio level monitoring: {}", e))
 }
 
-#[tauri::command]
-async fn is_audio_level_monitoring() -> bool {
-    audio::simple_level_monitor::is_monitoring()
-}
-
 
 // Whisper commands are now handled by whisper_engine::commands module
 
@@ -328,15 +303,6 @@ async fn get_audio_devices() -> Result<Vec<AudioDevice>, String> {
 async fn trigger_microphone_permission() -> Result<bool, String> {
     trigger_audio_permission()
         .map_err(|e| format!("Failed to trigger microphone permission: {}", e))
-}
-
-#[tauri::command]
-async fn start_recording_with_devices<R: Runtime>(
-    app: AppHandle<R>,
-    mic_device_name: Option<String>,
-    system_device_name: Option<String>,
-) -> Result<(), String> {
-    start_recording_with_devices_and_meeting(app, mic_device_name, system_device_name, None).await
 }
 
 #[tauri::command]
@@ -657,13 +623,11 @@ pub fn run() {
             stop_recording,
             is_recording,
             get_transcription_status,
-            save_transcript,
             whisper_engine::commands::whisper_init,
             whisper_engine::commands::whisper_get_available_models,
             whisper_engine::commands::whisper_load_model,
             whisper_engine::commands::whisper_get_current_model,
             whisper_engine::commands::whisper_is_model_loaded,
-            whisper_engine::commands::whisper_unload_model,
             whisper_engine::commands::force_unload_stt_models,
             whisper_engine::commands::force_unload_all_models,
             whisper_engine::commands::get_local_stack_status,
@@ -691,26 +655,12 @@ pub fn run() {
             parakeet_engine::commands::parakeet_delete_corrupted_model,
             parakeet_engine::commands::open_parakeet_models_folder,
             // GigaAM (Russian) commands
-            gigaam_engine::commands::gigaam_init,
             gigaam_engine::commands::gigaam_get_model_status,
-            gigaam_engine::commands::gigaam_is_model_loaded,
             gigaam_engine::commands::gigaam_load_model,
-            gigaam_engine::commands::gigaam_unload_model,
             gigaam_engine::commands::gigaam_download_model,
             gigaam_engine::commands::gigaam_cancel_download,
             gigaam_engine::commands::gigaam_delete_model,
             // Parallel processing commands
-            whisper_engine::parallel_commands::initialize_parallel_processor,
-            whisper_engine::parallel_commands::start_parallel_processing,
-            whisper_engine::parallel_commands::pause_parallel_processing,
-            whisper_engine::parallel_commands::resume_parallel_processing,
-            whisper_engine::parallel_commands::stop_parallel_processing,
-            whisper_engine::parallel_commands::get_parallel_processing_status,
-            whisper_engine::parallel_commands::get_system_resources,
-            whisper_engine::parallel_commands::check_resource_constraints,
-            whisper_engine::parallel_commands::calculate_optimal_workers,
-            whisper_engine::parallel_commands::prepare_audio_chunks,
-            whisper_engine::parallel_commands::test_parallel_processing_setup,
             get_audio_devices,
             get_check_updates_on_launch,
             set_check_updates_on_launch,
@@ -720,28 +670,21 @@ pub fn run() {
             crash_report::prepare_for_app_restart,
             crash_report::resume_crash_session,
             trigger_microphone_permission,
-            start_recording_with_devices,
             start_recording_with_devices_and_meeting,
             start_audio_level_monitoring,
             stop_audio_level_monitoring,
-            is_audio_level_monitoring,
             // Recording pause/resume commands
             audio::recording_commands::pause_recording,
             audio::recording_commands::resume_recording,
-            audio::recording_commands::is_recording_paused,
             audio::recording_commands::set_microphone_muted,
             audio::recording_commands::set_system_audio_muted,
             audio::recording_commands::get_recording_state,
-            audio::recording_commands::get_meeting_folder_path,
             audio::transcript_journal::list_unsaved_recordings,
             audio::transcript_journal::discard_unsaved_transcript,
             // Reload sync commands (retrieve transcript history and meeting name)
             audio::recording_commands::get_transcript_history,
             audio::recording_commands::get_recording_meeting_name,
             // Device monitoring commands (AirPods/Bluetooth disconnect/reconnect)
-            audio::recording_commands::poll_audio_device_events,
-            audio::recording_commands::get_reconnection_status,
-            audio::recording_commands::attempt_device_reconnect,
             // Playback device detection (Bluetooth warning)
             audio::recording_commands::get_active_audio_output,
             // Audio recovery commands (for transcript recovery feature)
@@ -755,19 +698,16 @@ pub fn run() {
             ollama::get_ollama_models,
             ollama::pull_ollama_model,
             ollama::delete_ollama_model,
-            ollama::get_ollama_model_context,
             openai::openai::get_openai_models,
             anthropic::anthropic::get_anthropic_models,
             groq::groq::get_groq_models,
             api::api_get_meetings,
-            api::api_search_transcripts,
             database::repositories::person::api_global_search,
             database::repositories::person::api_get_person_profile,
             database::repositories::person::api_update_person_notes,
             database::repositories::client::api_list_clients,
             database::repositories::client::api_create_client,
             database::repositories::client::api_rename_client,
-            database::repositories::client::api_update_client_notes,
             database::repositories::client::api_delete_client,
             database::repositories::client::api_set_meeting_client,
             database::repositories::speaker_role::api_get_speaker_sides,
@@ -776,18 +716,14 @@ pub fn run() {
             database::repositories::transcript_edit::api_remove_transcript_lines,
             meeting_detection::get_meeting_detection_settings,
             meeting_detection::set_meeting_detection_settings,
-            meeting_detection::start_meeting_detection,
-            meeting_detection::stop_meeting_detection,
             diarization::diarization_models_available,
             diarization::diarization_model_directory,
             diarization::diarization_download_size,
             diarization::download_diarization_models,
-            diarization::diarize_recording,
             diarization::diarize_meeting,
             diarization::rename_meeting_speaker,
             minibar::enter_compact_mode,
             minibar::exit_compact_mode,
-            minibar::is_compact_mode,
             minibar::stop_recording_from_minibar,
             api::api_get_model_config,
             api::api_save_model_config,
@@ -801,7 +737,6 @@ pub fn run() {
             api::api_test_external_stt,
             api::api_get_post_call_transcript_config,
             api::api_save_post_call_transcript_config,
-            api::api_get_transcript_api_key,
             api::api_get_whisper_vocabulary,
             api::api_save_global_whisper_vocabulary,
             api::api_save_meeting_whisper_vocabulary,
@@ -829,8 +764,6 @@ pub fn run() {
             summary::commands::api_cancel_summary,
             // Template commands
             summary::template_commands::api_list_templates,
-            summary::template_commands::api_get_template_details,
-            summary::template_commands::api_validate_template,
             summary::template_commands::api_save_custom_template,
             summary::template_commands::api_delete_custom_template,
             summary::template_commands::api_is_custom_template,
@@ -853,7 +786,6 @@ pub fn run() {
             audio::recording_preferences::open_recordings_folder,
             audio::recording_preferences::discard_recording_folder,
             audio::recording_preferences::select_recording_folder,
-            audio::recording_preferences::get_available_audio_backends,
             audio::recording_preferences::get_current_audio_backend,
             audio::recording_preferences::set_audio_backend,
             audio::recording_preferences::get_audio_backend_info,
@@ -862,29 +794,9 @@ pub fn run() {
             // Notification system commands
             notifications::commands::get_notification_settings,
             notifications::commands::set_notification_settings,
-            notifications::commands::request_notification_permission,
-            notifications::commands::show_notification,
             notifications::commands::show_simple_notification,
-            notifications::commands::show_test_notification,
-            notifications::commands::is_dnd_active,
-            notifications::commands::get_system_dnd_status,
-            notifications::commands::set_manual_dnd,
-            notifications::commands::set_notification_consent,
-            notifications::commands::clear_notifications,
-            notifications::commands::is_notification_system_ready,
-            notifications::commands::initialize_notification_manager_manual,
-            notifications::commands::test_notification_with_auto_consent,
-            notifications::commands::get_notification_stats,
             // System audio capture commands
-            audio::system_audio_commands::start_system_audio_capture_command,
-            audio::system_audio_commands::list_system_audio_devices_command,
-            audio::system_audio_commands::check_system_audio_permissions_command,
-            audio::system_audio_commands::start_system_audio_monitoring,
-            audio::system_audio_commands::stop_system_audio_monitoring,
-            audio::system_audio_commands::get_system_audio_monitoring_status,
             // Screen Recording permission commands
-            audio::permissions::check_screen_recording_permission_command,
-            audio::permissions::request_screen_recording_permission_command,
             audio::permissions::trigger_system_audio_permission_command,
             // Database import commands
             database::commands::check_first_launch,
@@ -901,7 +813,6 @@ pub fn run() {
             // Onboarding commands
             onboarding::get_onboarding_status,
             onboarding::save_onboarding_status_cmd,
-            onboarding::reset_onboarding_status_cmd,
             onboarding::complete_onboarding,
             // System settings commands
             #[cfg(target_os = "macos")]
@@ -916,7 +827,6 @@ pub fn run() {
             audio::import::validate_audio_file_command,
             audio::import::start_import_audio_command,
             audio::import::cancel_import_command,
-            audio::import::is_import_in_progress_command,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
