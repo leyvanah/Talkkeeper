@@ -5,7 +5,6 @@ import { useTranslations } from 'next-intl';
 import { Button } from '@/components/ui/button';
 import { ButtonGroup } from '@/components/ui/button-group';
 import { Copy, Download, FolderOpen, RefreshCw, Users, Loader2 } from 'lucide-react';
-import Analytics from '@/lib/analytics';
 import { RetranscribeDialog } from './RetranscribeDialog';
 import { useConfig } from '@/contexts/ConfigContext';
 import { invoke } from '@tauri-apps/api/core';
@@ -79,7 +78,6 @@ export function TranscriptButtonGroup({
 
   const handleIdentifySpeakers = useCallback(async (expected?: number) => {
     if (!meetingId || isDiarizing) return;
-    Analytics.trackButtonClick('identify_speakers', 'meeting_details');
     setShowSpeakerDialog(false);
     setIsDiarizing(true);
     const toastId = toast.loading(t('identifyingSpeakersTitle'), {
@@ -115,7 +113,6 @@ export function TranscriptButtonGroup({
           size="sm"
           className="transcript-action-button h-9 w-9 shrink-0 px-0"
           onClick={() => {
-            Analytics.trackButtonClick('copy_transcript', 'meeting_details');
             onCopyTranscript();
           }}
           disabled={transcriptCount === 0}
@@ -131,7 +128,6 @@ export function TranscriptButtonGroup({
             size="sm"
             className="transcript-action-button h-9 w-9 shrink-0 px-0"
             onClick={() => {
-              Analytics.trackButtonClick('open_meeting_export', 'meeting_details');
               onOpenExport();
             }}
             disabled={transcriptCount === 0}
@@ -147,7 +143,6 @@ export function TranscriptButtonGroup({
           variant="outline"
           className="transcript-action-button h-9 w-9 shrink-0 px-0"
           onClick={() => {
-            Analytics.trackButtonClick('open_recording_folder', 'meeting_details');
             onOpenMeetingFolder();
           }}
           title={t('openRecordingFolder')}
@@ -183,7 +178,6 @@ export function TranscriptButtonGroup({
             variant="outline"
             className="transcript-action-button h-9 w-9 shrink-0 border-blue-500/30 bg-blue-500/10 px-0 text-blue-300 hover:bg-blue-500/20"
             onClick={() => {
-              Analytics.trackButtonClick('enhance_transcript', 'meeting_details');
               setShowRetranscribeDialog(true);
             }}
             title={t('enhanceTooltip')}
