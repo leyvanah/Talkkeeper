@@ -1414,7 +1414,13 @@
     "fieldsAllSealed": "Зашифровано всё: {count, plural, one {# значение} few {# значения} many {# значений} other {# значений}}.",
     "fieldsPartly": "Зашифровано: {sealed}. Ещё не зашифровано: {plaintext}.",
     "encryptFields": "Зашифровать записи в базе",
-    "encryptFieldsHint": "Перед изменением рядом с базой сохраняется её копия (meeting_minutes.before-encryption.sqlite) — один раз, она не перезаписывается. Сама перекодировка идёт одной транзакцией: либо проходит целиком, либо база остаётся прежней.",
-    "noticeFieldsEncrypted": "Записи в базе зашифрованы."
+    "encryptFieldsHint": "Перед изменением рядом с базой сохраняется её копия (meeting_minutes.before-encryption.sqlite) — незашифрованная, удалите её после проверки. Сама перекодировка идёт одной транзакцией: либо проходит целиком, либо база остаётся прежней.",
+    "noticeFieldsEncrypted": "Записи в базе зашифрованы.",
+    "plaintextBackupWarning": "Рядом с базой лежит её незашифрованная копия, сделанная перед первым шифрованием (meeting_minutes.before-encryption.sqlite). Это весь архив в открытом виде. Удалите её, как только убедитесь, что встречи, транскрипты и саммари открываются.",
+    "plaintextBackupDelete": "Удалить незашифрованную копию",
+    "plaintextBackupConfirm": "Удалить копию безвозвратно?",
+    "plaintextBackupDeleteYes": "Да, удалить",
+    "plaintextBackupKeep": "Оставить",
+    "noticePlaintextBackupDeleted": "Незашифрованная копия базы удалена."
   }
 }

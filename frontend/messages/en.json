@@ -1414,7 +1414,13 @@
     "fieldsAllSealed": "Everything is encrypted: {count, plural, one {# value} other {# values}}.",
     "fieldsPartly": "Encrypted: {sealed}. Not yet encrypted: {plaintext}.",
     "encryptFields": "Encrypt the entries in the database",
-    "encryptFieldsHint": "A copy of the database is saved next to it first (meeting_minutes.before-encryption.sqlite) — once, and never overwritten. The conversion itself is a single transaction: it either finishes or the database is left exactly as it was.",
-    "noticeFieldsEncrypted": "The entries in the database are encrypted."
+    "encryptFieldsHint": "A copy of the database is saved next to it first (meeting_minutes.before-encryption.sqlite) — unencrypted; delete it once you have checked the result. The conversion itself is a single transaction: it either finishes or the database is left exactly as it was.",
+    "noticeFieldsEncrypted": "The entries in the database are encrypted.",
+    "plaintextBackupWarning": "An unencrypted copy of the database, taken before the first encryption, sits next to it (meeting_minutes.before-encryption.sqlite). It is the whole archive in the clear. Delete it as soon as you have checked that meetings, transcripts and summaries open.",
+    "plaintextBackupDelete": "Delete the unencrypted copy",
+    "plaintextBackupConfirm": "Delete the copy for good?",
+    "plaintextBackupDeleteYes": "Yes, delete",
+    "plaintextBackupKeep": "Keep it",
+    "noticePlaintextBackupDeleted": "The unencrypted copy of the database was deleted."
   }
 }
