@@ -133,11 +133,13 @@ pub struct ParakeetEngine {
 
 impl ParakeetEngine {
     fn download_base_urls(model_name: &str) -> Vec<&'static str> {
+        // Hugging Face at a pinned commit; either source is checked against
+        // the same SHA-256 once the files are down.
         if model_name.contains("-v2-") {
-            vec!["https://huggingface.co/istupakov/parakeet-tdt-0.6b-v2-onnx/resolve/main"]
+            vec![crate::model_integrity::PARAKEET_V2_BASE]
         } else {
             vec![
-                "https://huggingface.co/istupakov/parakeet-tdt-0.6b-v3-onnx/resolve/main",
+                crate::model_integrity::PARAKEET_V3_BASE,
                 "https://github.com/TylerBuza/Meetily-ActuallyFree/releases/download/parakeet-tdt-0.6b-v3-onnx",
             ]
         }
@@ -172,6 +174,15 @@ impl ParakeetEngine {
             ]
             .into_iter()
             .collect(),
+        }
+    }
+
+    /// The pinned contents of a model's files.
+    fn pinned_files(model_name: &str) -> &'static [crate::model_integrity::Pinned] {
+        if model_name.contains("-v2-") {
+            crate::model_integrity::PARAKEET_V2
+        } else {
+            crate::model_integrity::PARAKEET_V3
         }
     }
 
@@ -972,6 +983,23 @@ impl ParakeetEngine {
             .await
             .map_err(|error| anyhow!("Downloaded Parakeet model failed validation: {}", error))?;
 
+        // Sizes say the files are complete; the hashes say they are the
+        // files. A resumed download only streamed its tail, so each file is
+        // read once here rather than hashed on the way in.
+        for filename in &files_to_download {
+            let pinned = crate::model_integrity::find(Self::pinned_files(model_name), filename)
+                .ok_or_else(|| anyhow!("{} has no pinned checksum", filename))?;
+            if let Err(error) =
+                crate::model_integrity::verify_file(pinned, &model_dir.join(filename)).await
+            {
+                let mut models = self.available_models.write().await;
+                if let Some(model) = models.get_mut(model_name) {
+                    model.status = ModelStatus::Error(error.to_string());
+                }
+                return Err(error);
+            }
+        }
+
         // Report 100% only after every file passes exact validation.
         let total_elapsed = download_start_time.elapsed().as_secs_f64();
         let final_speed = if total_elapsed > 0.0 {
@@ -1035,7 +1063,7 @@ mod tests {
         assert_eq!(
             ParakeetEngine::download_base_urls("parakeet-tdt-0.6b-v3-int8"),
             vec![
-                "https://huggingface.co/istupakov/parakeet-tdt-0.6b-v3-onnx/resolve/main",
+                crate::model_integrity::PARAKEET_V3_BASE,
                 "https://github.com/TylerBuza/Meetily-ActuallyFree/releases/download/parakeet-tdt-0.6b-v3-onnx",
             ]
         );

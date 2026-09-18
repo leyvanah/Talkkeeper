@@ -1073,28 +1073,18 @@ impl WhisperEngine {
             *cancel_flag = None;
         }
 
-        // Official ggerganov/whisper.cpp model URLs from Hugging Face
-        let model_url = match model_name {
-            // Standard f16 models
-            "tiny" => "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-tiny.bin",
-            "base" => "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.bin",
-            "small" => "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-small.bin",
-            "medium" => "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-medium.bin",
-            "large-v3-turbo" => "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-large-v3-turbo.bin",
-            "large-v3" => "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-large-v3.bin",
-
-            // Q5_1 quantized models
-            "tiny-q5_1" => "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-tiny-q5_1.bin",
-            "base-q5_1" => "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base-q5_1.bin",
-            "small-q5_1" => "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-small-q5_1.bin",
-
-            // Q5_0 quantized models
-            "medium-q5_0" => "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-medium-q5_0.bin",
-            "large-v3-turbo-q5_0" => "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-large-v3-turbo-q5_0.bin",
-            "large-v3-q5_0" => "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-large-v3-q5_0.bin",
-
-            _ => return Err(anyhow!("Unsupported model: {}", model_name))
+        // A pinned commit of ggerganov/whisper.cpp on Hugging Face, and the
+        // SHA-256 of each file there: see `crate::model_integrity`.
+        let pinned = crate::model_integrity::find(
+            crate::model_integrity::WHISPER,
+            &format!("ggml-{}.bin", model_name),
+        );
+        let Some(pinned) = pinned else {
+            let mut active = self.active_downloads.write().await;
+            active.remove(model_name);
+            return Err(anyhow!("Unsupported model: {}", model_name));
         };
+        let model_url = format!("{}/{}", crate::model_integrity::WHISPER_BASE, pinned.file);
         
         log::info!("Model URL for {}: {}", model_name, model_url);
         
@@ -1122,7 +1112,7 @@ impl WhisperEngine {
         let client = Client::new();
         
         log::info!("Sending GET request to: {}", model_url);
-        let response = client.get(model_url).send().await
+        let response = client.get(&model_url).send().await
             .map_err(|e| anyhow!("Failed to start download: {}", e))?;
         
         log::info!("Received response with status: {}", response.status());
@@ -1152,6 +1142,7 @@ impl WhisperEngine {
         use futures_util::StreamExt;
         let mut stream = response.bytes_stream();
         let mut downloaded = 0u64;
+        let mut integrity = crate::model_integrity::Check::new();
         let mut last_progress_report = 0u8;
         let mut last_report_time = std::time::Instant::now();
 
@@ -1178,6 +1169,7 @@ impl WhisperEngine {
 
             file.write_all(&chunk).await
                 .map_err(|e| anyhow!("Failed to write chunk to file: {}", e))?;
+            integrity.update(&chunk);
 
             downloaded += chunk.len() as u64;
 
@@ -1230,7 +1222,21 @@ impl WhisperEngine {
         
         file.flush().await
             .map_err(|e| anyhow!("Failed to flush file: {}", e))?;
-        
+        drop(file);
+
+        if let Err(error) = integrity.finish(pinned, &file_path) {
+            log::error!("{error}");
+            {
+                let mut models = self.available_models.write().await;
+                if let Some(model_info) = models.get_mut(model_name) {
+                    model_info.status = ModelStatus::Error(error.to_string());
+                }
+            }
+            let mut active = self.active_downloads.write().await;
+            active.remove(model_name);
+            return Err(error);
+        }
+
         log::info!("Download completed for model: {}", model_name);
         
         // Update model status to available

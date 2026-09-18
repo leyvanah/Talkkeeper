@@ -52,6 +52,7 @@ pub mod live_assistant;
 pub mod logging;
 pub mod meeting_detection;
 pub mod minibar;
+pub mod model_integrity;
 pub mod gigaam_engine;
 pub mod parakeet_engine;
 pub mod paths;
