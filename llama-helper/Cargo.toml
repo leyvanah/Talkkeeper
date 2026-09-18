@@ -20,7 +20,3 @@ metal = ["llama-cpp-2/metal"]
 cuda = ["llama-cpp-2/cuda"]
 vulkan = ["llama-cpp-2/vulkan", "dep:llama-cpp-sys-2"]
 
-[profile.release]
-codegen-units = 1
-lto = true
-opt-level = "s"  # Optimize for size for faster loading
