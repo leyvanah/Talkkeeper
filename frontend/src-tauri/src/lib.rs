@@ -757,6 +757,8 @@ pub fn run() {
             audio::recording_commands::set_system_audio_muted,
             audio::recording_commands::get_recording_state,
             audio::recording_commands::get_meeting_folder_path,
+            audio::transcript_journal::list_unsaved_recordings,
+            audio::transcript_journal::discard_unsaved_transcript,
             // Reload sync commands (retrieve transcript history and meeting name)
             audio::recording_commands::get_transcript_history,
             audio::recording_commands::get_recording_meeting_name,

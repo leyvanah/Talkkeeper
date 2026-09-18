@@ -60,7 +60,6 @@ export function useRecordingStop(
     flushBuffer,
     clearTranscripts,
     meetingTitle,
-    markMeetingAsSaved,
   } = useTranscripts();
 
   const {
@@ -317,9 +316,6 @@ export function useRecordingStop(
           }
           clearPendingRecordingClient();
 
-          // Mark meeting as saved in IndexedDB (for recovery system)
-          await markMeetingAsSaved();
-
           const labeled = freshTranscripts.filter((t) => !!t.speaker?.trim()).length;
           const labelRatio =
             freshTranscripts.length > 0 ? labeled / freshTranscripts.length : 0;
@@ -329,8 +325,6 @@ export function useRecordingStop(
           // Clean up session storage
           sessionStorage.removeItem('last_recording_folder_path');
           sessionStorage.removeItem('last_recording_meeting_name');
-          // Clean up IndexedDB meeting ID (redundant with markMeetingAsSaved cleanup, but ensures cleanup)
-          sessionStorage.removeItem('indexeddb_current_meeting_id');
 
           // Refetch meetings and set current meeting
           await refetchMeetings();
@@ -445,7 +439,6 @@ export function useRecordingStop(
     flushBuffer,
     clearTranscripts,
     meetingTitle,
-    markMeetingAsSaved,
     refetchMeetings,
     setCurrentMeeting,
     setMeetings,

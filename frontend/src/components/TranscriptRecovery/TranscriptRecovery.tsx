@@ -19,7 +19,7 @@ import {
 import { Button } from '@/components/ui/button';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Alert, AlertDescription } from '@/components/ui/alert';
-import { MeetingMetadata, StoredTranscript } from '@/services/indexedDBService';
+import type { MeetingMetadata, StoredTranscript } from '@/lib/unsaved-recordings';
 import { cn } from '@/lib/utils';
 import { useTranslations } from 'next-intl';
 
