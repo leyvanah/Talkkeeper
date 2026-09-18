@@ -422,21 +422,44 @@ impl AudioStream {
         })
     }
 
-    /// Build stream based on sample format
+    /// Build stream based on sample format.
+    ///
+    /// The cpal callback runs on the audio driver's real-time thread. It only
+    /// asks whether the block is wanted (atomic reads), copies it and hands it
+    /// to a thread of its own, which does the resampling, the microphone DSP
+    /// and the hand-off to the pipeline — work that takes locks and allocates,
+    /// and that on a busy CPU could make the driver drop audio if it ran in
+    /// the callback. The thread ends when the stream is dropped and the
+    /// callbacks, which own the sending side, go with it.
     fn build_stream(
         device: &Device,
         config: &SupportedStreamConfig,
         capture: AudioCapture,
     ) -> Result<Stream> {
         let config_copy = config.clone();
+        let (sender, receiver) = crossbeam::channel::unbounded::<(Vec<f32>, bool)>();
+
+        let processor = capture.clone();
+        std::thread::Builder::new()
+            .name("audio-capture-dsp".to_string())
+            .spawn(move || {
+                for (block, muted) in receiver {
+                    processor.process_block(&block, muted);
+                }
+            })
+            .map_err(|e| anyhow::anyhow!("Failed to start the capture processing thread: {}", e))?;
 
         let stream = match config.sample_format() {
             cpal::SampleFormat::F32 => {
                 let capture_clone = capture.clone();
+                let admit = capture.clone();
+                let blocks = sender.clone();
                 device.build_input_stream(
                     &config_copy.into(),
                     move |data: &[f32], _: &cpal::InputCallbackInfo| {
-                        capture.process_audio_data(data);
+                        if let Some(muted) = admit.admit() {
+                            let _ = blocks.send((data.to_vec(), muted));
+                        }
                     },
                     move |err| {
                         capture_clone.handle_stream_error(err);
@@ -446,13 +469,18 @@ impl AudioStream {
             }
             cpal::SampleFormat::I16 => {
                 let capture_clone = capture.clone();
+                let admit = capture.clone();
+                let blocks = sender.clone();
                 device.build_input_stream(
                     &config_copy.into(),
                     move |data: &[i16], _: &cpal::InputCallbackInfo| {
-                        let f32_data: Vec<f32> = data.iter()
-                            .map(|&sample| sample as f32 / i16::MAX as f32)
-                            .collect();
-                        capture.process_audio_data(&f32_data);
+                        if let Some(muted) = admit.admit() {
+                            let block: Vec<f32> = data
+                                .iter()
+                                .map(|&sample| sample as f32 / i16::MAX as f32)
+                                .collect();
+                            let _ = blocks.send((block, muted));
+                        }
                     },
                     move |err| {
                         capture_clone.handle_stream_error(err);
@@ -462,13 +490,18 @@ impl AudioStream {
             }
             cpal::SampleFormat::I32 => {
                 let capture_clone = capture.clone();
+                let admit = capture.clone();
+                let blocks = sender.clone();
                 device.build_input_stream(
                     &config_copy.into(),
                     move |data: &[i32], _: &cpal::InputCallbackInfo| {
-                        let f32_data: Vec<f32> = data.iter()
-                            .map(|&sample| sample as f32 / i32::MAX as f32)
-                            .collect();
-                        capture.process_audio_data(&f32_data);
+                        if let Some(muted) = admit.admit() {
+                            let block: Vec<f32> = data
+                                .iter()
+                                .map(|&sample| sample as f32 / i32::MAX as f32)
+                                .collect();
+                            let _ = blocks.send((block, muted));
+                        }
                     },
                     move |err| {
                         capture_clone.handle_stream_error(err);
@@ -478,13 +511,18 @@ impl AudioStream {
             }
             cpal::SampleFormat::I8 => {
                 let capture_clone = capture.clone();
+                let admit = capture.clone();
+                let blocks = sender.clone();
                 device.build_input_stream(
                     &config_copy.into(),
                     move |data: &[i8], _: &cpal::InputCallbackInfo| {
-                        let f32_data: Vec<f32> = data.iter()
-                            .map(|&sample| sample as f32 / i8::MAX as f32)
-                            .collect();
-                        capture.process_audio_data(&f32_data);
+                        if let Some(muted) = admit.admit() {
+                            let block: Vec<f32> = data
+                                .iter()
+                                .map(|&sample| sample as f32 / i8::MAX as f32)
+                                .collect();
+                            let _ = blocks.send((block, muted));
+                        }
                     },
                     move |err| {
                         capture_clone.handle_stream_error(err);
@@ -496,6 +534,9 @@ impl AudioStream {
                 return Err(anyhow::anyhow!("Unsupported sample format: {:?}", config.sample_format()));
             }
         };
+        // Only the callbacks hold senders now, so the thread lives exactly as
+        // long as the stream.
+        drop(sender);
 
         Ok(stream)
     }

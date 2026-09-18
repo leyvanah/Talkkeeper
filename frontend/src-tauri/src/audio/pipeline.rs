@@ -863,20 +863,38 @@ impl AudioCapture {
         }
     }
 
-    /// Process audio data directly from callback
-    pub fn process_audio_data(&self, data: &[f32]) {
+    /// Whether a block arriving now belongs in the recording, and whether its
+    /// source was muted at that moment. `None` means drop it.
+    ///
+    /// Only atomic reads: this is what a real-time capture callback asks
+    /// before handing the block to [`Self::process_block`] on another thread.
+    pub fn admit(&self) -> Option<bool> {
         // Check if still recording
         if !self.state.is_recording() {
-            return;
+            return None;
         }
         // Pause stops the recording clock but not the capture streams, so
         // without this the room would keep being recorded while the owner
         // believes it is not, and the paused stretch would land in the file.
         if self.state.is_paused() {
-            return;
+            return None;
         }
+        Some(self.state.is_audio_source_muted(&self.device_type))
+    }
 
-        let source_muted_at_capture = self.state.is_audio_source_muted(&self.device_type);
+    /// Process a block where it arrives. For sources that already deliver on
+    /// a thread of their own; a real-time callback should use [`Self::admit`]
+    /// and hand the block over instead.
+    pub fn process_audio_data(&self, data: &[f32]) {
+        if let Some(muted) = self.admit() {
+            self.process_block(data, muted);
+        }
+    }
+
+    /// Everything after admission: down-mix, resample, the microphone's DSP,
+    /// and the hand-off to the pipeline. Takes locks and allocates, so it must
+    /// not run inside a real-time audio callback.
+    pub fn process_block(&self, data: &[f32], source_muted_at_capture: bool) {
 
         // Convert to mono if needed
         let mut mono_data = if self.channels > 1 {
@@ -2638,6 +2656,44 @@ mod ring_buffer_tests {
         capture.process_audio_data(&vec![0.5; 1_024]);
         let chunk = receiver.try_recv().expect("resumed capture should be kept");
         assert_eq!(chunk.data.len(), 1_024);
+    }
+
+    /// What a real-time callback decides with atomics alone, before the block
+    /// goes to the processing thread: the mute seen at capture travels with
+    /// it, so a mute that lands while the block is queued cannot unmute it.
+    #[test]
+    fn admission_is_decided_at_capture_and_the_mute_travels_with_the_block() {
+        let state = RecordingState::new();
+        let (sender, mut receiver) = mpsc::unbounded_channel();
+        state.set_audio_sender(sender);
+        let device = Arc::new(AudioDevice::new(
+            "Test microphone".to_string(),
+            AudioDeviceType::Input,
+        ));
+        let capture = AudioCapture::new(
+            device,
+            Arc::clone(&state),
+            48_000,
+            1,
+            DeviceType::Microphone,
+            None,
+        );
+
+        assert_eq!(capture.admit(), None, "nothing is admitted before recording");
+        state.start_recording().unwrap();
+        assert_eq!(capture.admit(), Some(false));
+        state.set_microphone_muted(true);
+        let muted = capture.admit();
+        assert_eq!(muted, Some(true));
+        state.pause_recording().unwrap();
+        assert_eq!(capture.admit(), None, "nothing is admitted while paused");
+        state.resume_recording().unwrap();
+
+        // Unmuted by the time the queued block is processed: still silence.
+        state.set_microphone_muted(false);
+        capture.process_block(&vec![0.5; 1_024], muted.unwrap());
+        let chunk = receiver.try_recv().expect("the block should reach the pipeline");
+        assert!(chunk.data.iter().all(|sample| *sample == 0.0));
     }
 
     #[test]
