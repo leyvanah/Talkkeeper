@@ -74,6 +74,13 @@ static TRANSCRIPTION_TASK: Mutex<Option<JoinHandle<()>>> = Mutex::new(None);
 // Listener ID for proper cleanup - prevents microphone from staying active after recording stops
 static TRANSCRIPT_LISTENER_ID: Mutex<Option<tauri::EventId>> = Mutex::new(None);
 
+/// Locks one of the recording globals even if a panic poisoned it. What they
+/// hold is plain state that stays usable; unwrapping the poison instead turned
+/// one panic into a failure of every recording command after it.
+fn lock_or_recover<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    mutex.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
 /// Create the live audio-level channel and spawn a task that forwards each
 /// per-source level sample (mic + system) to the frontend as a
 /// `recording-audio-levels` event. The returned sender is handed to the audio
@@ -376,7 +383,7 @@ pub async fn start_recording_with_meeting_name<R: Runtime>(
 
     // Store the manager globally to keep it alive
     {
-        let mut global_manager = RECORDING_MANAGER.lock().unwrap();
+        let mut global_manager = lock_or_recover(&RECORDING_MANAGER);
         *global_manager = Some(manager);
     }
 
@@ -395,7 +402,7 @@ pub async fn start_recording_with_meeting_name<R: Runtime>(
     // Start optimized parallel transcription task and store handle
     let task_handle = transcription::start_transcription_task(app.clone(), transcription_receiver);
     {
-        let mut global_task = TRANSCRIPTION_TASK.lock().unwrap();
+        let mut global_task = lock_or_recover(&TRANSCRIPTION_TASK);
         *global_task = Some(task_handle);
     }
 
@@ -404,9 +411,7 @@ pub async fn start_recording_with_meeting_name<R: Runtime>(
     // Store listener ID for cleanup during stop_recording to ensure microphone is released
     {
         use tauri::Listener;
-        let transcript_segments = RECORDING_MANAGER
-            .lock()
-            .unwrap()
+        let transcript_segments = lock_or_recover(&RECORDING_MANAGER)
             .as_ref()
             .expect("recording manager missing after start")
             .transcript_segments_handle();
@@ -432,23 +437,17 @@ pub async fn start_recording_with_meeting_name<R: Runtime>(
                     },
                 };
 
-                // Save to recording manager
-                let mut saved_through_manager = false;
-                if let Ok(manager_guard) = RECORDING_MANAGER.lock() {
-                    if let Some(manager) = manager_guard.as_ref() {
-                        manager.add_transcript_segment(segment.clone());
-                        saved_through_manager = true;
-                    }
-                }
-                if !saved_through_manager {
-                    crate::audio::recording_saver::RecordingSaver::upsert_transcript_segment(
-                        &transcript_segments,
-                        segment,
-                    );
-                }
+                // Straight into this recording's own list — the same one the
+                // manager holds. Going through RECORDING_MANAGER meant waiting
+                // on its lock, which a device reconnect holds for seconds, on
+                // the thread that delivers every event.
+                crate::audio::recording_saver::RecordingSaver::upsert_transcript_segment(
+                    &transcript_segments,
+                    segment,
+                );
             }
         });
-        let mut global_listener = TRANSCRIPT_LISTENER_ID.lock().unwrap();
+        let mut global_listener = lock_or_recover(&TRANSCRIPT_LISTENER_ID);
         *global_listener = Some(listener_id);
         info!("✅ Transcript-update event listener registered for history persistence");
     }
@@ -622,7 +621,7 @@ pub async fn start_recording_with_devices_and_meeting<R: Runtime>(
 
     // Store the manager globally to keep it alive
     {
-        let mut global_manager = RECORDING_MANAGER.lock().unwrap();
+        let mut global_manager = lock_or_recover(&RECORDING_MANAGER);
         *global_manager = Some(manager);
     }
 
@@ -641,7 +640,7 @@ pub async fn start_recording_with_devices_and_meeting<R: Runtime>(
     // Start optimized parallel transcription task and store handle
     let task_handle = transcription::start_transcription_task(app.clone(), transcription_receiver);
     {
-        let mut global_task = TRANSCRIPTION_TASK.lock().unwrap();
+        let mut global_task = lock_or_recover(&TRANSCRIPTION_TASK);
         *global_task = Some(task_handle);
     }
 
@@ -650,9 +649,7 @@ pub async fn start_recording_with_devices_and_meeting<R: Runtime>(
     // Store listener ID for cleanup during stop_recording to ensure microphone is released
     {
         use tauri::Listener;
-        let transcript_segments = RECORDING_MANAGER
-            .lock()
-            .unwrap()
+        let transcript_segments = lock_or_recover(&RECORDING_MANAGER)
             .as_ref()
             .expect("recording manager missing after start")
             .transcript_segments_handle();
@@ -676,23 +673,17 @@ pub async fn start_recording_with_devices_and_meeting<R: Runtime>(
                     },
                 };
 
-                // Save to recording manager
-                let mut saved_through_manager = false;
-                if let Ok(manager_guard) = RECORDING_MANAGER.lock() {
-                    if let Some(manager) = manager_guard.as_ref() {
-                        manager.add_transcript_segment(segment.clone());
-                        saved_through_manager = true;
-                    }
-                }
-                if !saved_through_manager {
-                    crate::audio::recording_saver::RecordingSaver::upsert_transcript_segment(
-                        &transcript_segments,
-                        segment,
-                    );
-                }
+                // Straight into this recording's own list — the same one the
+                // manager holds. Going through RECORDING_MANAGER meant waiting
+                // on its lock, which a device reconnect holds for seconds, on
+                // the thread that delivers every event.
+                crate::audio::recording_saver::RecordingSaver::upsert_transcript_segment(
+                    &transcript_segments,
+                    segment,
+                );
             }
         });
-        let mut global_listener = TRANSCRIPT_LISTENER_ID.lock().unwrap();
+        let mut global_listener = lock_or_recover(&TRANSCRIPT_LISTENER_ID);
         *global_listener = Some(listener_id);
         info!("✅ Transcript-update event listener registered for history persistence");
     }
@@ -780,7 +771,7 @@ async fn stop_recording_inner<R: Runtime>(
 
     // Step 1: Stop audio capture immediately (no more new chunks) with proper error handling
     let manager_for_cleanup = {
-        let mut global_manager = RECORDING_MANAGER.lock().unwrap();
+        let mut global_manager = lock_or_recover(&RECORDING_MANAGER);
         global_manager.take()
     };
 
@@ -823,7 +814,7 @@ async fn stop_recording_inner<R: Runtime>(
 
     // Wait for transcription task with enhanced progress monitoring (NO TIMEOUT - we must process all chunks)
     let transcription_task = {
-        let mut global_task = TRANSCRIPTION_TASK.lock().unwrap();
+        let mut global_task = lock_or_recover(&TRANSCRIPTION_TASK);
         global_task.take()
     };
 
@@ -881,7 +872,7 @@ async fn stop_recording_inner<R: Runtime>(
     // Keep persistence active until final queued transcript events have been handled.
     {
         use tauri::Listener;
-        if let Some(listener_id) = TRANSCRIPT_LISTENER_ID.lock().unwrap().take() {
+        if let Some(listener_id) = lock_or_recover(&TRANSCRIPT_LISTENER_ID).take() {
             app.unlisten(listener_id);
             info!("âœ… Transcript-update listener removed");
         }
@@ -1246,7 +1237,7 @@ pub async fn pause_recording<R: Runtime>(app: AppHandle<R>) -> Result<(), String
     }
 
     // Access the recording manager and pause it
-    let manager_guard = RECORDING_MANAGER.lock().unwrap();
+    let manager_guard = lock_or_recover(&RECORDING_MANAGER);
     if let Some(manager) = manager_guard.as_ref() {
         manager.pause_recording().map_err(|e| e.to_string())?;
 
@@ -1280,7 +1271,7 @@ pub async fn resume_recording<R: Runtime>(app: AppHandle<R>) -> Result<(), Strin
     }
 
     // Access the recording manager and resume it
-    let manager_guard = RECORDING_MANAGER.lock().unwrap();
+    let manager_guard = lock_or_recover(&RECORDING_MANAGER);
     if let Some(manager) = manager_guard.as_ref() {
         manager.resume_recording().map_err(|e| e.to_string())?;
 
@@ -1306,7 +1297,7 @@ pub async fn resume_recording<R: Runtime>(app: AppHandle<R>) -> Result<(), Strin
 /// Check if recording is currently paused
 #[tauri::command]
 pub async fn is_recording_paused() -> bool {
-    let manager_guard = RECORDING_MANAGER.lock().unwrap();
+    let manager_guard = lock_or_recover(&RECORDING_MANAGER);
     if let Some(manager) = manager_guard.as_ref() {
         manager.is_paused()
     } else {
@@ -1324,7 +1315,7 @@ pub async fn set_microphone_muted<R: Runtime>(
         return Err("No recording is currently active".to_string());
     }
 
-    let manager_guard = RECORDING_MANAGER.lock().unwrap();
+    let manager_guard = lock_or_recover(&RECORDING_MANAGER);
     let manager = manager_guard
         .as_ref()
         .ok_or_else(|| "No recording manager found".to_string())?;
@@ -1352,7 +1343,7 @@ pub async fn set_system_audio_muted<R: Runtime>(
         return Err("No recording is currently active".to_string());
     }
 
-    let manager_guard = RECORDING_MANAGER.lock().unwrap();
+    let manager_guard = lock_or_recover(&RECORDING_MANAGER);
     let manager = manager_guard
         .as_ref()
         .ok_or_else(|| "No recording manager found".to_string())?;
@@ -1374,7 +1365,7 @@ pub async fn set_system_audio_muted<R: Runtime>(
 #[tauri::command]
 pub async fn get_recording_state() -> serde_json::Value {
     let is_recording = IS_RECORDING.load(Ordering::SeqCst);
-    let manager_guard = RECORDING_MANAGER.lock().unwrap();
+    let manager_guard = lock_or_recover(&RECORDING_MANAGER);
 
     if let Some(manager) = manager_guard.as_ref() {
         serde_json::json!({
@@ -1407,7 +1398,7 @@ pub async fn get_recording_state() -> serde_json::Value {
 /// Returns the path if a meeting name was set and folder structure initialized
 #[tauri::command]
 pub async fn get_meeting_folder_path() -> Result<Option<String>, String> {
-    let manager_guard = RECORDING_MANAGER.lock().unwrap();
+    let manager_guard = lock_or_recover(&RECORDING_MANAGER);
     if let Some(manager) = manager_guard.as_ref() {
         Ok(manager.get_meeting_folder().map(|p| p.to_string_lossy().to_string()))
     } else {
@@ -1419,7 +1410,7 @@ pub async fn get_meeting_folder_path() -> Result<Option<String>, String> {
 /// Used for syncing frontend state after page reload during active recording
 #[tauri::command]
 pub async fn get_transcript_history() -> Result<Vec<crate::audio::recording_saver::TranscriptSegment>, String> {
-    let manager_guard = RECORDING_MANAGER.lock().unwrap();
+    let manager_guard = lock_or_recover(&RECORDING_MANAGER);
 
     if let Some(manager) = manager_guard.as_ref() {
         Ok(manager.get_transcript_segments())
@@ -1432,7 +1423,7 @@ pub async fn get_transcript_history() -> Result<Vec<crate::audio::recording_save
 /// Used for syncing frontend state after page reload during active recording
 #[tauri::command]
 pub async fn get_recording_meeting_name() -> Result<Option<String>, String> {
-    let manager_guard = RECORDING_MANAGER.lock().unwrap();
+    let manager_guard = lock_or_recover(&RECORDING_MANAGER);
 
     if let Some(manager) = manager_guard.as_ref() {
         Ok(manager.get_meeting_name())
@@ -1498,7 +1489,7 @@ pub struct DisconnectedDeviceInfo {
 /// Should be called periodically (every 1-2 seconds) by frontend during recording
 #[tauri::command]
 pub async fn poll_audio_device_events() -> Result<Option<DeviceEventResponse>, String> {
-    let mut manager_guard = RECORDING_MANAGER.lock().unwrap();
+    let mut manager_guard = lock_or_recover(&RECORDING_MANAGER);
 
     if let Some(manager) = manager_guard.as_mut() {
         if let Some(event) = manager.poll_device_events() {
@@ -1517,7 +1508,7 @@ pub async fn poll_audio_device_events() -> Result<Option<DeviceEventResponse>, S
 /// Returns whether the system is attempting to reconnect and which device
 #[tauri::command]
 pub async fn get_reconnection_status() -> Result<ReconnectionStatus, String> {
-    let manager_guard = RECORDING_MANAGER.lock().unwrap();
+    let manager_guard = lock_or_recover(&RECORDING_MANAGER);
 
     if let Some(manager) = manager_guard.as_ref() {
         let state = manager.get_state();
@@ -1566,7 +1557,7 @@ pub async fn attempt_device_reconnect(
 
     // Check if recording is active
     {
-        let manager_guard = RECORDING_MANAGER.lock().unwrap();
+        let manager_guard = lock_or_recover(&RECORDING_MANAGER);
         if manager_guard.is_none() {
             return Err("Recording not active".to_string());
         }
@@ -1575,7 +1566,7 @@ pub async fn attempt_device_reconnect(
     // Spawn blocking task to handle the async reconnection
     let result = tokio::task::spawn_blocking(move || {
         tokio::runtime::Handle::current().block_on(async {
-            let mut manager_guard = RECORDING_MANAGER.lock().unwrap();
+            let mut manager_guard = lock_or_recover(&RECORDING_MANAGER);
             if let Some(manager) = manager_guard.as_mut() {
                 manager.attempt_device_reconnect(&device_name, monitor_type).await
             } else {
