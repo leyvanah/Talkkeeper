@@ -1,255 +1,195 @@
 # Talkkeeper
 
 <p align="center">
-  <img src="frontend/src-tauri/icon-source.png" alt="Talkkeeper logo" width="240" />
+  <img src="frontend/src-tauri/icon-source.png" alt="Talkkeeper logo" width="200" />
 </p>
 
-Talkkeeper is a fork of [Meetily - Actually Free](https://github.com/TylerBuza/Meetily-ActuallyFree), itself an entirely free, fully unlocked fork of [Meetily](https://github.com/Zackriya-Solutions/meetily). Every feature is available without an account, subscription, license key, trial, or paid tier.
+<p align="center"><b>Private recording, transcription and notes for conversations that must never leave your computer.</b></p>
 
-[Download for Windows](https://github.com/TylerBuza/Meetily-ActuallyFree/releases/latest) · [Download for macOS Apple Silicon](https://github.com/TylerBuza/Meetily-ActuallyFree/releases/tag/v0.2.5-macos)
+> **Коротко по-русски.** Talkkeeper записывает разговор, расшифровывает его и
+> помогает с заметками — целиком на вашем компьютере. Записи и текст зашифрованы
+> на диске, телеметрии нет, облако подключается только если вы сами этого
+> захотите. Интерфейс по умолчанию русский; распознавание русской речи — GigaAM.
+> Сборка для Windows 10/11.
 
-This fork also goes beyond removing feature restrictions. It adds speaker identity, separate mic and system audio, automatic meeting detection, people profiles, richer exports, a redesigned interface, dedicated Windows and Apple Silicon installers, and numerous recording and reliability improvements.
+Talkkeeper is developed by [leyvanah](https://github.com/leyvanah). It started
+life as a fork of an open-source meeting recorder and has since been reshaped
+around one idea: **the recording of a conversation is the most private thing on
+the machine, and the software should behave accordingly.**
 
-## Interface
+## Philosophy
 
-<p align="center">
-  <img src="docs/images/meetily-interface.png" alt="Meetily live recording interface with speaker-labelled transcription" width="1100" />
-</p>
+- **Local by default, local by design.** Recording, speech recognition,
+  speaker separation and summaries all run on your own computer. A cloud model is
+  something you connect deliberately, with your own key — never a fallback.
+- **Encrypted at rest.** With a password set, every recording and every line of
+  text in the database is sealed. A copied disk, a stray backup or a synced folder
+  gives nobody the conversation.
+- **No telemetry, no silent network.** Analytics are switched off in the code,
+  update checks are off unless you turn them on, and nothing is sent anywhere
+  without you asking for it.
+- **The person has the last word.** A transcript you corrected by hand stays
+  corrected: recognising the recording again fills in around your edits instead
+  of overwriting them.
+- **Nothing is lost quietly.** Deleting app data warns you in plain words before
+  it can make recordings unreadable, and the key can be exported whenever you
+  want a copy.
+- **Open source.** MIT licensed; read it, build it, change it.
 
-<p align="center"><sub>Live speaker-labelled transcription with synchronized source controls, shown with sanitized demo meetings.</sub></p>
+## What it does
 
-## Latest Release
+**Recording**
+- Microphone and system audio are captured as separate tracks on a common clock,
+  so two people talking at once are both kept.
+- Echo handling for calls without headphones: Windows' own echo cancellation, and
+  a detector that tells your voice apart from the other side's coming out of the
+  speakers.
+- Encoded while recording, so stopping is instant; a working 16 kHz track is kept
+  for fast re-recognition.
+- A floating mini bar, and optional detection of meeting apps.
 
-Meetily `v0.2.12` preserves user-renamed meetings during summary generation,
-restores summary template and model controls, synchronizes meeting titles, and
-anchors meeting and transcript times to the actual recording start.
-[Read the v0.2.12 changelog](CHANGELOG.md).
+**Transcription**
+- Local engines: Whisper, **GigaAM** (strong on Russian) and Parakeet.
+- Word-level timings: the word being heard is highlighted during playback.
+- Speaker separation on the recorded tracks, with renaming.
+- **Two views:** a chat-style transcript, and a table on a time ruler where the
+  two sides of the conversation run in parallel columns and overlaps are visible
+  at a glance.
+- Correct or remove any line in place; re-recognition keeps your corrections.
 
-## Feature Comparison
+**Notes and summaries**
+- Summaries with local models (a bundled llama.cpp helper using Vulkan on the GPU,
+  or the CPU), Ollama, or any OpenAI-compatible endpoint you choose.
+- Custom templates, exports to PDF, DOCX, Markdown, text and JSON.
 
-Compared with Meetily Community `v0.4.0` and the PRO advantages advertised on its project page (verified August 2026).
-
-**Legend:** ✅ Included · ❌ Not included
-
-| Feature | Meetily Community | Meetily PRO (Paywalled) | Meetily - Actually Free |
-| --- | :---: | :---: | :---: |
-| Live recording and local transcription | ✅ | ✅ | ✅ |
-| Local and BYOK cloud summaries | ✅ | ✅ | ✅ |
-| Create custom summary templates | ❌ | ✅ | ✅ |
-| Automatic meeting joining | ❌ | ✅ | ❌ |
-| Advanced PDF and DOCX exports | ❌ | ✅ | ✅ |
-| Separate mic and system recordings | ❌ | ❌ | ✅ |
-| Calendar integration | ❌ | ✅ | ❌ |
-| Speaker identification | ❌ | ✅ | ✅ |
-| Live mic and system audio visualizations | ❌ | ❌ | ✅ |
-| Independent mic and system mute controls | ❌ | ❌ | ✅ |
-| Automatic meeting detection | ❌ | ✅ | ✅ |
-| Floating recording controls | ❌ | ❌ | ✅ |
-| Compliance audit trails | ❌ | ✅ | ❌ |
-| Chat with meetings | ❌ | ✅ | ✅ |
-| Speaker profiles | ❌ | ❌ | ✅ |
-| Dark mode | ❌ | ❌ | ✅ |
-| Windows GPU acceleration | ❌ | ✅ | ✅ |
-| Automatic GPU setup | ❌ | ❌ | ✅ |
-| No analytics transmission or license checks | ❌ | ❌ | ✅ |
-
-## Highlights
-
-- **Speaker-aware transcripts:** mic speech stays `You`; remote voices become `Speaker N`; overlap can render as `You + Speaker 1`.
-- **Split audio pipeline:** microphone and system audio are VAD-processed and transcribed independently, while aligned source tracks are retained beside the mixed playback file.
-- **Live source visualization:** separate mic and system meters show pre-mix activity throughout recording.
-- **Floating recording bar:** shrink the main window into a compact minibar with a synchronized timer and pause, resume, stop, and restore controls.
-- **Automatic meeting detection:** watches locally for Zoom, Teams, Slack, Webex, and other meeting apps, then prompts you to start recording.
-- **Overhauled interface:** a cohesive dark-first theme across recording, transcripts, summaries, people, and settings, with light mode available.
-- **Universal Windows setup:** one installer selects NVIDIA CUDA, Vulkan, or CPU and packages required runtimes.
-- **Better post-call processing:** retranscribes retained mic/system tracks independently before diarization and summary.
-- **Meeting memory:** global search, reusable people profiles, speaker naming, and grounded person Q&A.
-- **Native exports:** PDF, DOCX, Markdown, text, JSON, or clipboard.
-- **Resilient local models:** resumable, validated downloads with Parakeet mirror fallback.
-- **Whisper vocabulary hints:** teach live and post-call transcription recurring names, acronyms, products, and meeting-specific terms.
-- **Private updates and no telemetry:** Windows update checks are opt-in, and analytics transmission is disabled on every platform.
+**Library and interface**
+- A library organised by client, with recordings filed under each.
+- Global search that works on the encrypted archive.
+- Russian and English interface, light, dark and AMOLED themes.
+- Resizable panels that collapse by dragging, a layout that is remembered, and a
+  window frame drawn by the app itself.
 
 ## Install
 
-### Windows
+Talkkeeper is built for **Windows 10/11 x64**. Builds of this fork will be
+published on this repository's [Releases](https://github.com/leyvanah/Talkkeeper/releases)
+page; until then, build from source (below).
 
-1. Download `Meetily-ActuallyFree-*-universal-setup.exe` from the [latest release](https://github.com/TylerBuza/Meetily-ActuallyFree/releases/latest).
-2. Run setup. It selects CUDA, Vulkan, or CPU automatically.
-3. Complete first-launch model setup.
+The installer is unsigned, so SmartScreen may show **Unknown publisher**.
+Updating over an existing installation keeps your data and your keys.
 
-Windows 10/11 x64 is supported. The installer is unsigned, so SmartScreen may
-show **Unknown publisher**.
+## Your data
 
-### macOS Apple Silicon
-
-1. Download `Meetily-Actually-Free_0.2.5_aarch64.dmg` from the [macOS release](https://github.com/TylerBuza/Meetily-ActuallyFree/releases/tag/v0.2.5-macos).
-2. Open the DMG and drag **Meetily - Actually Free** to Applications.
-3. Grant microphone and Audio Capture permissions when prompted.
-
-M1 and newer Macs running macOS 14.2 Sonoma or later are supported. The DMG is not Apple-notarized, so first launch may require Control-clicking the app and selecting **Open**. Both releases include SHA-256 checksums.
-
-The current macOS 0.2.5 artifact passed automated Apple Silicon packaging and
-launch checks, but physical macOS 14.2 capture qualification is still pending.
-Treat it as a preview and verify recordings before relying on it for critical
-meetings.
-
-## Local Data
-
-| Data | Location |
+| Data | Where |
 | --- | --- |
-| Database, templates, and models | Windows/Linux: install-local when writable; macOS: `~/Library/Application Support/Meetily` |
-| Recording/onboarding preference stores | macOS: `~/Library/Application Support/com.meetily.ai` |
-| Recordings | Windows: `Music/meetily-recordings`; macOS: `Movies/meetily-recordings`; configurable in Settings |
-| Playback and retained tracks | `audio.mp4`, `mic.mp4`, `system.mp4` |
+| Database, models, templates, keystore | the app's data folder beside the installation |
+| Recordings | `Music\meetily-recordings` by default; change it in **Settings → General** |
+| Recording folders | named by an opaque identifier, so a folder listing says nothing about who or what |
 
-Use **Settings → General → Data Storage Locations** or **Settings → Recording →
-Save Location** to choose another writable recordings folder.
-Talkkeeper validates the destination before saving it and keeps core app data in
-the platform-specific location above.
+## Password and keys
 
-## Password And Keys
-
-**Settings → Security** puts a password in front of the archive. What it does
-today, and what it does not, stated plainly:
+**Settings → Security** puts a password in front of the archive.
 
 - The password never becomes the key the data is encrypted with. It derives a
-  key-encryption key through **argon2id**, which wraps a separate random data
-  key. Changing the password rewraps 32 bytes; it does not rewrite the archive.
-- A **recovery code** can wrap that same data key in a second envelope. It is
+  key-encryption key through **argon2id** (19 MiB, 2 passes), which wraps a
+  separate random data key. Changing the password rewraps 32 bytes; it does not
+  rewrite the archive.
+- A **recovery code** wraps the same data key in a second envelope. It is
   offered by default and shown exactly once. Without it, a forgotten password
-  means the archive cannot be opened by anyone, including you.
+  means nobody can open the archive, including you.
 - **Locking wipes the key from memory** rather than covering the window. The
-  archive locks when idle — never during a recording, because the key is what a
-  recording writes with — and a recording cannot be started while locked.
+  archive locks when idle — never during a recording — and a recording cannot be
+  started while it is locked.
 - Guesses are throttled: three are free, then the wait doubles up to five
   minutes, and the count survives closing the app.
-- The keys live in `keystore.json` beside the database. It holds no secret in
-  the clear; copying it gains an attacker nothing but the right to guess.
+- The keys live in `keystore.json` in the app's data folder. It holds no secret
+  in the clear; copying it gains an attacker only the right to guess.
 
-### Quick unlock (Windows, optional, off by default)
+**Keeping the key.** **Settings → Security → Save a copy of the key** writes the
+keystore wherever you choose. Keep that copy *apart from the recordings*:
+together they allow offline guessing of the password, which is exactly why the
+app does not keep one beside them for you. When the uninstaller is asked to
+delete the app data, it asks separately — naming what will become unreadable —
+saves a copy of the key to `Documents\Talkkeeper-key-backup`, and refuses to wipe
+anything if that copy could not be written.
 
-**Settings → Security** can add a Windows Hello prompt as a faster way in. It is
-opt-in, needs the password to switch on, and one switch removes it again.
+### Quick unlock (Windows Hello, optional, off by default)
 
-It is deliberately not the stronger design. That would be `KeyCredentialManager`,
-a signing key held in the TPM that makes an unlock impossible without the
-enrolled face — it needs Windows Hello for Business, which a local Windows
-account does not have, and provisioning it means attaching the machine to a
-Microsoft account or a domain. For a local archive that is the wrong trade.
+A Windows Hello prompt can be added as a faster way in. It needs the password to
+switch on, and one switch removes it again.
 
-So quick unlock is a Hello prompt plus a key that **DPAPI** ties to this Windows
-account, and the difference matters:
+It is a Hello prompt plus a key that **DPAPI** ties to this Windows account —
+deliberately not a TPM-bound credential, which would require attaching the
+machine to a Microsoft account or a domain. The difference matters:
 
 - **The face check is enforced by the app, not by the encryption.** Code running
-  under this Windows account can read the DPAPI blob without ever showing the
-  prompt. In plain terms, whoever can log into this Windows account can open the
-  archive.
+  under this Windows account can read the DPAPI blob without the prompt.
 - A disk taken on its own is still useless, and so is the keystore on another
-  machine or under another account.
-- The password and recovery code are unaffected. If the Windows account changes,
-  quick unlock stops working and the password still opens the archive.
+  machine or account. A key backup never includes this envelope.
+- The password and recovery code are unaffected.
 
 ### Recordings on disk
 
-**The recording files are encrypted at rest.** Every track — the mixed one, the
-microphone, the system audio, and the two lossless working tracks — is sealed
-with AES-256-GCM under the archive's data key. Without the password none of them
-opens, in this app or any other.
+Every track is sealed with **AES-256-GCM** under the archive's data key, in fixed
+64 KiB frames, which keeps a recording seekable and lets one cut short by a crash
+play up to where it stopped. Each frame is bound to its place in its own file, so
+frames cannot be reordered or moved between recordings.
 
-They are sealed in fixed 64 KiB frames rather than as one blob, which is what
-keeps a recording seekable: the player asks for the part you dragged to and gets
-those frames, and a recording cut short by a crash still plays up to where it
-stopped. Each frame is bound to its own place in its own file, so frames cannot
-be reordered, and one lifted from another recording will not verify.
-
-- **Setting a password encrypts the recordings that already exist.** Removing
-  the password decrypts them first and deletes the key only once every one of
-  them opens without it — so turning protection off cannot strand a session
-  behind a key that no longer exists.
-- No file is rewritten in place. A converted file is verified against the
-  original's SHA-256 before it replaces it, and the original is deleted only
-  after that. An interrupted conversion is put right at the next start.
-- **Settings → Security** counts what is encrypted and what is not, because a
-  password being set and every file being converted are two different
-  statements — a restored backup can leave some in the clear — and offers to
+- Setting a password encrypts the recordings that already exist; removing it
+  decrypts them first and deletes the key only once every one opens without it.
+- No file is rewritten in place: a converted file is verified against the
+  original's SHA-256 before it replaces it.
+- **Settings → Security** counts what is encrypted and what is not, and offers to
   convert the rest.
-- An archive with no password writes plaintext: there is nothing to encrypt
-  with, and the settings screen says so.
 
-### What the database holds
+### The database
 
-**The text is encrypted too.** Meeting titles, every line of transcript, speaker
-names, generated summaries, and the names and notes of the people a recording is
-filed under are sealed with the same key, value by value, with a fresh nonce for
-each write — so the same word written twice does not look the same twice, and the
-file cannot be read for which meetings share a title.
+Meeting titles, every line of transcript, word timings, speaker names, summaries,
+and the names and notes of clients are sealed value by value with the same key,
+with a fresh nonce for each write. The file stays an ordinary SQLite database, so
+no patched SQLite is shipped.
 
-The database itself is still an ordinary SQLite file, which is a deliberate
-choice over encrypting the whole thing: the schema, the indexes, the foreign keys
-and every query that does not touch text are unchanged, and no patched copy of
-SQLite has to be shipped underneath.
+- Setting or removing the password converts the database in one transaction; a
+  copy is written beside it once, before the first conversion.
+- Search runs in the application, because SQL cannot read a sealed column.
+- The log files do not print titles, transcript text or names.
 
-- **Setting a password seals what is already there**, and removing it unseals
-  everything before the key is deleted. Both run as one transaction, so a failure
-  leaves the database exactly as it was.
-- A copy of the database is written beside it once, before the first conversion
-  (`meeting_minutes.before-encryption.sqlite`), and never overwritten.
-- **Searching happens in the application, not in SQL**, because `LIKE` cannot read
-  a sealed column. A side effect worth having: SQLite's `lower()` folds ASCII
-  only, so this is also the first version where a Russian word typed in a
-  different case matches.
-- Two columns are deliberately readable *as equal*: the speaker label is sealed so
-  that the same name always gives the same value, because the database joins on
-  it. Two lookup columns hold a keyed hash of a name instead of the name, so
-  "is this one already here?" can still be answered.
-- The log files no longer print titles, transcript text or speaker names either.
+**What stays visible:** how many meetings there are, when each was recorded, how
+long it ran, which client it is filed under, and how many lines it has. What was
+said is not.
 
-**What stays visible in the file.** How many meetings there are, when each was
-recorded, how long it ran, which client it is filed under, and how many lines of
-transcript it has. What was said is not. That is the trade for keeping an
-ordinary database.
-
-**Boundaries.** The key sits in the memory of a running process: cold-boot
-attacks, swap files, crash dumps and a live operating system already unlocked by
-you are outside what this protects against. It defends the disk, not the machine
-while you are using it.
+**Boundaries.** The key sits in the memory of the running app: cold-boot attacks,
+swap files, crash dumps and an operating system you have already unlocked are
+outside what this protects against. It defends the disk, not the machine while
+you are using it.
 
 ## Build
 
 <details>
-<summary>Build instructions</summary>
+<summary>Build instructions (Windows)</summary>
 
-Windows requirements: Rust, Node.js, pnpm, Visual Studio 2022 Build Tools with C++, CMake, and Git.
+Requirements: Rust (stable MSVC), Node.js 22, pnpm, Visual Studio 2022 Build
+Tools with C++, CMake and Git. The first build compiles whisper.cpp and ONNX
+Runtime bindings and can take half an hour.
 
 ```powershell
 cd frontend
 pnpm install
-pnpm run tauri:dev:cpu
+pnpm run tauri:dev:cpu     # development
+pnpm run tauri:build:cpu   # NSIS installer
 ```
 
-Universal release build:
-
-```powershell
-cd frontend
-.\scripts\build-universal-windows.ps1 -AllowUnsigned
-```
-
-Apple Silicon DMG build on macOS 14.2 or later:
-
-```bash
-cd frontend
-pnpm install
-./scripts/build-macos-apple-silicon.sh
-```
-
-See [`ARCHITECTURE.md`](ARCHITECTURE.md) for implementation details and the
-[`macOS release runbook`](.github/workflows/MACOS_RELEASE.md) for the native
-candidate, publication, and physical-device checks.
+See [`ARCHITECTURE.md`](ARCHITECTURE.md) for implementation details.
 
 </details>
 
-## Credits And License
+## Credits and license
 
-Talkkeeper is a fork of [Meetily - Actually Free](https://github.com/TylerBuza/Meetily-ActuallyFree), maintained by [Tyler Buza](https://buza.dev), which is based on the original [Meetily](https://github.com/Zackriya-Solutions/meetily) project by Zackriya Solutions.
+Talkkeeper is developed by [leyvanah](https://github.com/leyvanah).
 
-MIT licensed. See [`LICENSE.md`](LICENSE.md). Original copyright notices and license terms are retained.
+It grew out of [Meetily - Actually Free](https://github.com/TylerBuza/Meetily-ActuallyFree)
+by Tyler Buza, itself based on [Meetily](https://github.com/Zackriya-Solutions/meetily)
+by Zackriya Solutions. Thanks to both projects.
+
+MIT licensed — see [`LICENSE.md`](LICENSE.md). The original copyright notices are
+retained.

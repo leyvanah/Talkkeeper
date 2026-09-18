@@ -1476,8 +1476,8 @@ Section Uninstall
     ; The keystore is not app data in the ordinary sense: it holds the only
     ; copy of the key that opens every recording ever made, and the recordings
     ; live OUTSIDE $INSTDIR, so wiping it here leaves files on disk that nobody
-    ; can ever read again — silently, and with no way back. It cost the owner
-    ; his whole archive once; copy it out first and say where it went.
+    ; can ever read again — silently, and with no way back. It has cost a whole
+    ; archive before; copy it out first and say where it went.
     StrCpy $KeyRescued 1
     ${If} ${FileExists} "$INSTDIR\data\keystore.json"
       StrCpy $KeyRescued 0
