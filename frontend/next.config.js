@@ -7,6 +7,12 @@ const resolveFromTiptapPm = (pkg) =>
 const nextConfig = {
   reactStrictMode: false, // Disabled for BlockNote compatibility
   output: 'export',
+  // Production builds drop console.log/info/debug. Several of them printed
+  // transcript lines and whole summaries; the webview console is not where
+  // an archive's text should end up. Errors and warnings stay.
+  compiler: {
+    removeConsole: process.env.NODE_ENV === 'production' ? { exclude: ['error', 'warn'] } : false,
+  },
   images: {
     unoptimized: true,
   },
