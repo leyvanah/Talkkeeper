@@ -40,15 +40,25 @@ impl DatabaseManager {
             }
         }
 
-        let migration_pool = SqlitePool::connect(tauri_db_path).await?;
+        let migration_pool = SqlitePool::connect_with(Self::connect_options(tauri_db_path)?).await?;
 
         Self::run_migrations(&migration_pool).await?;
         // A failed checksum pass can leave another pooled SQLite connection
         // holding the pre-migration schema. Reopen before serving app queries.
         migration_pool.close().await;
-        let pool = SqlitePool::connect(tauri_db_path).await?;
+        let pool = SqlitePool::connect_with(Self::connect_options(tauri_db_path)?).await?;
 
         Ok(DatabaseManager { pool })
+    }
+
+    /// How every connection to the archive is opened.
+    ///
+    /// `secure_delete` makes SQLite overwrite what it frees with zeros. Without
+    /// it a deleted meeting, or a value replaced by its sealed form, stays
+    /// readable in the file's free pages until something runs VACUUM.
+    fn connect_options(path: &str) -> Result<sqlx::sqlite::SqliteConnectOptions> {
+        use std::str::FromStr;
+        Ok(sqlx::sqlite::SqliteConnectOptions::from_str(path)?.pragma("secure_delete", "ON"))
     }
 
     async fn run_migrations(pool: &SqlitePool) -> Result<()> {
@@ -389,6 +399,21 @@ pub(crate) fn quarantine(root: &Path, files: &[&Path]) -> std::io::Result<std::p
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn connections_overwrite_what_they_free() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("archive.sqlite");
+        let options = DatabaseManager::connect_options(path.to_str().unwrap())
+            .unwrap()
+            .create_if_missing(true);
+        let pool = SqlitePool::connect_with(options).await.unwrap();
+        let (secure_delete,): (i64,) = sqlx::query_as("PRAGMA secure_delete")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(secure_delete, 1);
+    }
 
     #[test]
     fn a_journal_is_set_aside_before_anything_removes_it() {
