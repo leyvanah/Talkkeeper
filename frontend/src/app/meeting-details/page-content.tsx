@@ -63,7 +63,7 @@ export default function PageContent({
   loadedCount?: number;
   onLoadMore?: () => void;
 }) {
-  console.log('ðŸ“„ PAGE CONTENT: Initializing with data:', {
+  console.log('📄 PAGE CONTENT: Initializing with data:', {
     meetingId: meeting.id,
     summaryDataKeys: summaryData ? Object.keys(summaryData) : null,
     transcriptsCount: meeting.transcripts?.length
@@ -102,17 +102,17 @@ export default function PageContent({
 
   // Callback to register the modal open function
   const handleRegisterModalOpen = (openFn: () => void) => {
-    console.log('ðŸ“ Registering modal open function in PageContent');
+    console.log('📝 Registering modal open function in PageContent');
     openModelSettingsRef.current = openFn;
   };
 
   // Callback to trigger modal open (called from error handler)
   const handleOpenModelSettings = () => {
-    console.log('ðŸ”” Opening model settings from PageContent');
+    console.log('🔔 Opening model settings from PageContent');
     if (openModelSettingsRef.current) {
       openModelSettingsRef.current();
     } else {
-      console.warn('âš ï¸ Modal open function not yet registered');
+      console.warn('⚠️ Modal open function not yet registered');
     }
   };
 
@@ -194,7 +194,7 @@ export default function PageContent({
 
           let attempt = autoSummaryInFlight.get(meeting.id);
           if (!attempt) {
-            console.log(`ðŸ¤– Auto-generating summary with ${modelConfig.provider}/${modelConfig.model}...`);
+            console.log(`🤖 Auto-generating summary with ${modelConfig.provider}/${modelConfig.model}...`);
             attempt = summaryGeneration.handleGenerateSummary('');
             autoSummaryInFlight.set(meeting.id, attempt);
           }
@@ -215,7 +215,7 @@ export default function PageContent({
           return;
         }
 
-        console.log(`ðŸ¤– Auto-generating summary with ${modelConfig.provider}/${modelConfig.model}...`);
+        console.log(`🤖 Auto-generating summary with ${modelConfig.provider}/${modelConfig.model}...`);
         await summaryGeneration.handleGenerateSummary('');
         onAutoGenerateComplete?.();
       }

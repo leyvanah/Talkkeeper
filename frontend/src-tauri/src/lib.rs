@@ -116,9 +116,9 @@ async fn start_recording<R: Runtime>(
     system_device_name: Option<String>,
     meeting_name: Option<String>,
 ) -> Result<(), String> {
-    log_info!("ðŸ”¥ CALLED start_recording");
+    log_info!("🔥 CALLED start_recording");
     log_info!(
-        "ðŸ“‹ Backend received parameters - mic: {:?}, system: {:?}, meeting given: {}",
+        "📋 Backend received parameters - mic: {:?}, system: {:?}, meeting given: {}",
         mic_device_name,
         system_device_name,
         meeting_name.is_some()
@@ -348,7 +348,7 @@ async fn start_recording_with_devices_and_meeting<R: Runtime>(
     system_device_name: Option<String>,
     meeting_name: Option<String>,
 ) -> Result<(), String> {
-    log_info!("ðŸš€ CALLED start_recording_with_devices_and_meeting - Mic: {:?}, System: {:?}, Meeting: {:?}",
+    log_info!("🚀 CALLED start_recording_with_devices_and_meeting - Mic: {:?}, System: {:?}, Meeting: {:?}",
              mic_device_name, system_device_name, meeting_name);
 
     // Clone meeting_name for notification use later
