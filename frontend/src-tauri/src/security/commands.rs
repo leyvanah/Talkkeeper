@@ -329,6 +329,9 @@ async fn convert_database(
     match crate::database::field_encryption::convert_all(pool, direction).await {
         Ok(report) => {
             log::info!("Database fields: {}", report.summary());
+            if direction == DatabaseDirection::Encrypt && report.converted > 0 {
+                compact_database(pool).await;
+            }
             Ok(())
         }
         Err(error) => {
@@ -340,6 +343,18 @@ async fn convert_database(
                 },
                 error.to_string(),
             ))
+        }
+    }
+}
+
+/// Rewrites the database file and empties its journal, so the plaintext the
+/// encryption pass replaced is gone from free pages and from the WAL rather
+/// than waiting for SQLite to reuse the space. A failure is logged: the
+/// values themselves are already sealed.
+async fn compact_database(pool: &sqlx::SqlitePool) {
+    for statement in ["VACUUM", "PRAGMA wal_checkpoint(TRUNCATE)"] {
+        if let Err(error) = sqlx::query(statement).execute(pool).await {
+            log::warn!("{statement} after encryption failed: {error}");
         }
     }
 }
