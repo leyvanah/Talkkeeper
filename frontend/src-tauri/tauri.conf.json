@@ -60,8 +60,6 @@
                         "dialog:allow-save",
                         "notification:default",
                         "notification:allow-is-permission-granted",
-                        "updater:default",
-                        "process:default",
                         "fs:allow-write-file"
                     ]
                 }
@@ -113,12 +111,6 @@
                     "Russian": "./windows/Russian.nsh"
                 }
             }
-        }
-    },
-    "plugins": {
-        "updater": {
-            "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDc1MjA0M0FCMkRCNzM2QUIKUldTck5yY3RxME1nZFZmNTlaSFpLYVYxelh1RFp6cE9lOFZ2VkE0VlFXdThWUzRUK091c2ZQQ3AK",
-            "endpoints": []
         }
     }
 }
