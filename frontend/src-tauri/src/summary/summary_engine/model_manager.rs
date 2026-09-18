@@ -819,6 +819,26 @@ impl ModelManager {
             return Err(anyhow!("File validation failed: {}", e));
         }
 
+        // The right format is not the right file: check the pinned SHA-256.
+        // A resumed download only streamed its tail, so the file is read once.
+        let remote_file = model_def.download_url.rsplit('/').next().unwrap_or_default();
+        let integrity = match crate::model_integrity::summary_model(remote_file) {
+            Some((_, pinned)) => crate::model_integrity::verify_file(pinned, &file_path).await,
+            None => Err(anyhow!("{} has no pinned checksum", remote_file)),
+        };
+        if let Err(e) = integrity {
+            log::error!("Downloaded file failed its integrity check: {}", e);
+            let _ = fs::remove_file(&file_path).await;
+            {
+                let mut models = self.available_models.write().await;
+                if let Some(model_info) = models.get_mut(model_name) {
+                    model_info.status = ModelStatus::Error(format!("Validation failed: {}", e));
+                }
+            }
+            self.release_download(model_name, &control).await;
+            return Err(e);
+        }
+
         // Commit completion while ownership is still held. Cancellation is
         // either observed here or rejected after the control is removed.
         let mut controls = self.download_controls.write().await;

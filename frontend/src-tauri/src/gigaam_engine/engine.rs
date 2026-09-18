@@ -24,7 +24,8 @@ use super::model::GigaamModel;
 pub const MODEL_NAME: &str = "gigaam-v3-e2e-rnnt-int8";
 pub const DOWNLOAD_CANCELLED_MESSAGE: &str = "Download cancelled by user";
 
-const BASE_URL: &str = "https://huggingface.co/istupakov/gigaam-v3-onnx/resolve/main";
+/// A pinned commit of istupakov/gigaam-v3-onnx; see `crate::model_integrity`.
+const BASE_URL: &str = crate::model_integrity::GIGAAM_BASE;
 
 /// Exact published sizes - a short answer or a truncated transfer is caught
 /// before the model is ever loaded.
@@ -427,6 +428,14 @@ impl GigaamEngine {
                     expected
                 ));
             }
+        }
+
+        // Complete by size is not the same as the right file. Resumed files
+        // only streamed their tail, so each is read once here.
+        for (name, _) in MODEL_FILES {
+            let pinned = crate::model_integrity::find(crate::model_integrity::GIGAAM, name)
+                .ok_or_else(|| anyhow!("{} has no pinned checksum", name))?;
+            crate::model_integrity::verify_file(pinned, &self.model_dir.join(name)).await?;
         }
 
         self.progress.store(100, Ordering::Relaxed);
