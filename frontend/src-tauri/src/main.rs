@@ -3,7 +3,6 @@
     windows_subsystem = "windows"
 )]
 
-use log;
 
 fn main() {
     if std::env::var_os("RUST_LOG").is_none() {

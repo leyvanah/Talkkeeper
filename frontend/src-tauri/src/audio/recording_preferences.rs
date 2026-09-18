@@ -405,7 +405,7 @@ pub async fn load_recording_preferences<R: Runtime>(
                 let p = {
                     let mut p = p;
                     let backend = crate::audio::capture::get_current_backend();
-                    p.system_audio_backend = Some(backend.to_string());
+                    p.system_audio_backend = Some(backend.id());
                     p
                 };
                 p
@@ -678,7 +678,7 @@ pub async fn get_available_audio_backends() -> Result<Vec<String>, String> {
     #[cfg(target_os = "macos")]
     {
         let backends = crate::audio::capture::get_available_backends();
-        Ok(backends.iter().map(|b| b.to_string()).collect())
+        Ok(backends.iter().map(|b| b.id()).collect())
     }
 
     #[cfg(not(target_os = "macos"))]
@@ -694,7 +694,7 @@ pub async fn get_current_audio_backend() -> Result<String, String> {
     #[cfg(target_os = "macos")]
     {
         let backend = crate::audio::capture::get_current_backend();
-        Ok(backend.to_string())
+        Ok(backend.id())
     }
 
     #[cfg(not(target_os = "macos"))]
@@ -754,7 +754,7 @@ pub async fn get_audio_backend_info() -> Result<Vec<BackendInfo>, String> {
         let backends = AudioCaptureBackend::available_backends()
             .into_iter()
             .map(|backend| BackendInfo {
-                id: backend.to_string(),
+                id: backend.id(),
                 name: backend.name().to_string(),
                 description: backend.description().to_string(),
             })
