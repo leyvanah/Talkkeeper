@@ -754,7 +754,7 @@ const Sidebar: React.FC = () => {
             if (selectedIds.size > 0) clearSelection();
             setCurrentMeeting({ id: item.id, title: item.title });
             const basePath = item.id.startsWith('intro-call') ? '/' :
-              item.id.includes('-') ? `/meeting-details?id=${item.id}` : `/notes/${item.id}`;
+              `/meeting-details?id=${item.id}`;
             router.push(basePath);
           }}
         >
