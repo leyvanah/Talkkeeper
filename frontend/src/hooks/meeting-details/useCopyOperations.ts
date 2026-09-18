@@ -3,7 +3,6 @@ import { useLocale, useTranslations } from 'next-intl';
 import { Transcript, Summary } from '@/types';
 import { BlockNoteSummaryViewRef } from '@/components/AISummary/BlockNoteSummaryView';
 import { toast } from 'sonner';
-import Analytics from '@/lib/analytics';
 import { invoke as invokeTauri } from '@tauri-apps/api/core';
 import { exportSummaryAs, ExportFormat } from '@/lib/exportSummary';
 
@@ -140,17 +139,6 @@ export function useCopyOperations({
 
     await navigator.clipboard.writeText(header + date + fullTranscript);
     toast.success(t('transcriptCopied'));
-
-    // Track copy analytics
-    const wordCount = allTranscripts
-      .map(t => t.text.split(/\s+/).length)
-      .reduce((a, b) => a + b, 0);
-
-    await Analytics.trackCopy('transcript', {
-      meeting_id: meeting.id,
-      transcript_length: allTranscripts.length.toString(),
-      word_count: wordCount.toString()
-    });
   }, [meeting, meetingTitle, fetchAllTranscripts]);
 
   // Copy summary to clipboard
@@ -225,12 +213,6 @@ export function useCopyOperations({
 
       console.log('✅ Successfully copied to clipboard!');
       toast.success(t('summaryCopied'));
-
-      // Track copy analytics
-      await Analytics.trackCopy('summary', {
-        meeting_id: meeting.id,
-        has_markdown: (!!aiSummary && 'markdown' in aiSummary).toString()
-      });
     } catch (error) {
       console.error('❌ Failed to copy summary:', error);
       toast.error(t('copySummaryFailed'));
@@ -309,9 +291,6 @@ export function useCopyOperations({
       const saved = await exportSummaryAs(format, md, baseName);
       if (!saved) return;
       toast.success(t('summaryExportedAs', { format: format.toUpperCase() }));
-      try {
-        await Analytics.trackFeatureUsed(`export_summary_${format}`);
-      } catch { /* analytics is best-effort */ }
     } catch (error) {
       console.error('❌ Failed to export summary:', error);
       toast.error(t('exportSummaryFailed'));
@@ -358,9 +337,6 @@ export function useCopyOperations({
         toast.success(t('meetingExportedAs', { format: format.toUpperCase() }));
       }
 
-      try {
-        await Analytics.trackFeatureUsed(`export_meeting_${content}_${format}`);
-      } catch { /* analytics is best-effort */ }
       return true;
     } catch (error) {
       console.error('Failed to export meeting:', error);

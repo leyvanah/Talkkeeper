@@ -4,7 +4,6 @@ import { Button } from '@/components/ui/button';
 import { ButtonGroup } from '@/components/ui/button-group';
 import { Copy, Save, Loader2, Search, FolderOpen, Download } from 'lucide-react';
 import { useTranslations } from 'next-intl';
-import Analytics from '@/lib/analytics';
 
 interface SummaryUpdaterButtonGroupProps {
   isSaving: boolean;
@@ -39,7 +38,6 @@ export function SummaryUpdaterButtonGroup({
         className={`${isDirty ? 'bg-green-200' : ""}`}
         title={isSaving ? t('summarySavingTooltip') : t('summarySaveTooltip')}
         onClick={() => {
-          Analytics.trackButtonClick('save_changes', 'meeting_details');
           onSave();
         }}
         disabled={isSaving}
@@ -63,7 +61,6 @@ export function SummaryUpdaterButtonGroup({
         size="sm"
         title={t('copySummary')}
         onClick={() => {
-          Analytics.trackButtonClick('copy_summary', 'meeting_details');
           onCopy();
         }}
         disabled={!hasSummary}
@@ -80,7 +77,6 @@ export function SummaryUpdaterButtonGroup({
           size="sm"
           title={t('exportMeeting')}
           onClick={() => {
-            Analytics.trackButtonClick('open_meeting_export', 'meeting_details');
             onExport();
           }}
           className="cursor-pointer"

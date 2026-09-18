@@ -8,7 +8,6 @@ import { PanelLayoutProvider } from '@/components/PanelLayoutProvider'
 import { WindowTitleProvider } from '@/components/AppHeader'
 import { WindowResizeEdges } from '@/components/WindowResizeEdges'
 import MainContent from '@/components/MainContent'
-import AnalyticsProvider from '@/components/AnalyticsProvider'
 import { Toaster, toast } from 'sonner'
 import "sonner/dist/styles.css"
 import { useState, useEffect, useCallback } from 'react'
@@ -398,7 +397,6 @@ export default function RootLayout({
         ) : (
           <SecurityProvider>
           <ArchiveGate>
-          <AnalyticsProvider>
             <RecordingStateProvider>
               <TranscriptProvider>
                 <ConfigProvider>
@@ -450,7 +448,6 @@ export default function RootLayout({
                 </ConfigProvider>
               </TranscriptProvider>
             </RecordingStateProvider>
-          </AnalyticsProvider>
           </ArchiveGate>
           </SecurityProvider>
         )}

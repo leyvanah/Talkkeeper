@@ -25,7 +25,6 @@ import { useRetranscription, ENHANCEMENT_STALLED } from '@/contexts/Retranscript
 import { useRouter } from 'next/navigation';
 import { LANGUAGES } from '@/constants/languages';
 import { useTranscriptionModels, ModelOption } from '@/hooks/useTranscriptionModels';
-import Analytics from '@/lib/analytics';
 
 interface RetranscribeDialogProps {
   open: boolean;
@@ -161,12 +160,6 @@ export function RetranscribeDialog({
 
     try {
       const languageToSend = isParakeetModel ? null : selectedLang === 'auto' ? null : selectedLang;
-      await Analytics.track('enhance_transcript_started', {
-        language: isParakeetModel ? 'auto' : (selectedLang === 'auto' ? 'auto' : selectedLang),
-        model_provider: selectedModelDetails?.provider || '',
-        model_name: selectedModelDetails?.name || '',
-        vocabulary_scope: vocabularyTerms.trim() ? vocabularyScope : 'unchanged'
-      });
 
       // Settles when the job does, wherever the owner happens to be by then.
       const completion = startRetranscription({
@@ -187,11 +180,6 @@ export function RetranscribeDialog({
       onOpenChangeRef.current(false);
 
       const result = await completion;
-      await Analytics.track('enhance_transcript_completed', {
-        success: 'true',
-        duration_seconds: result.duration_seconds.toString(),
-        segments_count: result.segments_count.toString(),
-      });
       toast.success(t('retranscribeComplete', { count: result.segments_count }));
       onCompleteRef.current?.();
       onOpenChangeRef.current(false);
@@ -203,8 +191,6 @@ export function RetranscribeDialog({
       // The dialog steps aside as soon as the work starts, so by the time this
       // fails there may be nothing on screen to read the message off.
       toast.error(t('retranscribeFailed'), { description: errorMsg });
-
-      await Analytics.trackError('enhance_transcript_failed', errorMsg);
     }
   };
 
