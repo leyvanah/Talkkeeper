@@ -1168,21 +1168,14 @@ pub async fn api_save_transcript<R: Runtime>(
     recording_started_at: Option<String>,
     auth_token: Option<String>,
 ) -> Result<serde_json::Value, String> {
+    // The title and the lines are what B4 seals in the database; a log file
+    // is not sealed, so only their shape is logged.
     log_info!(
-        "api_save_transcript called for meeting: {}, transcripts: {}, folder_path: {:?}, auth_token: {}",
-        meeting_title,
+        "api_save_transcript called: {} transcripts, has folder: {}, auth_token: {}",
         transcripts.len(),
-        folder_path,
+        folder_path.is_some(),
         auth_token.is_some()
     );
-
-    // Log first transcript for debugging
-    if let Some(first) = transcripts.first() {
-        log_debug!(
-            "First transcript data: {}",
-            serde_json::to_string_pretty(first).unwrap_or_default()
-        );
-    }
 
     // Convert serde_json::Value to TranscriptSegment
     let transcripts_to_save: Vec<TranscriptSegment> = transcripts
@@ -1228,6 +1221,7 @@ pub async fn api_save_transcript<R: Runtime>(
     let recording_started_at = metadata_recording_start.or(supplied_recording_start);
 
     // Now, call the repository with the correctly typed data.
+    let journal_folder = folder_path.clone();
     match TranscriptsRepository::save_transcript(
         pool,
         &meeting_title,
@@ -1238,6 +1232,10 @@ pub async fn api_save_transcript<R: Runtime>(
     .await
     {
         Ok(meeting_id) => {
+            // The crash journal of this recording has done its job.
+            if let Some(folder) = journal_folder.as_deref() {
+                crate::audio::transcript_journal::remove(std::path::Path::new(folder));
+            }
             log_info!(
                 "Successfully saved transcript and created meeting with id: {}",
                 meeting_id

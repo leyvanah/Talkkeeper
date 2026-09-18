@@ -484,3 +484,31 @@ async fn a_second_pass_has_nothing_left_to_do() {
         .unwrap();
     assert_eq!(meeting.title, "Первая");
 }
+
+#[tokio::test]
+async fn the_crash_journal_holds_no_words() {
+    use app_lib::audio::recording_saver::TranscriptSegment as LiveSegment;
+    use app_lib::audio::transcript_journal;
+
+    open_the_archive();
+    let folder = tempfile::tempdir().unwrap();
+    transcript_journal::begin(folder.path(), "Разговор о бюджете", "2026-09-18T10:00:00Z");
+    transcript_journal::append(&LiveSegment {
+        id: "seg_1".to_string(),
+        text: "Совершенно секретная реплика".to_string(),
+        audio_start_time: 0.0,
+        audio_end_time: 1.0,
+        duration: 1.0,
+        display_time: "[00:00]".to_string(),
+        confidence: 1.0,
+        sequence_id: 1,
+        speaker: Some("You".to_string()),
+    });
+    transcript_journal::end();
+
+    let raw = std::fs::read_to_string(folder.path().join(transcript_journal::JOURNAL_FILE)).unwrap();
+    assert_eq!(raw.lines().count(), 2);
+    assert!(raw.lines().all(|line| line.starts_with("tkf1:")));
+    assert!(!raw.contains("секретная"));
+    assert!(!raw.contains("бюджете"));
+}
