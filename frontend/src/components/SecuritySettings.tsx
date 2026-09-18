@@ -51,6 +51,7 @@ export function SecuritySettings() {
     encryptRecordings,
     fieldEncryption,
     encryptFields,
+    deletePlaintextBackup,
   } = useSecurity()
 
   const [busy, setBusy] = useState(false)
@@ -62,6 +63,8 @@ export function SecuritySettings() {
   const [recordings, setRecordings] = useState<RecordingEncryption | null>(null)
   /** How the database columns stand; null until counted. */
   const [dbFields, setDbFields] = useState<FieldEncryption | null>(null)
+  /** Set while the owner is being asked to confirm deleting the plaintext copy. */
+  const [confirmingBackupDelete, setConfirmingBackupDelete] = useState(false)
   /** Progress of a conversion, while one is running. */
   const [converting, setConverting] = useState<{ done: number; total: number } | null>(null)
 
@@ -358,6 +361,55 @@ export function SecuritySettings() {
                   </Button>
                   <p className="mt-2 text-xs text-gray-500">{t('encryptFieldsHint')}</p>
                 </>
+              )}
+              {/* The copy taken before the first encryption is the whole archive
+                  in the clear. It stays only until the owner has seen the
+                  encrypted one read back, and this is where they let it go. */}
+              {dbFields?.plaintextBackup && (
+                <div className="mt-3 rounded-md border border-amber-300 bg-amber-50 p-3">
+                  <p className="text-xs text-amber-800">{t('plaintextBackupWarning')}</p>
+                  {confirmingBackupDelete ? (
+                    <div className="mt-2 flex flex-wrap items-center gap-2">
+                      <span className="text-xs font-medium text-amber-900">
+                        {t('plaintextBackupConfirm')}
+                      </span>
+                      <Button
+                        type="button"
+                        variant="destructive"
+                        size="sm"
+                        disabled={busy}
+                        onClick={() =>
+                          attempt(async () => {
+                            setDbFields(await deletePlaintextBackup())
+                            setConfirmingBackupDelete(false)
+                          }, t('noticePlaintextBackupDeleted'))
+                        }
+                      >
+                        {busy ? t('working') : t('plaintextBackupDeleteYes')}
+                      </Button>
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        disabled={busy}
+                        onClick={() => setConfirmingBackupDelete(false)}
+                      >
+                        {t('plaintextBackupKeep')}
+                      </Button>
+                    </div>
+                  ) : (
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      className="mt-2"
+                      disabled={busy}
+                      onClick={() => setConfirmingBackupDelete(true)}
+                    >
+                      {t('plaintextBackupDelete')}
+                    </Button>
+                  )}
+                </div>
               )}
             </div>
 
