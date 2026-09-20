@@ -104,6 +104,7 @@ async fn generate_assistant_answer(
     user_prompt: &str,
     default_max_tokens: u32,
     default_temperature: f32,
+    hide: crate::privacy::Shield<'_>,
 ) -> Result<String, String> {
     generate_summary(
         &reqwest::Client::new(),
@@ -121,6 +122,7 @@ async fn generate_assistant_answer(
         model.custom_openai_top_p,
         Some(&model.app_data_dir),
         None,
+        hide,
     )
     .await
 }
@@ -165,7 +167,11 @@ skimmable; use Markdown (bullets, short paragraphs, code blocks when relevant).{
         question.trim()
     );
 
-    let answer = generate_assistant_answer(&model, &system_prompt, &user_prompt, 1024, 0.4).await?;
+    let hidden = crate::privacy::vocabulary::shield_for(state.db_manager.pool(), None).await;
+    let answer =
+        generate_assistant_answer(&model, &system_prompt, &user_prompt, 1024, 0.4, hidden.as_ref())
+            .await?;
+    let answer = crate::privacy::restore(hidden.as_ref(), &answer);
 
     info!(
         "Live assistant answered via {} ({} chars)",
@@ -217,7 +223,11 @@ information. Keep the answer concise and use Markdown.";
         },
         question
     );
-    let answer = generate_assistant_answer(&model, &system_prompt, &user_prompt, 512, 0.2).await?;
+    let hidden = crate::privacy::vocabulary::shield_for(pool, None).await;
+    let answer =
+        generate_assistant_answer(&model, &system_prompt, &user_prompt, 512, 0.2, hidden.as_ref())
+            .await?;
+    let answer = crate::privacy::restore(hidden.as_ref(), &answer);
     info!(
         "Person assistant answered for {} via {} ({} chars)",
         person_id,

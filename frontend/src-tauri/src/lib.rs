@@ -56,6 +56,7 @@ pub mod network_policy;
 pub mod gigaam_engine;
 pub mod parakeet_engine;
 pub mod paths;
+pub mod privacy;
 pub mod security;
 pub mod state;
 pub mod summary;
@@ -599,6 +600,8 @@ pub fn run() {
             security::commands::security_setup,
             security::commands::security_unlock,
             security::commands::security_unlock_with_recovery,
+            privacy::commands::api_get_privacy_settings,
+            privacy::commands::api_save_privacy_settings,
             security::commands::security_lock,
             security::commands::security_export_key_backup,
             security::commands::security_touch,

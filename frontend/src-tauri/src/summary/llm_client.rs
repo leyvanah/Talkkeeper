@@ -1,6 +1,8 @@
 use reqwest::{header, Client};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
+
+use crate::privacy::Shield;
 use std::time::Duration;
 use tokio_util::sync::CancellationToken;
 use tracing::info;
@@ -124,6 +126,10 @@ pub async fn generate_summary(
     top_p: Option<f32>,
     app_data_dir: Option<&PathBuf>,
     cancellation_token: Option<&CancellationToken>,
+    // Names to keep out of whatever leaves this machine. The caller owns the
+    // session so that every request of one summary speaks the same language,
+    // and the caller puts the real words back into the finished answer.
+    hide: Shield<'_>,
 ) -> Result<String, String> {
     // Check if cancelled before starting
     if let Some(token) = cancellation_token {
@@ -216,6 +222,24 @@ pub async fn generate_summary(
             .map_err(|_| "Invalid content type".to_string())?,
     );
 
+    crate::network_policy::check(&api_url)?;
+
+    // Hiding happens here, at the one point where the destination is known.
+    // A model answering on this machine's own loopback address is inside the
+    // archive's boundary and reads the conversation as it is.
+    let leaves_this_machine = !crate::network_policy::is_loopback_url(&api_url);
+    let hide = if leaves_this_machine { hide } else { None };
+    let system_prompt = crate::privacy::hide(hide, system_prompt);
+    let user_prompt = crate::privacy::hide(hide, user_prompt);
+    if hide.is_some() {
+        info!(
+            "🛡️ Hiding {} identifying items before sending to {}",
+            crate::privacy::hidden_count(hide),
+            provider_name(provider)
+        );
+    }
+    let (system_prompt, user_prompt) = (system_prompt.as_str(), user_prompt.as_str());
+
     // Build request body based on provider
     let request_body = if provider != &LLMProvider::Claude {
         // For CustomOpenAI, apply optional parameters if provided
@@ -252,8 +276,6 @@ pub async fn generate_summary(
             }]
         })
     };
-
-    crate::network_policy::check(&api_url)?;
 
     info!("🐞 LLM Request to {}: model={}", provider_name(provider), model_name);
 
