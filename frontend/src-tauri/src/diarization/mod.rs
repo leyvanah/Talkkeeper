@@ -763,6 +763,36 @@ fn ensure_wav(path: &Path) -> Result<(PathBuf, bool)> {
 ///
 /// Written back through the same sink the decode used, so it stays encrypted
 /// when the archive is, and by rename so a failure leaves the decode as it was.
+/// The speakers' echo, measured from the tracks themselves.
+///
+/// For every recording nobody judged while it ran: the microphone is the
+/// system track again, quieter and a little later, and that is measurable
+/// afterwards. Returns nothing when the two do not line up — a recording with
+/// headphones, or one where nothing was played — and then this changes
+/// nothing at all.
+fn measure_the_echo(mic_wav: &Path, system_wav: &Path) -> Vec<(f64, f64)> {
+    use crate::audio::echo_offline::{echo_spans, covered_ms, Envelope, WINDOW_MS};
+
+    let measure = |path: &Path| -> Option<Envelope> {
+        let (samples, rate) = dsp::read_wav(path).ok()?;
+        Some(Envelope::measure(&samples, rate, WINDOW_MS))
+    };
+    let (Some(mic), Some(system)) = (measure(mic_wav), measure(system_wav)) else {
+        return Vec::new();
+    };
+
+    let spans = echo_spans(&mic, &system);
+    if spans.is_empty() {
+        log::info!("The two tracks do not line up: the microphone is read as it was stored");
+    } else {
+        log::info!(
+            "🔇 Measured the speakers' echo from the tracks: {:.1}s of the microphone",
+            covered_ms(&spans) / 1000.0
+        );
+    }
+    spans
+}
+
 fn silence_the_speakers_in_wav(wav: &Path, spans_ms: &[(f64, f64)]) -> Result<f64> {
     use std::io::Write;
 
@@ -885,6 +915,15 @@ pub async fn diarize_meeting(
                         }
                         return Err(error);
                     }
+                };
+
+                // Recordings made with Windows cancelling the echo leave no
+                // record, and what Windows left behind still reads as him.
+                // Measured from the two tracks, which came off one clock.
+                let echo_spans = if echo_spans.is_empty() {
+                    measure_the_echo(&mic_wav, &system_wav)
+                } else {
+                    echo_spans
                 };
 
                 // Before anything reads it as him — the labels or the voiceprint.
