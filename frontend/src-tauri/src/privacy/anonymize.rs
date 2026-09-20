@@ -275,11 +275,82 @@ fn pattern_matches(text: &str) -> Vec<(usize, usize, Kind)> {
     found
 }
 
+/// One request's worth of replacing, so that every piece of text going to the
+/// same place speaks the same language.
+///
+/// A request is usually more than one string — an instruction and a
+/// conversation, sometimes a chunk at a time. Replacing them separately would
+/// give the same person a different label in each, and the model would read
+/// them as different people. A session carries the labels across all of them,
+/// and back again over the answer.
+#[derive(Debug, Clone)]
+pub struct Session {
+    vocabulary: Vocabulary,
+    labels: HashMap<(Kind, String), String>,
+    counts: HashMap<String, usize>,
+    order: Vec<(Kind, String, String)>,
+    next_number: HashMap<Kind, usize>,
+}
+
+impl Session {
+    pub fn new(vocabulary: Vocabulary) -> Self {
+        Self {
+            vocabulary,
+            labels: HashMap::new(),
+            counts: HashMap::new(),
+            order: Vec::new(),
+            next_number: HashMap::new(),
+        }
+    }
+
+    /// The text as it may leave, with everything recognised replaced.
+    pub fn hide(&mut self, text: &str) -> String {
+        hide_into(self, text)
+    }
+
+    /// Everything replaced so far, in the order it was first met.
+    pub fn replacements(&self) -> Vec<Replacement> {
+        self.order
+            .iter()
+            .map(|(kind, label, original)| Replacement {
+                kind: *kind,
+                count: self.counts.get(label).copied().unwrap_or(0),
+                label: label.clone(),
+                original: original.clone(),
+            })
+            .collect()
+    }
+
+    /// Puts the owner's own words back into an answer that came from outside.
+    pub fn restore(&self, text: &str) -> String {
+        let mut restored = text.to_string();
+        for (_, label, original) in &self.order {
+            restored = restored.replace(label, original);
+        }
+        restored
+    }
+
+    /// Whether anything was actually replaced.
+    pub fn is_empty(&self) -> bool {
+        self.order.is_empty()
+    }
+}
+
 /// Replaces what the vocabulary names, and what the patterns recognise.
 ///
 /// Overlapping finds are resolved in favour of the longer one, so a name
 /// inside an address does not cut it in half.
 pub fn anonymize(text: &str, vocabulary: &Vocabulary) -> Anonymized {
+    let mut session = Session::new(vocabulary.clone());
+    let text = session.hide(text);
+    Anonymized {
+        text,
+        replacements: session.replacements(),
+    }
+}
+
+fn hide_into(session: &mut Session, text: &str) -> String {
+    let vocabulary = &session.vocabulary;
     let lowered = text.to_lowercase();
     // Lowercasing can change byte lengths (rare in Russian, real in Turkish);
     // if it does, the offsets below would not line up, so fall back to
@@ -309,10 +380,6 @@ pub fn anonymize(text: &str, vocabulary: &Vocabulary) -> Anonymized {
     }
 
     let mut out = String::with_capacity(text.len());
-    let mut labels: HashMap<(Kind, String), String> = HashMap::new();
-    let mut counts: HashMap<String, usize> = HashMap::new();
-    let mut order: Vec<(Kind, String, String)> = Vec::new();
-    let mut next_number: HashMap<Kind, usize> = HashMap::new();
     let mut cursor = 0;
 
     for (start, end, kind, entry) in kept {
@@ -324,36 +391,23 @@ pub fn anonymize(text: &str, vocabulary: &Vocabulary) -> Anonymized {
             Some(index) => format!("#{index}"),
             None => written.to_lowercase(),
         };
-        let label = labels
-            .entry((kind, key))
-            .or_insert_with(|| {
-                let number = next_number.entry(kind).or_insert(0);
+        let label = match session.labels.get(&(kind, key.clone())) {
+            Some(label) => label.clone(),
+            None => {
+                let number = session.next_number.entry(kind).or_insert(0);
                 *number += 1;
                 let label = format!("[{} {}]", kind.label(), number);
-                order.push((kind, label.clone(), written.to_string()));
+                session.order.push((kind, label.clone(), written.to_string()));
+                session.labels.insert((kind, key), label.clone());
                 label
-            })
-            .clone();
-        *counts.entry(label.clone()).or_insert(0) += 1;
+            }
+        };
+        *session.counts.entry(label.clone()).or_insert(0) += 1;
         out.push_str(&label);
         cursor = end;
     }
     out.push_str(&text[cursor..]);
-
-    let replacements = order
-        .into_iter()
-        .map(|(kind, label, original)| Replacement {
-            kind,
-            count: counts.get(&label).copied().unwrap_or(0),
-            label,
-            original,
-        })
-        .collect();
-
-    Anonymized {
-        text: out,
-        replacements,
-    }
+    out
 }
 
 #[cfg(test)]
@@ -456,6 +510,21 @@ mod tests {
         let result = anonymize(text, &vocabulary(&[], &["Простоквашино"]));
 
         assert_eq!(result.text, "Встречаемся в [Название 1], недалеко от [Название 1].");
+    }
+
+    #[test]
+    fn one_request_speaks_one_language_across_all_its_pieces() {
+        // An instruction and a conversation go out together; the same person
+        // must be the same person in both, or the model reads two people.
+        let mut session = Session::new(vocabulary(&["Анна", "Пётр"], &[]));
+
+        let instruction = session.hide("Сведи разговор. Пётр — ведущий.");
+        let conversation = session.hide("Анна: здравствуйте. Пётр: добрый день.");
+
+        assert_eq!(instruction, "Сведи разговор. [Имя 1] — ведущий.");
+        assert_eq!(conversation, "[Имя 2]: здравствуйте. [Имя 1]: добрый день.");
+        assert_eq!(session.replacements().len(), 2);
+        assert_eq!(session.restore("[Имя 1] и [Имя 2]"), "Пётр и Анна");
     }
 
     #[test]

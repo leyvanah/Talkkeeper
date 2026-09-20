@@ -30,6 +30,7 @@ import {
   type RecordingEncryption,
 } from '@/contexts/SecurityContext'
 import { RecoveryCodeCard } from '@/components/security/RecoveryCodeCard'
+import { CloudPrivacyCard } from '@/components/security/CloudPrivacyCard'
 import { LocalOnlyCard } from '@/components/security/LocalOnlyCard'
 
 /** Idle timeouts offered, in minutes. `0` stands for "never". */
@@ -586,6 +587,8 @@ export function SecuritySettings() {
                 </div>
               </form>
             </div>
+
+            <CloudPrivacyCard />
 
             <div className="border-t border-gray-200 pt-5">
               <h4 className="mb-1 text-sm font-medium text-gray-900">{t('keyBackupTitle')}</h4>

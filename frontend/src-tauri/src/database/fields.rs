@@ -65,6 +65,8 @@ pub const CHUNK_MEETING_NAME: Field = Field::new("transcript_chunks", "meeting_n
 pub const CLIENT_DISPLAY_NAME: Field = Field::new("clients", "display_name");
 pub const CLIENT_NOTES: Field = Field::new("clients", "notes");
 /// A durable speaker profile: the same material as a client.
+pub const PRIVACY_HIDDEN_TERMS: Field = Field::new("privacy_settings", "hidden_terms");
+
 pub const PERSON_NAME: Field = Field::new("people", "display_name");
 pub const PERSON_NOTES: Field = Field::new("people", "notes");
 /// The label a person answers to inside one meeting — and deliberately the

@@ -600,6 +600,8 @@ pub fn run() {
             security::commands::security_setup,
             security::commands::security_unlock,
             security::commands::security_unlock_with_recovery,
+            privacy::commands::api_get_privacy_settings,
+            privacy::commands::api_save_privacy_settings,
             security::commands::security_lock,
             security::commands::security_export_key_backup,
             security::commands::security_touch,

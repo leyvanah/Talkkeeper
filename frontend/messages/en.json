@@ -1309,6 +1309,16 @@
     "localStackReadFailed": "Could not read local stack status"
   },
   "security": {
+    "cloudPrivacyTitle": "Hide names from cloud models",
+    "cloudPrivacyDescription": "When a summary or an answer is prepared by a model that is not on this computer, names and contacts are replaced by labels and put back in the answer. A local model gets the text as it is.",
+    "cloudPrivacyKnown": "The app already knows these names",
+    "cloudPrivacyKnownEmpty": "None yet — they come from the library and from speaker names.",
+    "cloudPrivacyTerms": "Also hide",
+    "cloudPrivacyTermsHint": "One word per line: places, nicknames, employers, your own name. The list is stored encrypted with the archive.",
+    "cloudPrivacyTermsSave": "Save the list",
+    "cloudPrivacySaved": "Anonymisation settings saved",
+    "cloudPrivacySaveFailed": "Could not save the anonymisation settings",
+    "cloudPrivacyLimits": "It finds the names on the list in every form Russian gives them, plus addresses, phone numbers, links and long numbers. It cannot guess an unusual nickname or a telling detail — add those yourself.",
     "keyBackupTitle": "Key backup",
     "keyBackupDescription": "Saves the file that opens the archive. It stays sealed by your password, so keep it apart from the recordings: together they let someone guess the password offline. Windows Hello quick unlock is left out of the copy — it only works on this computer.",
     "keyBackupAction": "Save a copy of the key…",
