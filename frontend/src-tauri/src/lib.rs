@@ -56,6 +56,7 @@ pub mod network_policy;
 pub mod gigaam_engine;
 pub mod parakeet_engine;
 pub mod paths;
+pub mod privacy;
 pub mod security;
 pub mod state;
 pub mod summary;
