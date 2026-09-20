@@ -6,6 +6,7 @@ pub mod echo_cancel;
 pub mod echo_filter;
 // Telling the owner apart from the speakers with a second microphone stream
 // that is read but never recorded.
+pub mod echo_offline;
 pub mod own_speech;
 // Keeping what that detector answered, so a later pass over the stored audio
 // reaches the same verdict the live one did.

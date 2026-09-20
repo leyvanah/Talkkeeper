@@ -299,8 +299,13 @@ pub(crate) fn silence_the_speakers(
     own_speech: &crate::audio::own_speech::WindowTimeline,
     far_end: &crate::audio::own_speech::WindowTimeline,
 ) -> f64 {
+    silence_spans(samples, sample_rate, &echo_spans(own_speech, far_end))
+}
+
+/// Silence the given stretches, wherever the answer came from.
+pub(crate) fn silence_spans(samples: &mut [f32], sample_rate: u32, spans: &[(f64, f64)]) -> f64 {
     let mut silenced_ms = 0.0f64;
-    for (from_ms, to_ms) in echo_spans(own_speech, far_end) {
+    for &(from_ms, to_ms) in spans {
         let first = ((from_ms / 1000.0) * sample_rate as f64).round() as usize;
         let last = (((to_ms / 1000.0) * sample_rate as f64).round() as usize).min(samples.len());
         if first >= last {
@@ -310,6 +315,33 @@ pub(crate) fn silence_the_speakers(
         silenced_ms += (last - first) as f64 / sample_rate as f64 * 1000.0;
     }
     silenced_ms
+}
+
+/// The loudness of the system track, window by window.
+///
+/// Read separately from the pass over the sources: the microphone is decoded
+/// first and has to be judged before its voice detection runs, and holding
+/// both hour-long tracks in memory at once to avoid one decode is not a trade
+/// worth making.
+async fn measure_the_far_end(
+    sources: &[RetranscriptionSource],
+) -> Option<crate::audio::echo_offline::Envelope> {
+    let system = sources
+        .iter()
+        .find(|source| source.speaker_hint == Some("Guest"))?;
+    let path = system.path.clone();
+    let decoded = tokio::task::spawn_blocking(move || decode_audio_file(&path))
+        .await
+        .ok()?
+        .ok()?;
+    let samples = tokio::task::spawn_blocking(move || decoded.to_whisper_format())
+        .await
+        .ok()?;
+    Some(crate::audio::echo_offline::Envelope::measure(
+        &samples,
+        WORKING_SAMPLE_RATE,
+        crate::audio::echo_offline::WINDOW_MS,
+    ))
 }
 
 fn create_source_labeled_segments(
@@ -355,8 +387,19 @@ async fn run_retranscription<R: Runtime>(
 
     // What the detector answered while this was being recorded, if it was on
     // and the recording closed cleanly. Absent for everything recorded before
-    // this existed, and then nothing is dropped — the behaviour until now.
+    // this existed, and for everything recorded with Windows cancelling the
+    // echo instead — which is the default.
     let own_speech_record = read_timelines(&folder_path);
+
+    // Without that record, the echo is measured from the tracks themselves:
+    // they came off one clock, and the speakers' return is the system track
+    // again, quieter and a little later. Only the loudness of each window is
+    // kept, so this costs one decode and a few hundred numbers a second.
+    let system_envelope = if own_speech_record.is_none() {
+        measure_the_far_end(&sources).await
+    } else {
+        None
+    };
 
     // Retained source tracks prevent one speaker from masking the other. Older
     // recordings fall back to the mixed playback file.
@@ -390,9 +433,11 @@ async fn run_retranscription<R: Runtime>(
         // Before voice detection, take out what the detector said was only the
         // speakers coming back. Without this the pass would hand the owner's
         // channel words the other person said — which is what it used to do.
-        if source.gated_by_the_record {
-            match own_speech_record.as_ref() {
-                Some((own_speech, far_end)) => {
+        let is_microphone = source.speaker_hint == Some("You");
+        if is_microphone {
+            match (own_speech_record.as_ref(), system_envelope.as_ref()) {
+                // What the detector answered while it was recorded.
+                (Some((own_speech, far_end)), _) if source.gated_by_the_record => {
                     let silenced = silence_the_speakers(
                         &mut audio_samples,
                         WORKING_SAMPLE_RATE,
@@ -406,7 +451,28 @@ async fn run_retranscription<R: Runtime>(
                         );
                     }
                 }
-                None => info!(
+                // Nobody judged this recording while it ran: measure it now.
+                (None, Some(system)) => {
+                    let mic = crate::audio::echo_offline::Envelope::measure(
+                        &audio_samples,
+                        WORKING_SAMPLE_RATE,
+                        crate::audio::echo_offline::WINDOW_MS,
+                    );
+                    let spans = crate::audio::echo_offline::echo_spans(&mic, system);
+                    if spans.is_empty() {
+                        info!(
+                            "No own-speech record, and the tracks do not line up: reading the microphone as it was stored"
+                        );
+                    } else {
+                        let silenced =
+                            silence_spans(&mut audio_samples, WORKING_SAMPLE_RATE, &spans);
+                        info!(
+                            "🔇 Measured the speakers' echo from the tracks: silenced {:.1}s of the microphone",
+                            silenced / 1000.0
+                        );
+                    }
+                }
+                _ => info!(
                     "No own-speech record for this recording: reading the microphone as it was stored"
                 ),
             }
