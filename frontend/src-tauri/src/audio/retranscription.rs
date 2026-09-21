@@ -846,8 +846,8 @@ async fn run_retranscription<R: Runtime>(
     // timings line up with them by position.
     for (segment, words) in segments.iter().zip(all_words.iter()) {
         sqlx::query(
-            "INSERT INTO transcripts (id, meeting_id, transcript, timestamp, audio_start_time, audio_end_time, duration, speaker, words)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)"
+            "INSERT INTO transcripts (id, meeting_id, transcript, timestamp, audio_start_time, audio_end_time, duration, speaker, words, source_track)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
         )
         .bind(&segment.id)
         .bind(&meeting_id)
@@ -866,6 +866,8 @@ async fn run_retranscription<R: Runtime>(
                 .map(|words| fields::seal(fields::TRANSCRIPT_WORDS, &to_json(words)))
                 .transpose()?,
         )
+        // Each line was recognised from one track, and its label says which.
+        .bind(crate::diarization::by_device::source_of_label(segment.speaker.as_deref()))
         .execute(&mut *tx)
         .await
         .map_err(|e| anyhow!("Failed to insert transcript: {}", e))?;
