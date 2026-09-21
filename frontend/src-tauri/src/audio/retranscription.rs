@@ -458,16 +458,16 @@ async fn run_retranscription<R: Runtime>(
                         WORKING_SAMPLE_RATE,
                         crate::audio::echo_offline::WINDOW_MS,
                     );
-                    let spans = crate::audio::echo_offline::echo_spans(&mic, system);
-                    if spans.is_empty() {
-                        info!(
-                            "No own-speech record, and the tracks do not line up: reading the microphone as it was stored"
-                        );
-                    } else {
+                    let measured = crate::audio::echo_offline::measure(&mic, system);
+                    info!(
+                        "🔇 Echo measured from the tracks: {}",
+                        crate::audio::echo_offline::describe(&measured)
+                    );
+                    if !measured.spans.is_empty() {
                         let silenced =
-                            silence_spans(&mut audio_samples, WORKING_SAMPLE_RATE, &spans);
+                            silence_spans(&mut audio_samples, WORKING_SAMPLE_RATE, &measured.spans);
                         info!(
-                            "🔇 Measured the speakers' echo from the tracks: silenced {:.1}s of the microphone",
+                            "🔇 Silenced {:.1}s of the microphone the speakers had played under",
                             silenced / 1000.0
                         );
                     }

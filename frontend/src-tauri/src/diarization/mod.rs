@@ -771,26 +771,19 @@ fn ensure_wav(path: &Path) -> Result<(PathBuf, bool)> {
 /// headphones, or one where nothing was played — and then this changes
 /// nothing at all.
 fn measure_the_echo(mic_wav: &Path, system_wav: &Path) -> Vec<(f64, f64)> {
-    use crate::audio::echo_offline::{echo_spans, covered_ms, Envelope, WINDOW_MS};
+    use crate::audio::echo_offline::{describe, measure, Envelope, WINDOW_MS};
 
-    let measure = |path: &Path| -> Option<Envelope> {
+    let envelope_of = |path: &Path| -> Option<Envelope> {
         let (samples, rate) = dsp::read_wav(path).ok()?;
         Some(Envelope::measure(&samples, rate, WINDOW_MS))
     };
-    let (Some(mic), Some(system)) = (measure(mic_wav), measure(system_wav)) else {
+    let (Some(mic), Some(system)) = (envelope_of(mic_wav), envelope_of(system_wav)) else {
         return Vec::new();
     };
 
-    let spans = echo_spans(&mic, &system);
-    if spans.is_empty() {
-        log::info!("The two tracks do not line up: the microphone is read as it was stored");
-    } else {
-        log::info!(
-            "🔇 Measured the speakers' echo from the tracks: {:.1}s of the microphone",
-            covered_ms(&spans) / 1000.0
-        );
-    }
-    spans
+    let measured = measure(&mic, &system);
+    log::info!("🔇 Echo measured from the tracks: {}", describe(&measured));
+    measured.spans
 }
 
 fn silence_the_speakers_in_wav(wav: &Path, spans_ms: &[(f64, f64)]) -> Result<f64> {
