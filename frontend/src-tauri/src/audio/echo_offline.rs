@@ -9,15 +9,24 @@
 //! at once through the whole conversation.
 //!
 //! Both tracks were written by one pipeline off one clock, so the answer is
-//! available after the fact. Echo is the system track again: quieter, a little
-//! later, and shaped the same. This measures that.
+//! available afterwards — but not by asking whether the microphone *looks
+//! like* the system track. That was the first attempt, and on a real call it
+//! found nothing: half of a dialogue is the owner talking alone, which pulls
+//! any correlation towards zero, and what Windows leaves of the echo is too
+//! mangled to keep its shape.
 //!
-//! **What it will not do is cut the owner out.** The owner talking over the
-//! other person is exactly the case that must survive, so a window is only
-//! called echo when the microphone is no louder than the echo of that moment
-//! usually is. When the two tracks do not line up at all — a recording where
-//! nothing was played, or one where the tracks are unrelated — it says so by
-//! finding nothing, and every later pass behaves as it did before.
+//! What survives any canceller is loudness. The owner's own voice arrives at
+//! his microphone at the level he speaks at; the other person arrives there
+//! only as what the room and the canceller let through, well below that. So
+//! the owner's speaking level is measured from the stretches where he talks
+//! alone, and while the other person is playing, a microphone well below that
+//! level is echo.
+//!
+//! **What it will not do is cut the owner out.** Talking over the other person
+//! he is at his own level and is left alone. His solo speech is never even a
+//! candidate: only windows where the speakers were playing are. A recording
+//! where he never speaks alone gives no level to measure against, and then
+//! nothing is cut at all.
 
 /// How much of the recording one measurement covers.
 ///
@@ -25,23 +34,31 @@
 /// consonant does not decide anything.
 pub const WINDOW_MS: f64 = 25.0;
 
-/// The furthest the echo can lag behind what was played: the sound card, the
-/// air, and the microphone's own buffering. Beyond this it is not echo.
-const MAX_LAG_MS: f64 = 500.0;
+/// How long after the speakers played the microphone may still be hearing
+/// them: the sound card, the air, and the microphone's own buffering.
+const ECHO_REACH_MS: f64 = 500.0;
 
-/// Below this the tracks are not telling the same story, and nothing is cut.
-const MIN_CORRELATION: f32 = 0.35;
+/// Below this a window carries nothing, on either track.
+const SILENCE_RMS: f32 = 0.002;
+
+/// Below this the microphone is not the owner speaking, for the purpose of
+/// learning how loud he speaks.
+const VOICE_FLOOR_RMS: f32 = 0.01;
+
+/// A microphone quieter than this share of the owner's own speaking level,
+/// while the speakers play, is the speakers. About −9 dB: far below anyone
+/// talking into their own microphone, well above what a canceller lets by.
+const ECHO_LEVEL: f32 = 0.35;
+
+/// How much solo speech it takes to trust the owner's level: two seconds.
+const MIN_SOLO_WINDOWS: usize = 80;
 
 /// A run shorter than this is not worth silencing: it is inside a word, and
 /// removing it would leave a click where speech used to be.
 const MIN_SPAN_MS: f64 = 200.0;
 
-/// Windows quieter than this carry no speech at all, on either track.
-const SILENCE_RMS: f32 = 0.002;
-
-/// How much louder than the usual echo the microphone may be before the window
-/// is read as the owner speaking rather than the speakers coming back.
-const OWN_VOICE_MARGIN: f32 = 2.5;
+/// The furthest the echo is looked for when reporting the delay.
+const MAX_LAG_MS: f64 = 500.0;
 
 /// The loudness of each window of a track, which is all this needs.
 #[derive(Debug, Clone, PartialEq)]
@@ -67,22 +84,57 @@ impl Envelope {
     }
 }
 
-/// How well the microphone follows the system track when delayed by `lag`
-/// windows, counted only where something was actually played.
+/// What a measurement found, with the numbers worth a line in the log.
+#[derive(Debug, Clone, Default)]
+pub struct Measurement {
+    /// Stretches of the microphone that are only the speakers, in ms.
+    pub spans: Vec<(f64, f64)>,
+    /// How loud the owner speaks into his own microphone, when he could be
+    /// measured alone.
+    pub own_voice_rms: Option<f32>,
+    /// The typical microphone level while the speakers played, as a share of
+    /// his own voice. Low means echo that a canceller mostly handled.
+    pub echo_share: Option<f32>,
+    /// The delay at which the microphone best follows the speakers, and how
+    /// well — reported, not relied on.
+    pub lag_ms: f64,
+    pub correlation: f32,
+}
+
+impl Measurement {
+    pub fn covered_ms(&self) -> f64 {
+        covered_ms(&self.spans)
+    }
+}
+
+/// Whether the speakers played at any point in the `reach` windows up to and
+/// including `index` — the stretch whose echo could be arriving now.
+fn speakers_reach(system: &Envelope, index: usize, reach: usize) -> bool {
+    let from = index.saturating_sub(reach);
+    let to = index.min(system.len().saturating_sub(1));
+    from <= to && system.rms[from..=to].iter().any(|&level| level >= SILENCE_RMS)
+}
+
+fn median(values: &mut [f32]) -> Option<f32> {
+    if values.is_empty() {
+        return None;
+    }
+    values.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    Some(values[values.len() / 2])
+}
+
+/// How well the microphone follows the speakers when delayed by `lag`
+/// windows, counted only while the speakers were playing: the owner talking
+/// alone says nothing about echo either way.
 fn correlation_at(mic: &Envelope, system: &Envelope, lag: usize) -> f32 {
     let mut pairs = 0usize;
-    let mut mic_sum = 0.0f64;
-    let mut sys_sum = 0.0f64;
-    let mut mic_sq = 0.0f64;
-    let mut sys_sq = 0.0f64;
-    let mut cross = 0.0f64;
-
+    let (mut mic_sum, mut sys_sum, mut mic_sq, mut sys_sq, mut cross) = (0.0f64, 0.0, 0.0, 0.0, 0.0);
     for index in lag..mic.len().min(system.len() + lag) {
         let played = system.rms[index - lag] as f64;
-        let heard = mic.rms[index] as f64;
-        if played < SILENCE_RMS as f64 && heard < SILENCE_RMS as f64 {
+        if played < SILENCE_RMS as f64 {
             continue;
         }
+        let heard = mic.rms[index] as f64;
         pairs += 1;
         mic_sum += heard;
         sys_sum += played;
@@ -90,7 +142,6 @@ fn correlation_at(mic: &Envelope, system: &Envelope, lag: usize) -> f32 {
         sys_sq += played * played;
         cross += heard * played;
     }
-
     if pairs < 8 {
         return 0.0;
     }
@@ -105,8 +156,7 @@ fn correlation_at(mic: &Envelope, system: &Envelope, lag: usize) -> f32 {
     (covariance / denominator) as f32
 }
 
-/// The delay that best explains the microphone by the system track, and how
-/// well it explains it.
+/// The delay that best explains the microphone by the speakers, and how well.
 pub fn best_lag(mic: &Envelope, system: &Envelope) -> (usize, f32) {
     let max_lag = (MAX_LAG_MS / mic.window_ms).round() as usize;
     let mut best = (0usize, f32::MIN);
@@ -119,51 +169,84 @@ pub fn best_lag(mic: &Envelope, system: &Envelope) -> (usize, f32) {
     best
 }
 
+/// Measure the echo in a pair of tracks.
+pub fn measure(mic: &Envelope, system: &Envelope) -> Measurement {
+    let (lag, correlation) = best_lag(mic, system);
+    let lag_ms = lag as f64 * mic.window_ms;
+    let reach = (ECHO_REACH_MS / mic.window_ms).round() as usize;
+
+    // How loud he speaks: the microphone where the speakers were silent for
+    // the whole reach of an echo, and something was being said.
+    let mut solo: Vec<f32> = (0..mic.len())
+        .filter(|&index| !speakers_reach(system, index, reach))
+        .map(|index| mic.rms[index])
+        .filter(|&level| level >= VOICE_FLOOR_RMS)
+        .collect();
+    if solo.len() < MIN_SOLO_WINDOWS {
+        return Measurement {
+            lag_ms,
+            correlation,
+            ..Measurement::default()
+        };
+    }
+    let own_voice = median(&mut solo).unwrap_or(0.0);
+    let ceiling = own_voice * ECHO_LEVEL;
+
+    let mut while_playing: Vec<f32> = Vec::new();
+    let mut marked = vec![false; mic.len()];
+    for index in 0..mic.len() {
+        if !speakers_reach(system, index, reach) {
+            continue;
+        }
+        let heard = mic.rms[index];
+        if heard >= SILENCE_RMS {
+            while_playing.push(heard);
+        }
+        // At his own level, he is talking over them: left alone.
+        if heard < ceiling {
+            marked[index] = true;
+        }
+    }
+
+    let echo_share = median(&mut while_playing).map(|level| level / own_voice.max(f32::EPSILON));
+
+    Measurement {
+        spans: spans_of(&marked, mic.window_ms),
+        own_voice_rms: Some(own_voice),
+        echo_share,
+        lag_ms,
+        correlation,
+    }
+}
+
 /// The stretches of the microphone track that are nothing but the speakers.
 ///
 /// Returned as `(from_ms, to_ms)` on the microphone's own clock, the same
 /// shape [`super::own_speech::echo_spans`] returns, so the passes that silence
 /// them do not care which of the two answered.
 pub fn echo_spans(mic: &Envelope, system: &Envelope) -> Vec<(f64, f64)> {
-    let (lag, correlation) = best_lag(mic, system);
-    if correlation < MIN_CORRELATION {
-        return Vec::new();
-    }
+    measure(mic, system).spans
+}
 
-    // What the echo of this room usually sounds like, relative to what was
-    // played. Taken from the recording itself: a laptop with its speakers up
-    // and a headset are different rooms, and neither is a constant we could
-    // have written down.
-    let mut ratios: Vec<f32> = Vec::new();
-    for index in lag..mic.len().min(system.len() + lag) {
-        let played = system.rms[index - lag];
-        if played < SILENCE_RMS {
-            continue;
-        }
-        ratios.push(mic.rms[index] / played);
+/// One line for the log: what was measured and what it decided.
+pub fn describe(measurement: &Measurement) -> String {
+    match (measurement.own_voice_rms, measurement.echo_share) {
+        (Some(own), share) => format!(
+            "own voice {:.3} RMS, microphone while the speakers played at {} of it, \
+             delay {:.0} ms (correlation {:.2}), {:.1}s marked as echo in {} stretches",
+            own,
+            share.map_or("—".to_string(), |share| format!("{:.0}%", share * 100.0)),
+            measurement.lag_ms,
+            measurement.correlation,
+            measurement.covered_ms() / 1000.0,
+            measurement.spans.len()
+        ),
+        (None, _) => format!(
+            "the owner never spoke alone long enough to learn his level; nothing marked \
+             (delay {:.0} ms, correlation {:.2})",
+            measurement.lag_ms, measurement.correlation
+        ),
     }
-    if ratios.len() < 8 {
-        return Vec::new();
-    }
-    ratios.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
-    let typical = ratios[ratios.len() / 2];
-    let ceiling = typical * OWN_VOICE_MARGIN;
-
-    let mut marked = vec![false; mic.len()];
-    for index in lag..mic.len().min(system.len() + lag) {
-        let played = system.rms[index - lag];
-        let heard = mic.rms[index];
-        if played < SILENCE_RMS {
-            continue;
-        }
-        // Loud enough to be his own voice over the echo: left alone.
-        if heard > played * ceiling.max(1.0) || heard > played * OWN_VOICE_MARGIN.max(ceiling) {
-            continue;
-        }
-        marked[index] = true;
-    }
-
-    spans_of(&marked, mic.window_ms)
 }
 
 /// Runs of marked windows, as milliseconds, with the short ones dropped.
@@ -222,22 +305,24 @@ mod tests {
         vec![0.0; (seconds * RATE as f64) as usize]
     }
 
-    /// The room this exists for: the other person out of the speakers, the
-    /// microphone hearing them a little later and much quieter.
+    /// The room this exists for, as a dialogue: the other person out of the
+    /// speakers twice, reaching the microphone a little later and much
+    /// quieter; the owner answering in between, at his own level.
     fn a_call_with_echo() -> (Vec<f32>, Vec<f32>) {
+        let mut system = silence(12.0);
+        let mut mic = silence(12.0);
+
         let mut seed = 7;
-        let mut system = silence(10.0);
-        let mut mic = silence(10.0);
-
-        // The other person speaks twice.
         burst(&mut system, 1000.0, 3000.0, 0.30, &mut seed);
-        burst(&mut system, 6000.0, 8000.0, 0.30, &mut seed);
+        burst(&mut system, 7000.0, 9000.0, 0.30, &mut seed);
 
-        // The same sound reaches the microphone 120 ms later, five times
-        // quieter.
         let mut echo_seed = 7;
         burst(&mut mic, 1120.0, 3120.0, 0.06, &mut echo_seed);
-        burst(&mut mic, 6120.0, 8120.0, 0.06, &mut echo_seed);
+        burst(&mut mic, 7120.0, 9120.0, 0.06, &mut echo_seed);
+
+        // He answers alone, between the two.
+        let mut own_seed = 42;
+        burst(&mut mic, 4000.0, 6500.0, 0.30, &mut own_seed);
 
         (mic, system)
     }
@@ -249,50 +334,100 @@ mod tests {
         )
     }
 
+    fn overlaps(spans: &[(f64, f64)], from_ms: f64, to_ms: f64) -> bool {
+        spans.iter().any(|(from, to)| *from < to_ms && *to > from_ms)
+    }
+
     #[test]
     fn the_echo_is_found_where_the_speakers_played() {
         let (mic, system) = a_call_with_echo();
         let (mic_envelope, system_envelope) = envelopes(&mic, &system);
 
+        let measured = measure(&mic_envelope, &system_envelope);
+
+        assert!(measured.own_voice_rms.is_some(), "his level was not learned");
+        let covered = measured.covered_ms();
+        assert!(
+            covered > 3_500.0,
+            "only {covered:.0} ms of about 4000 ms of echo was found: {}",
+            describe(&measured)
+        );
+        assert!(overlaps(&measured.spans, 1_500.0, 2_500.0));
+        assert!(overlaps(&measured.spans, 7_500.0, 8_500.0));
+    }
+
+    #[test]
+    fn his_own_speech_is_never_cut() {
+        let (mic, system) = a_call_with_echo();
+        let (mic_envelope, system_envelope) = envelopes(&mic, &system);
+
         let spans = echo_spans(&mic_envelope, &system_envelope);
 
-        assert!(!spans.is_empty(), "the echo was not found at all");
-        let covered = covered_ms(&spans);
         assert!(
-            covered > 3_000.0,
-            "only {covered:.0} ms of about 4000 ms of echo was found"
-        );
-        // Nothing is cut where neither track carried anything.
-        assert!(
-            spans.iter().all(|(from, _)| *from > 800.0),
-            "silence before the first word was cut: {spans:?}"
+            !overlaps(&spans, 4_000.0, 6_500.0),
+            "his answer was silenced as echo: {spans:?}"
         );
     }
 
     #[test]
     fn the_owner_talking_over_the_other_person_is_left_alone() {
         let (mut mic, system) = a_call_with_echo();
-        // He answers over the second stretch, loudly, into his own microphone.
+        // He answers over the second stretch, into his own microphone.
         let mut seed = 99;
-        burst(&mut mic, 6500.0, 7500.0, 0.40, &mut seed);
+        burst(&mut mic, 7500.0, 8500.0, 0.30, &mut seed);
         let (mic_envelope, system_envelope) = envelopes(&mic, &system);
 
         let spans = echo_spans(&mic_envelope, &system_envelope);
 
-        let cut_while_he_spoke = spans
-            .iter()
-            .any(|(from, to)| *from < 7_400.0 && *to > 6_600.0);
         assert!(
-            !cut_while_he_spoke,
+            !overlaps(&spans, 7_600.0, 8_400.0),
             "his own answer was silenced as echo: {spans:?}"
         );
     }
 
     #[test]
-    fn two_unrelated_tracks_are_left_alone() {
-        // A recording where the speakers played nothing: the microphone has
-        // his voice and the system track has silence. There is nothing to
-        // correlate, and nothing may be cut.
+    fn a_canceller_that_mangled_the_echo_does_not_hide_it() {
+        // What Windows leaves: not a quieter copy, but something that only
+        // happens at the same time. No shape to correlate with — and still
+        // far below his voice.
+        let mut system = silence(12.0);
+        let mut mic = silence(12.0);
+        let mut seed = 5;
+        burst(&mut system, 1000.0, 3000.0, 0.30, &mut seed);
+        let mut unrelated = 1234;
+        burst(&mut mic, 1100.0, 3100.0, 0.05, &mut unrelated);
+        let mut own_seed = 42;
+        burst(&mut mic, 4000.0, 6500.0, 0.30, &mut own_seed);
+        let (mic_envelope, system_envelope) = envelopes(&mic, &system);
+
+        let measured = measure(&mic_envelope, &system_envelope);
+
+        assert!(
+            measured.covered_ms() > 1_500.0,
+            "the mangled echo was missed: {}",
+            describe(&measured)
+        );
+        assert!(!overlaps(&measured.spans, 4_000.0, 6_500.0));
+    }
+
+    #[test]
+    fn a_recording_where_he_never_speaks_alone_is_left_alone() {
+        let mut system = silence(10.0);
+        let mut mic = silence(10.0);
+        let mut seed = 5;
+        burst(&mut system, 1000.0, 9000.0, 0.30, &mut seed);
+        let mut echo_seed = 5;
+        burst(&mut mic, 1100.0, 9100.0, 0.06, &mut echo_seed);
+        let (mic_envelope, system_envelope) = envelopes(&mic, &system);
+
+        let measured = measure(&mic_envelope, &system_envelope);
+
+        assert!(measured.own_voice_rms.is_none());
+        assert!(measured.spans.is_empty());
+    }
+
+    #[test]
+    fn with_nothing_played_nothing_is_cut() {
         let mut seed = 3;
         let mut mic = silence(10.0);
         burst(&mut mic, 1000.0, 4000.0, 0.30, &mut seed);
@@ -303,18 +438,17 @@ mod tests {
     }
 
     #[test]
-    fn the_delay_between_the_tracks_is_measured() {
+    fn the_delay_between_the_tracks_is_reported() {
         let (mic, system) = a_call_with_echo();
         let (mic_envelope, system_envelope) = envelopes(&mic, &system);
 
-        let (lag, correlation) = best_lag(&mic_envelope, &system_envelope);
+        let measured = measure(&mic_envelope, &system_envelope);
 
-        let lag_ms = lag as f64 * WINDOW_MS;
         assert!(
-            (lag_ms - 120.0).abs() <= 50.0,
-            "measured a delay of {lag_ms:.0} ms instead of about 120 ms"
+            (measured.lag_ms - 120.0).abs() <= 50.0,
+            "reported a delay of {:.0} ms instead of about 120 ms",
+            measured.lag_ms
         );
-        assert!(correlation > MIN_CORRELATION, "correlation {correlation}");
     }
 
     #[test]
@@ -331,7 +465,8 @@ mod tests {
 /// what was said.
 ///
 /// Synthetic noise proves the arithmetic; only a real room proves the
-/// thresholds. Ignored by default because it needs a recording:
+/// thresholds. Ignored by default because it needs a recording, and a track
+/// of a protected archive is encrypted — only the app holds its key:
 ///
 /// ```text
 /// TK_MIC=...\.work\mic.flac TK_SYSTEM=...\.work\system.flac \
@@ -347,31 +482,14 @@ mod real_tracks {
         let mic_path = std::env::var("TK_MIC").expect("TK_MIC");
         let system_path = std::env::var("TK_SYSTEM").expect("TK_SYSTEM");
 
-        let measure = |path: &str| {
+        let envelope_of = |path: &str| {
             let decoded = crate::audio::decoder::decode_audio_file(std::path::Path::new(path))
-                .expect("the track could not be decoded (a track of a protected archive is encrypted: only the app holds the key)");
-            let seconds = decoded.duration_seconds;
+                .expect("the track could not be decoded (a track of a protected archive is encrypted)");
             let samples = decoded.to_whisper_format();
-            let rate = 16_000;
-            (Envelope::measure(&samples, rate, WINDOW_MS), seconds)
+            Envelope::measure(&samples, 16_000, WINDOW_MS)
         };
 
-        let (mic, mic_seconds) = measure(&mic_path);
-        let (system, system_seconds) = measure(&system_path);
-        let (lag, correlation) = best_lag(&mic, &system);
-        let spans = echo_spans(&mic, &system);
-        let covered = covered_ms(&spans);
-
-        println!("microphone: {mic_seconds:.0}s, system: {system_seconds:.0}s");
-        println!(
-            "delay: {:.0} ms, correlation: {correlation:.2}",
-            lag as f64 * WINDOW_MS
-        );
-        println!(
-            "would silence {:.0}s in {} stretches ({:.0}% of the microphone track)",
-            covered / 1000.0,
-            spans.len(),
-            covered / (mic_seconds * 10.0)
-        );
+        let measured = measure(&envelope_of(&mic_path), &envelope_of(&system_path));
+        println!("{}", describe(&measured));
     }
 }
