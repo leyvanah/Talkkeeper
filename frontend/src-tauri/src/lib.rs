@@ -724,6 +724,7 @@ pub fn run() {
             diarization::diarization_download_size,
             diarization::download_diarization_models,
             diarization::diarize_meeting,
+            diarization::diarization_has_device_tracks,
             diarization::rename_meeting_speaker,
             minibar::enter_compact_mode,
             minibar::exit_compact_mode,
