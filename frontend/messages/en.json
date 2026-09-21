@@ -303,6 +303,8 @@
     "tableColumnHost": "You",
     "timelineZoomIn": "Zoom in",
     "timelineZoomOut": "Zoom out",
+    "timelinePause": "pause {duration}",
+    "timelinePauseHint": "A {duration} pause, shortened on screen",
     "transcriptEdit": "Correct this line",
     "transcriptEditSave": "Save",
     "transcriptEditCancel": "Cancel",

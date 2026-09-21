@@ -303,6 +303,8 @@
     "tableColumnHost": "Вы",
     "timelineZoomIn": "Крупнее",
     "timelineZoomOut": "Мельче",
+    "timelinePause": "пауза {duration}",
+    "timelinePauseHint": "Пауза {duration}, на экране сокращена",
     "transcriptEdit": "Исправить реплику",
     "transcriptEditSave": "Сохранить",
     "transcriptEditCancel": "Отмена",
