@@ -23,6 +23,45 @@ interface TranscriptButtonGroupProps {
 }
 
 
+/** One way of telling the speakers apart, as a choice in the speakers dialog. */
+function SpeakerMethodOption({
+  selected,
+  onSelect,
+  title,
+  hint,
+}: {
+  selected: boolean;
+  onSelect: () => void;
+  title: string;
+  hint: string;
+}) {
+  return (
+    <button
+      type="button"
+      role="radio"
+      aria-checked={selected}
+      onClick={onSelect}
+      // The theme recolours border utilities, so the chosen one is set here.
+      style={{ borderColor: selected ? 'var(--af-accent)' : 'var(--af-border)' }}
+      className={`flex w-full items-start gap-2.5 rounded-md border px-3 py-2 text-left transition-colors ${
+        selected ? 'bg-[var(--af-hover)]' : 'hover:bg-[var(--af-hover)]'
+      }`}
+    >
+      <span
+        aria-hidden
+        className="mt-1 flex h-3.5 w-3.5 shrink-0 items-center justify-center rounded-full border"
+        style={{ borderColor: selected ? 'var(--af-accent)' : 'var(--af-text-3)' }}
+      >
+        {selected && <span className="h-1.5 w-1.5 rounded-full bg-[var(--af-accent)]" />}
+      </span>
+      <span>
+        <span className="block text-sm font-medium text-[var(--af-text,#111827)]">{title}</span>
+        <span className="mt-0.5 block text-xs text-gray-500">{hint}</span>
+      </span>
+    </button>
+  );
+}
+
 export function TranscriptButtonGroup({
   transcriptCount,
   onCopyTranscript,
@@ -50,11 +89,32 @@ export function TranscriptButtonGroup({
       .catch(() => setDiarizeAvailable(false));
   }, []);
 
+  // A recording with a track per side is labelled by device: the microphone
+  // is the owner, the speakers the other side. No model, no count to ask for -
+  // the model is only the choice when several people shared the far side.
+  const [hasDeviceTracks, setHasDeviceTracks] = useState(false);
+  const [byModel, setByModel] = useState(false);
+  useEffect(() => {
+    if (!meetingId) {
+      setHasDeviceTracks(false);
+      return;
+    }
+    let cancelled = false;
+    invoke<boolean>('diarization_has_device_tracks', { meetingId })
+      .then((value) => !cancelled && setHasDeviceTracks(value))
+      .catch(() => !cancelled && setHasDeviceTracks(false));
+    return () => {
+      cancelled = true;
+    };
+  }, [meetingId]);
+  const canIdentifySpeakers = diarizeAvailable || hasDeviceTracks;
+  const byDevice = hasDeviceTracks && !byModel;
+
   const handleRetranscribeComplete = useCallback(async () => {
     // Retranscription replaces transcript rows and therefore clears speaker
     // labels. Immediately re-run the improved offline pass (dual tracks when
     // available; enrolled voiceprint fallback for older mixed recordings).
-    if (meetingId && diarizeAvailable) {
+    if (meetingId && canIdentifySpeakers) {
       const toastId = toast.loading(t('refreshingSpeakersTitle'), {
         description: t('refreshingSpeakersDescription'),
       });
@@ -74,9 +134,9 @@ export function TranscriptButtonGroup({
     if (onRefetchTranscripts) {
       await onRefetchTranscripts();
     }
-  }, [meetingId, diarizeAvailable, expectedSpeakers, onRefetchTranscripts, t]);
+  }, [meetingId, canIdentifySpeakers, expectedSpeakers, onRefetchTranscripts, t]);
 
-  const handleIdentifySpeakers = useCallback(async (expected?: number) => {
+  const handleIdentifySpeakers = useCallback(async (expected?: number, method?: 'device' | 'model') => {
     if (!meetingId || isDiarizing) return;
     setShowSpeakerDialog(false);
     setIsDiarizing(true);
@@ -87,6 +147,7 @@ export function TranscriptButtonGroup({
       const res = await invoke<{ num_speakers: number; labeled: number }>('diarize_meeting', {
         meetingId,
         numSpeakers: expected ?? null,
+        method: method ?? null,
       });
       toast.success(
         res.num_speakers > 0
@@ -151,13 +212,14 @@ export function TranscriptButtonGroup({
           <span className="transcript-action-label">{t('recordingFolder')}</span>
         </Button>
 
-        {diarizeAvailable && meetingId && (
+        {canIdentifySpeakers && meetingId && (
           <Button
             size="sm"
             variant="outline"
             className="transcript-action-button h-9 w-9 shrink-0 px-0"
             onClick={() => {
               setExpectedSpeakers('');
+              setByModel(false);
               setShowSpeakerDialog(true);
             }}
             disabled={isDiarizing || transcriptCount === 0}
@@ -196,6 +258,26 @@ export function TranscriptButtonGroup({
             {t('identifySpeakersDialogTitle')}
           </DialogTitle>
           <div className="mt-2 space-y-3">
+            {hasDeviceTracks && (
+              <div role="radiogroup" aria-label={t('identifySpeakersDialogTitle')} className="space-y-2">
+                <SpeakerMethodOption
+                  selected={!byModel}
+                  onSelect={() => setByModel(false)}
+                  title={t('speakersByDevice')}
+                  hint={t('speakersByDeviceHint')}
+                />
+                {diarizeAvailable && (
+                  <SpeakerMethodOption
+                    selected={byModel}
+                    onSelect={() => setByModel(true)}
+                    title={t('speakersByModel')}
+                    hint={t('speakersByModelHint')}
+                  />
+                )}
+              </div>
+            )}
+            {!byDevice && (
+            <>
             <p className="text-sm text-gray-500">
               {t.rich('identifySpeakersDialogHint', {
                 b: (chunks) => (
@@ -207,14 +289,14 @@ export function TranscriptButtonGroup({
               type="number"
               min={1}
               max={20}
-              autoFocus
+              autoFocus={!hasDeviceTracks}
               value={expectedSpeakers}
               onChange={(e) => setExpectedSpeakers(e.target.value)}
               onKeyDown={(e) => {
                 if (e.key === 'Enter') {
                   e.preventDefault();
                   const n = parseInt(expectedSpeakers, 10);
-                  handleIdentifySpeakers(Number.isFinite(n) && n > 0 ? n : undefined);
+                  handleIdentifySpeakers(Number.isFinite(n) && n > 0 ? n : undefined, 'model');
                 }
               }}
               placeholder={t('autoDetect')}
@@ -236,6 +318,8 @@ export function TranscriptButtonGroup({
                 </button>
               ))}
             </div>
+            </>
+            )}
           </div>
           <div className="mt-4 flex justify-end gap-2">
             <Button variant="outline" size="sm" onClick={() => setShowSpeakerDialog(false)}>
@@ -245,12 +329,20 @@ export function TranscriptButtonGroup({
               size="sm"
               className="bg-blue-600 text-white hover:bg-blue-700"
               onClick={() => {
+                if (byDevice) {
+                  handleIdentifySpeakers(undefined, 'device');
+                  return;
+                }
                 const n = parseInt(expectedSpeakers, 10);
-                handleIdentifySpeakers(Number.isFinite(n) && n > 0 ? n : undefined);
+                handleIdentifySpeakers(Number.isFinite(n) && n > 0 ? n : undefined, 'model');
               }}
             >
               <Users size={16} className="mr-1.5" />
-              {expectedSpeakers ? t('findSpeakersCount', { count: expectedSpeakers }) : t('autoDetect')}
+              {byDevice
+                ? t('speakersLabelByDevice')
+                : expectedSpeakers
+                  ? t('findSpeakersCount', { count: expectedSpeakers })
+                  : t('autoDetect')}
             </Button>
           </div>
         </DialogContent>

@@ -441,6 +441,42 @@ pub fn diarize_file_with_models(
 // Tauri commands
 // ============================================================================
 
+/// The recording of a meeting, wherever it is found.
+async fn meeting_audio(pool: &sqlx::SqlitePool, meeting_id: &str) -> Result<Option<PathBuf>, String> {
+    let meeting: Option<(Option<String>, String)> =
+        sqlx::query_as("SELECT folder_path, title FROM meetings WHERE id = ?")
+            .bind(meeting_id)
+            .fetch_optional(pool)
+            .await
+            .map_err(|e| format!("Failed to read meeting: {}", e))?;
+
+    let (folder_path, title) = match meeting {
+        Some((f, t)) => (
+            f,
+            Some(
+                fields::open(fields::MEETING_TITLE, &t)
+                    .map_err(|e| format!("Failed to read meeting: {}", e))?,
+            ),
+        ),
+        None => (None, None),
+    };
+    Ok(find_meeting_audio(folder_path, title.as_deref()))
+}
+
+/// Was the meeting recorded with a track per side? Then its speakers are
+/// labelled by device, and there is no count of voices to ask for.
+#[tauri::command]
+pub async fn diarization_has_device_tracks(
+    state: tauri::State<'_, crate::state::AppState>,
+    meeting_id: String,
+) -> Result<bool, String> {
+    let source = meeting_audio(state.db_manager.pool(), &meeting_id).await?;
+    Ok(source
+        .as_deref()
+        .and_then(|path| path.parent())
+        .is_some_and(|folder| by_device::device_tracks(folder).is_some()))
+}
+
 /// Are the diarization models installed?
 #[tauri::command]
 pub async fn diarization_models_available() -> Result<bool, String> {
@@ -831,28 +867,9 @@ pub async fn diarize_meeting(
     let _operation_guard = operation_guard().await;
     let pool = state.db_manager.pool();
 
-    // Resolve the recording.
-    let meeting: Option<(Option<String>, String)> =
-        sqlx::query_as("SELECT folder_path, title FROM meetings WHERE id = ?")
-            .bind(&meeting_id)
-            .fetch_optional(pool)
-            .await
-            .map_err(|e| format!("Failed to read meeting: {}", e))?;
-
-    let (folder_path, title) = match meeting {
-        Some((f, t)) => (
-            f,
-            Some(
-                fields::open(fields::MEETING_TITLE, &t)
-                    .map_err(|e| format!("Failed to read meeting: {}", e))?,
-            ),
-        ),
-        None => (None, None),
-    };
-
     let source = match audio_path {
         Some(p) => PathBuf::from(p),
-        None => find_meeting_audio(folder_path, title.as_deref()).ok_or_else(|| {
+        None => meeting_audio(pool, &meeting_id).await?.ok_or_else(|| {
             format!(
                 "No recording found for this meeting. Looked in the meeting folder, \
                  {} and the app data folder.",
