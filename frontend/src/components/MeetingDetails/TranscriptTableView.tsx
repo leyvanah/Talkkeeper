@@ -100,6 +100,16 @@ const DEFAULT_SCALE = 32;
 const SCALE_STORAGE_KEY = 'transcript_timeline_scale';
 
 const LAYOUT = { gap: 6, padding: 12 };
+/**
+ * Pauses longer than a second and a half are shortened, to two seconds at
+ * most: a recording that starts with a minute of silence no longer opens on
+ * an empty screen, and a long pause is marked rather than drawn.
+ */
+const QUIET = { keep: 1.5, rate: 0.1, most: 2 };
+/** A shortened pause is marked only from this long: a shorter one is barely shortened. */
+const QUIET_MARK_MIN = 5;
+/** A shortened pause is labelled only where it has room for the text. */
+const QUIET_LABEL_MIN = 18;
 
 /** `m:ss`, `h:mm:ss` past an hour, with tenths when asked. */
 function clock(seconds: number, tenths = false): string {
@@ -461,7 +471,7 @@ export function TranscriptTableView({
           const text = own.reduce((sum, h) => sum + h, 0) + PIECE_GAP * Math.max(0, own.length - 1);
           return LABEL_ROW / 2 + LABEL_GAP + BORDER * 2 + PAD_Y * 2 + text;
         },
-        { pxPerSecond: scale, ...LAYOUT },
+        { pxPerSecond: scale, ...LAYOUT, quiet: QUIET },
       ),
     // measureVersion stands for the heights, which live in a ref.
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -730,6 +740,32 @@ export function TranscriptTableView({
                 style={{ top: tick.y, left: ruler, right: 0 }}
               />
             ))}
+
+          {/* Shortened pauses: a faint band across the columns, behind the
+              lines, with how long the pause really was. */}
+          {layout.quiet
+            .filter((pause) => pause.to - pause.from >= QUIET_MARK_MIN)
+            .map((pause) => {
+            const length = clock(pause.to - pause.from);
+            return (
+              <div
+                key={`quiet-${pause.from}`}
+                aria-hidden
+                title={t('timelinePauseHint', { duration: length })}
+                className="absolute flex items-center justify-center border-y border-dashed border-[var(--af-border)] text-[10px] text-[var(--af-text-3)]"
+                style={{
+                  top: pause.top,
+                  height: Math.max(0, pause.bottom - pause.top),
+                  left: 0,
+                  right: 0,
+                  background:
+                    'repeating-linear-gradient(135deg, transparent 0 6px, color-mix(in srgb, var(--af-border) 35%, transparent) 6px 7px)',
+                }}
+              >
+                {pause.bottom - pause.top >= QUIET_LABEL_MIN && t('timelinePause', { duration: length })}
+              </div>
+            );
+          })}
 
           {playhead && (
             <div
