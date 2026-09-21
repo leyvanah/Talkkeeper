@@ -20,7 +20,7 @@ import { useTemplates } from '@/hooks/meeting-details/useTemplates';
 import { useCopyOperations } from '@/hooks/meeting-details/useCopyOperations';
 import { useMeetingOperations } from '@/hooks/meeting-details/useMeetingOperations';
 import { useConfig } from '@/contexts/ConfigContext';
-import { PostCallProcessingDialog } from '@/components/MeetingDetails/PostCallProcessingDialog';
+import { usePostCall } from '@/contexts/PostCallContext';
 import { MeetingExportDialog } from '@/components/MeetingDetails/MeetingExportDialog';
 import { SummaryRegenerationDialog } from '@/components/MeetingDetails/SummaryRegenerationDialog';
 
@@ -75,7 +75,6 @@ export default function PageContent({
   const [templateEditorOpen, setTemplateEditorOpen] = useState(false);
   const [isRecording] = useState(false);
   const [summaryResponse] = useState<SummaryResponse | null>(null);
-  const [postCallProcessingCompletedMeetingId, setPostCallProcessingCompletedMeetingId] = useState<string | null>(null);
   const [exportOpen, setExportOpen] = useState(false);
   const [regenerationRequest, setRegenerationRequest] = useState<{
     open: boolean;
@@ -171,9 +170,23 @@ export default function PageContent({
     meeting,
   });
 
-  // Track page view
+  // The work after a recording belongs to the application, not to this page:
+  // the page only asks for it (again, harmlessly, on every visit) and reloads
+  // the transcript each time the work replaces it.
+  const postCall = usePostCall();
   useEffect(() => {
-  }, []);
+    if (isPostCallRecording) postCall.begin(meeting.id, meeting.folder_path ?? null);
+  }, [isPostCallRecording, meeting.id, meeting.folder_path, postCall.begin]);
+  const transcriptVersion = postCall.transcriptVersion(meeting.id);
+  const refetchRef = useRef(onRefetchTranscripts);
+  refetchRef.current = onRefetchTranscripts;
+  useEffect(() => {
+    if (transcriptVersion === 0) return;
+    void refetchRef.current?.()?.catch((error) =>
+      console.error('Failed to reload the transcript after processing:', error),
+    );
+  }, [transcriptVersion]);
+  const postCallDone = postCall.isDone(meeting.id);
 
   // Auto-generate summary when flag is set
   useEffect(() => {
@@ -181,11 +194,12 @@ export default function PageContent({
       if (
         shouldAutoGenerate &&
         meetingData.transcripts.length > 0 &&
-        (!isPostCallRecording || postCallProcessingCompletedMeetingId === meeting.id)
+        (!isPostCallRecording || postCallDone)
       ) {
         if (isPostCallRecording) {
           const summaryStartKey = `post-call-summary-started:${meeting.id}`;
           if (sessionStorage.getItem(summaryStartKey)) {
+            postCall.release(meeting.id);
             onAutoGenerateComplete?.();
             return;
           }
@@ -208,6 +222,7 @@ export default function PageContent({
 
           if (accepted) {
             sessionStorage.setItem(summaryStartKey, 'started');
+            postCall.release(meeting.id);
             onAutoGenerateComplete?.();
           }
           return;
@@ -225,7 +240,8 @@ export default function PageContent({
     meeting.id,
     meetingData.transcripts.length,
     isPostCallRecording,
-    postCallProcessingCompletedMeetingId,
+    postCallDone,
+    postCall.release,
     modelConfig.provider,
     modelConfig.model,
     summaryGeneration.handleGenerateSummary,
@@ -342,13 +358,6 @@ export default function PageContent({
         initialContext={regenerationRequest.initialContext}
         speakerNamesChanged={regenerationRequest.speakerNamesChanged}
         onRegenerate={summaryGeneration.handleRegenerateSummary}
-      />
-      <PostCallProcessingDialog
-        enabled={isPostCallRecording}
-        meetingId={meeting.id}
-        meetingFolderPath={meeting.folder_path}
-        onRefetchTranscripts={onRefetchTranscripts}
-        onComplete={() => setPostCallProcessingCompletedMeetingId(meeting.id)}
       />
     </motion.div>
   );

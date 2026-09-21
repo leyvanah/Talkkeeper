@@ -1283,6 +1283,7 @@
     "summaryRegenerate": "Пересоздать",
     "blockPlaceholder": "Введите «/» для команд…",
     "postCallComplete": "Пост-обработка завершена",
+    "postCallOpenMeeting": "Открыть встречу",
     "postCallFailed": "Пост-обработка не удалась",
     "postCallSpeakerFailed": "Не удалось определить спикеров",
     "postCallUsingLive": "Используем транскрипт реального времени",

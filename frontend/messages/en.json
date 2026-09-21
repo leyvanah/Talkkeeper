@@ -1283,6 +1283,7 @@
     "summaryRegenerate": "Regenerate",
     "blockPlaceholder": "Type ‘/’ for commands…",
     "postCallComplete": "Post-call processing complete",
+    "postCallOpenMeeting": "Open the meeting",
     "postCallFailed": "Post-call processing failed",
     "postCallSpeakerFailed": "Speaker identification failed",
     "postCallUsingLive": "Using the live transcript",
