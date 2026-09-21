@@ -13,16 +13,28 @@ import { useTranslations } from 'next-intl';
 import { Minus, Square, Copy, X } from 'lucide-react';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 
+/** Tauri's unlisten is asynchronous: a failure in it arrives as a rejected
+ *  promise that try/catch would let through, over the whole window. */
+function quietly(unlisten: (() => void) | undefined) {
+  try {
+    void Promise.resolve(unlisten?.() as unknown).catch(() => {});
+  } catch {
+    // Already gone.
+  }
+}
+
 function useWindowMaximized(): [boolean, () => void] {
   const [maximized, setMaximized] = useState(false);
 
   useEffect(() => {
     let stop: (() => void) | undefined;
     let cancelled = false;
-    const appWindow = getCurrentWindow();
 
     const follow = async () => {
       try {
+        // Inside the try: before Tauri is there (a browser preview, the very
+        // first frame) this throws, and the buttons should simply do nothing.
+        const appWindow = getCurrentWindow();
         const now = await appWindow.isMaximized();
         if (!cancelled) setMaximized(now);
         const unlisten = await appWindow.onResized(async () => {
@@ -32,7 +44,7 @@ function useWindowMaximized(): [boolean, () => void] {
             // The window is going away; nothing to report.
           }
         });
-        if (cancelled) unlisten();
+        if (cancelled) quietly(unlisten);
         else stop = unlisten;
       } catch {
         // Outside Tauri (a browser preview), the buttons simply do nothing.
@@ -42,7 +54,7 @@ function useWindowMaximized(): [boolean, () => void] {
 
     return () => {
       cancelled = true;
-      stop?.();
+      quietly(stop);
     };
   }, []);
 

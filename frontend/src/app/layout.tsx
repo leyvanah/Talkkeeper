@@ -7,6 +7,7 @@ import { SidebarProvider } from '@/components/Sidebar/SidebarProvider'
 import { PanelLayoutProvider } from '@/components/PanelLayoutProvider'
 import { WindowTitleProvider } from '@/components/AppHeader'
 import { WindowResizeEdges } from '@/components/WindowResizeEdges'
+import { BareWindowBar } from '@/components/BareWindowBar'
 import MainContent from '@/components/MainContent'
 import { Toaster, toast } from 'sonner'
 import "sonner/dist/styles.css"
@@ -85,10 +86,20 @@ function ArchiveGate({ children }: { children: React.ReactNode }) {
   const { status, loading } = useSecurity()
 
   if (loading) {
-    return <div className="h-screen bg-[var(--af-bg)]" />
+    return (
+      <>
+        <BareWindowBar />
+        <div className="h-screen bg-[var(--af-bg)]" />
+      </>
+    )
   }
   if (status?.state === 'locked') {
-    return <LockScreen />
+    return (
+      <>
+        <BareWindowBar />
+        <LockScreen />
+      </>
+    )
   }
   return <>{children}</>
 }
@@ -374,10 +385,17 @@ export default function RootLayout({
     <LocaleProvider>
     <html lang="en" className="dark">
       <body className={`${sourceSans3.variable} font-sans antialiased`}>
+        {/* The window has no frame of its own, so the app draws the edges to
+            resize it by — on every screen, not only inside the app. */}
+        <WindowResizeEdges />
         {!startupResolved ? (
-          <div className="h-screen bg-[var(--af-bg)]" />
+          <>
+            <BareWindowBar />
+            <div className="h-screen bg-[var(--af-bg)]" />
+          </>
         ) : startupError ? (
           <div className="flex h-screen items-center justify-center bg-[var(--af-bg)] px-6">
+            <BareWindowBar />
             <div className="max-w-md rounded-xl border border-[var(--af-border)] bg-[var(--af-panel)] p-6 text-center shadow-xl">
               <h1 className="text-lg font-semibold text-[var(--af-text)]">{getLocaleMessages().app.startupCheckFailed}</h1>
               <p className="mt-2 text-sm text-[var(--af-text-2)]">{startupError}</p>
@@ -388,6 +406,7 @@ export default function RootLayout({
           </div>
         ) : pendingCrashReport ? (
           <>
+            <BareWindowBar />
             <div className="h-screen bg-[var(--af-bg)]" />
             <CrashReportDialog
               report={pendingCrashReport}
@@ -414,14 +433,13 @@ export default function RootLayout({
                                 {/* Download progress toast provider - listens for background downloads */}
                                 <DownloadProgressToastProvider />
 
-                                {/* The window has no frame of its own, so the
-                                    app draws the edges to resize it by. Its
-                                    buttons live in the header. */}
-                                <WindowResizeEdges />
 
                                 {/* Show onboarding or main app */}
                                 {showOnboarding ? (
-                                  <OnboardingFlow onComplete={handleOnboardingComplete} />
+                                  <>
+                                    <BareWindowBar />
+                                    <OnboardingFlow onComplete={handleOnboardingComplete} />
+                                  </>
                                 ) : (
                                   <div className="flex min-h-0 min-w-0 h-screen overflow-hidden">
                                     <Sidebar />
