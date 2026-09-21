@@ -14,6 +14,7 @@
 //!
 //! Models live install-locally in `<install>/data/models/diarization`.
 
+pub mod by_device;
 pub mod clustering;
 pub mod download;
 pub mod dsp;
@@ -822,6 +823,9 @@ pub async fn diarize_meeting(
     audio_path: Option<String>,
     num_speakers: Option<usize>,
     threshold: Option<f32>,
+    // "device" or "model". Left out, a recording with separate tracks is
+    // labelled by device and any other by the model.
+    method: Option<String>,
 ) -> Result<MeetingDiarizationResult, String> {
     let _busy = crate::security::session::busy();
     let _operation_guard = operation_guard().await;
@@ -856,6 +860,19 @@ pub async fn diarize_meeting(
             )
         })?,
     };
+    // A recording with a track per side already says who spoke: the
+    // microphone is the owner and the speakers are the other side. Nothing to
+    // cluster, nothing to guess, and it takes a second rather than minutes.
+    let wants_model = method.as_deref() == Some("model");
+    if !wants_model {
+        if let Some(folder) = source.parent() {
+            if by_device::device_tracks(folder).is_some() {
+                log::info!("🎙️ Labelling meeting {} by device", meeting_id);
+                return by_device::assign(pool, &meeting_id, folder).await;
+            }
+        }
+    }
+
     log::info!("🧑‍🤝‍🧑 Diarizing meeting {} using {}", meeting_id, source.display());
 
     // Run the CPU-heavy pipeline off the async core threads. New recordings
