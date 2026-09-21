@@ -746,21 +746,24 @@ Function PageReinstall
     StrCpy $R2 "$(addOrReinstall)"
     StrCpy $R3 "$(uninstallApp)"
     !insertmacro MUI_HEADER_TEXT "$(alreadyInstalled)" "$(chooseMaintenanceOption)"
-  ; Upgrading
+  ; Upgrading. Keeping the installed version comes first and is the default:
+  ; uninstalling is what can take the owner's data with it, so it is the
+  ; second choice, picked on purpose.
   ${ElseIf} $R0 = 1
     StrCpy $R1 "$(olderOrUnknownVersionInstalled)"
-    StrCpy $R2 "$(uninstallBeforeInstalling)"
-    StrCpy $R3 "$(dontUninstall)"
+    StrCpy $R2 "$(dontUninstall)"
+    StrCpy $R3 "$(uninstallBeforeInstalling)"
     !insertmacro MUI_HEADER_TEXT "$(alreadyInstalled)" "$(choowHowToInstall)"
   ; Downgrading
   ${ElseIf} $R0 = -1
     StrCpy $R1 "$(newerVersionInstalled)"
-    StrCpy $R2 "$(uninstallBeforeInstalling)"
+    ; The same order as upgrading.
     !if "${ALLOWDOWNGRADES}" == "true"
-      StrCpy $R3 "$(dontUninstall)"
+      StrCpy $R2 "$(dontUninstall)"
     !else
-      StrCpy $R3 "$(dontUninstallDowngrade)"
+      StrCpy $R2 "$(dontUninstallDowngrade)"
     !endif
+    StrCpy $R3 "$(uninstallBeforeInstalling)"
     !insertmacro MUI_HEADER_TEXT "$(alreadyInstalled)" "$(choowHowToInstall)"
   ${Else}
     Abort
@@ -797,10 +800,6 @@ Function PageReinstall
     Pop $R3
     System::Call 'uxtheme::SetWindowTheme(p$R3, w" ", w" ")'
     SetCtlColors $R3 E6EBF5 0A0C10
-    ; Disable this radio button if downgrading and downgrades are disabled
-    !if "${ALLOWDOWNGRADES}" == "false"
-      ${IfThen} $R0 = -1 ${|} EnableWindow $R3 0 ${|}
-    !endif
     ${NSD_OnClick} $R3 PageReinstallUpdateSelection
 
     ; Check the first radio button if this the first time
@@ -811,6 +810,16 @@ Function PageReinstall
     ${Else}
       SendMessage $R3 ${BM_SETCHECK} ${BST_CHECKED} 0
     ${EndIf}
+
+    ; Downgrading with downgrades disabled: keeping is not possible, so only
+    ; uninstalling is offered.
+    !if "${ALLOWDOWNGRADES}" == "false"
+      ${If} $R0 = -1
+        EnableWindow $R2 0
+        SendMessage $R2 ${BM_SETCHECK} ${BST_UNCHECKED} 0
+        SendMessage $R3 ${BM_SETCHECK} ${BST_CHECKED} 0
+      ${EndIf}
+    !endif
 
     ${NSD_SetFocus} $R2
     nsDialogs::Show
@@ -837,6 +846,14 @@ Function PageLeaveReinstall
     Goto reinst_done
   ${EndIf}
 
+  ; A passive install shows no page, so no button is checked. It keeps doing
+  ; what it did before the choices swapped places: an upgrade or downgrade
+  ; keeps the installed version.
+  ${If} $PassiveMode = 1
+  ${AndIf} $R0 <> 0
+    StrCpy $R1 1
+  ${EndIf}
+
   ; $R0 holds whether same(0)/upgrading(1)/downgrading(-1) version
   ; $R1 holds the radio buttons state:
   ;   1 => first choice was selected
@@ -848,16 +865,16 @@ Function PageLeaveReinstall
       Goto reinst_uninstall
     ${EndIf}
   ${ElseIf} $R0 = 1 ; Upgrading
-    ${If} $R1 = 1              ; User chose to uninstall
-      Goto reinst_uninstall
+    ${If} $R1 = 1              ; User chose to keep the installed version
+      Goto reinst_done
     ${Else}
-      Goto reinst_done         ; User chose NOT to uninstall
+      Goto reinst_uninstall    ; User chose to uninstall
     ${EndIf}
   ${ElseIf} $R0 = -1 ; Downgrading
-    ${If} $R1 = 1              ; User chose to uninstall
-      Goto reinst_uninstall
+    ${If} $R1 = 1              ; User chose to keep the installed version
+      Goto reinst_done
     ${Else}
-      Goto reinst_done         ; User chose NOT to uninstall
+      Goto reinst_uninstall    ; User chose to uninstall
     ${EndIf}
   ${EndIf}
 
