@@ -10,9 +10,16 @@
 
 import { forwardRef, useEffect, useImperativeHandle, useMemo, useRef, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
-import { useTranslations } from 'next-intl';
+import { useLocale, useTranslations } from 'next-intl';
 import { Pause, Play } from 'lucide-react';
-import { useAudioPlayer } from '@/hooks/useAudioPlayer';
+import { PLAYBACK_RATES, useAudioPlayer } from '@/hooks/useAudioPlayer';
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuRadioGroup,
+  DropdownMenuRadioItem,
+  DropdownMenuTrigger,
+} from '@/components/ui/dropdown-menu';
 import { TranscriptSegmentData } from '@/types';
 import { Playhead } from '@/lib/playhead';
 
@@ -34,6 +41,11 @@ interface RecordingPlayerProps {
   playhead?: Playhead;
   /** Called with whether this meeting has a recording to play at all. */
   onAvailabilityChange?: (available: boolean) => void;
+}
+
+/** `1×`, `1,5×` — with the reader's own decimal mark. */
+function formatRate(rate: number, locale: string): string {
+  return `${rate.toLocaleString(locale, { maximumFractionDigits: 2 })}×`;
 }
 
 /** `H:MM:SS` past an hour, `MM:SS` before it. */
@@ -71,7 +83,9 @@ export const RecordingPlayer = forwardRef<RecordingPlayerHandle, RecordingPlayer
     const t = useTranslations('meetingDetails');
     const [audioPath, setAudioPath] = useState<string | null>(null);
     const [lookedUp, setLookedUp] = useState(false);
-    const { isPlaying, currentTime, duration, error, play, pause, seek } = useAudioPlayer(audioPath);
+    const locale = useLocale();
+    const { isPlaying, currentTime, duration, error, play, pause, seek, rate, setRate } =
+      useAudioPlayer(audioPath);
 
     useEffect(() => {
       let cancelled = false;
@@ -187,6 +201,32 @@ export const RecordingPlayer = forwardRef<RecordingPlayerHandle, RecordingPlayer
           <span className="shrink-0 text-xs tabular-nums text-[var(--af-text-3)]">
             {formatTime(duration)}
           </span>
+
+          <DropdownMenu>
+            <DropdownMenuTrigger
+              aria-label={t('playerSpeed')}
+              title={t('playerSpeed')}
+              className={`w-12 shrink-0 rounded-md border px-1.5 py-1 text-xs tabular-nums transition hover:bg-[var(--af-hover)] ${
+                rate === 1
+                  ? 'border-[var(--af-border)] text-[var(--af-text-2)]'
+                  : 'border-[var(--af-accent)] text-[var(--af-text)]'
+              }`}
+            >
+              {formatRate(rate, locale)}
+            </DropdownMenuTrigger>
+            <DropdownMenuContent side="top" align="end" className="min-w-[5rem]">
+              <DropdownMenuRadioGroup
+                value={String(rate)}
+                onValueChange={(value) => setRate(Number(value))}
+              >
+                {[...PLAYBACK_RATES].reverse().map((option) => (
+                  <DropdownMenuRadioItem key={option} value={String(option)} className="tabular-nums">
+                    {formatRate(option, locale)}
+                  </DropdownMenuRadioItem>
+                ))}
+              </DropdownMenuRadioGroup>
+            </DropdownMenuContent>
+          </DropdownMenu>
         </div>
 
         {/* The reason is technical and English, so it lives in the tooltip;

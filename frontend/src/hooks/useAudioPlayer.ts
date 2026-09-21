@@ -19,11 +19,27 @@ import { convertFileSrc } from '@tauri-apps/api/core';
 /** Must match `recording_protocol::SCHEME`. */
 const RECORDING_SCHEME = 'recording';
 
+/** The speeds offered, slowest first. */
+export const PLAYBACK_RATES = [0.5, 0.75, 1, 1.25, 1.5, 1.75, 2, 2.5, 3] as const;
+const RATE_STORAGE_KEY = 'playback_rate';
+
+/** The speed chosen last time, if it is still one of those offered. */
+function savedRate(): number {
+  try {
+    const saved = Number(localStorage.getItem(RATE_STORAGE_KEY));
+    return (PLAYBACK_RATES as readonly number[]).includes(saved) ? saved : 1;
+  } catch {
+    return 1;
+  }
+}
+
 export const useAudioPlayer = (audioPath: string | null) => {
   const [isPlaying, setIsPlaying] = useState(false);
   const [currentTime, setCurrentTime] = useState(0);
   const [duration, setDuration] = useState(0);
   const [error, setError] = useState<string | null>(null);
+  const [rate, setRateState] = useState(1);
+  const rateRef = useRef(1);
   const elementRef = useRef<HTMLAudioElement | null>(null);
   const frameRef = useRef<number | null>(null);
 
@@ -60,6 +76,9 @@ export const useAudioPlayer = (audioPath: string | null) => {
     // Metadata is enough to draw the timeline; the audio itself follows the
     // playhead, so opening a long meeting costs one small request.
     element.preload = 'metadata';
+    // The browser keeps the pitch when the speed changes, so a faster voice
+    // is still the same voice.
+    element.playbackRate = rateRef.current;
     elementRef.current = element;
 
     const onLoaded = () => setDuration(Number.isFinite(element.duration) ? element.duration : 0);
@@ -134,7 +153,26 @@ export const useAudioPlayer = (audioPath: string | null) => {
     setCurrentTime(target);
   }, []);
 
-  return { isPlaying, currentTime, duration, error, play, pause, seek };
+  // Read once on mount: storage is not there during the static build.
+  useEffect(() => {
+    const saved = savedRate();
+    rateRef.current = saved;
+    setRateState(saved);
+    if (elementRef.current) elementRef.current.playbackRate = saved;
+  }, []);
+
+  const setRate = useCallback((next: number) => {
+    rateRef.current = next;
+    setRateState(next);
+    if (elementRef.current) elementRef.current.playbackRate = next;
+    try {
+      localStorage.setItem(RATE_STORAGE_KEY, String(next));
+    } catch {
+      /* The speed is simply not remembered. */
+    }
+  }, []);
+
+  return { isPlaying, currentTime, duration, error, play, pause, seek, rate, setRate };
 };
 
 /** What went wrong, in terms a caller can show or log. */

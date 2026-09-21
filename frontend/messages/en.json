@@ -316,6 +316,7 @@
     "playerPlay": "Play the recording",
     "playerPause": "Pause",
     "playerPosition": "Position in the recording",
+    "playerSpeed": "Playback speed",
     "playerError": "The recording could not be played",
     "speakerWhoIs": "Who is {speaker}?",
     "speakerRenameHint": "Changes every line spoken by <name></name> in this meeting. Clear the field and save to remove an assigned name.",
