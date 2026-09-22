@@ -25,6 +25,7 @@ use std::sync::Mutex;
 use log::{info, warn};
 use serde::{Deserialize, Serialize};
 
+use super::orphan_recordings::{dismiss, is_dismissed, looks_like_recording, probe, AudioOnly};
 use super::recording_saver::TranscriptSegment;
 use crate::database::fields;
 use crate::security::field::Field;
@@ -116,6 +117,11 @@ fn active_folder() -> Option<PathBuf> {
     current().as_ref().map(|journal| journal.folder.clone())
 }
 
+/// Whether `folder` is the one being recorded into right now.
+pub(super) fn is_active(folder: &Path) -> bool {
+    active_folder().is_some_and(|active| plain(&active) == plain(folder))
+}
+
 /// Deletes the journal in `folder` — the meeting it belongs to is saved, or
 /// the owner chose to discard it.
 pub fn remove(folder: &Path) {
@@ -137,6 +143,20 @@ pub struct Unsaved {
     /// Modification time of the journal, milliseconds since the epoch.
     pub last_updated: i64,
     pub segments: Vec<TranscriptSegment>,
+    /// Set when there is no transcript to restore, only audio: restoring then
+    /// means recognising the recording again.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub audio_only: Option<AudioOnly>,
+}
+
+/// Title and start time the journal of `folder` was begun with, if it has one
+/// that can be read.
+pub(super) fn header(folder: &Path) -> Option<(String, String)> {
+    read(folder)
+        .ok()
+        .flatten()
+        .map(|journal| (journal.title, journal.started_at))
+        .filter(|(title, started_at)| !title.is_empty() || !started_at.is_empty())
 }
 
 /// Reads a journal. Lines that do not open — torn by a crash, or sealed with a
@@ -207,12 +227,13 @@ fn read(folder: &Path) -> anyhow::Result<Option<Unsaved>> {
         started_at,
         last_updated,
         segments,
+        audio_only: None,
     }))
 }
 
 /// A canonical Windows path without its `\\?\` prefix, so it reads — and
 /// compares with `meetings.folder_path` — the way the recorder wrote it.
-fn plain(path: &Path) -> PathBuf {
+pub(super) fn plain(path: &Path) -> PathBuf {
     let text = path.to_string_lossy();
     match text.strip_prefix(r"\\?\") {
         Some(rest) if !rest.starts_with(r"UNC\") => PathBuf::from(rest),
@@ -220,10 +241,9 @@ fn plain(path: &Path) -> PathBuf {
     }
 }
 
-/// Every meeting folder under `roots` with a journal, other than the one being
-/// recorded into.
+/// Every meeting folder under `roots` with a journal or with audio, other than
+/// the one being recorded into.
 fn find(roots: &[PathBuf]) -> Vec<PathBuf> {
-    let active = active_folder().map(|folder| plain(&folder));
     let mut found = Vec::new();
     for root in roots {
         let Ok(entries) = std::fs::read_dir(root) else {
@@ -231,8 +251,8 @@ fn find(roots: &[PathBuf]) -> Vec<PathBuf> {
         };
         for entry in entries.flatten() {
             let folder = plain(&entry.path());
-            if folder.join(JOURNAL_FILE).is_file()
-                && active.as_deref() != Some(folder.as_path())
+            if (folder.join(JOURNAL_FILE).is_file() || looks_like_recording(&folder))
+                && !is_active(&folder)
                 && !found.contains(&folder)
             {
                 found.push(folder);
@@ -242,10 +262,50 @@ fn find(roots: &[PathBuf]) -> Vec<PathBuf> {
     found
 }
 
-/// Recordings whose transcript never reached the database.
+/// The folders the library already has a meeting for, in the form [`find`]
+/// yields them: canonical, without the verbatim prefix. A meeting's folder is
+/// stored the way the recorder wrote it, so the text alone may differ in case
+/// or in the prefix and still name the same folder.
+pub(super) async fn saved_folders(
+    pool: &sqlx::SqlitePool,
+) -> Result<std::collections::HashSet<PathBuf>, String> {
+    let rows: Vec<(String,)> =
+        sqlx::query_as("SELECT folder_path FROM meetings WHERE folder_path IS NOT NULL")
+            .fetch_all(pool)
+            .await
+            .map_err(|error| error.to_string())?;
+    Ok(rows
+        .into_iter()
+        .map(|(folder,)| {
+            let folder = PathBuf::from(folder);
+            plain(&folder.canonicalize().unwrap_or(folder))
+        })
+        .collect())
+}
+
+/// Newest modification time among the files of `folder`, milliseconds since
+/// the epoch: when the recording last wrote anything.
+fn last_written(folder: &Path) -> i64 {
+    std::fs::read_dir(folder)
+        .ok()
+        .and_then(|entries| {
+            entries
+                .flatten()
+                .filter_map(|entry| entry.metadata().ok()?.modified().ok())
+                .max()
+        })
+        .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|elapsed| elapsed.as_millis() as i64)
+        .unwrap_or(0)
+}
+
+/// Recordings that never reached the database: those whose transcript the
+/// journal kept, and those with only audio on disk (see
+/// [`super::orphan_recordings`]).
 ///
 /// A journal whose folder already belongs to a saved meeting is a leftover
-/// from a delete that failed; it is removed here instead of being offered.
+/// from a delete that failed; it is removed here instead of being offered. A
+/// folder the owner chose not to restore is not offered again.
 #[tauri::command]
 pub async fn list_unsaved_recordings<R: tauri::Runtime>(
     app: tauri::AppHandle<R>,
@@ -253,23 +313,49 @@ pub async fn list_unsaved_recordings<R: tauri::Runtime>(
 ) -> Result<Vec<Unsaved>, String> {
     let roots = super::recording_preferences::recording_roots(&app).await;
     let pool = state.db_manager.pool();
+    let saved = saved_folders(pool).await?;
+    let archive_open = !crate::security::session::archive_is_protected()
+        || crate::security::session::archive_is_open();
+    // A recording under way has a folder with audio and no meeting yet; it is
+    // not something to restore.
+    let recording = super::recording_commands::is_recording_active();
     let mut unsaved = Vec::new();
     for folder in find(&roots) {
-        let folder_text = folder.to_string_lossy().into_owned();
-        let saved: Option<(i64,)> =
-            sqlx::query_as("SELECT 1 FROM meetings WHERE folder_path = ? LIMIT 1")
-                .bind(&folder_text)
-                .fetch_optional(pool)
-                .await
-                .map_err(|error| error.to_string())?;
-        if saved.is_some() {
+        if saved.contains(&folder) {
             remove(&folder);
             continue;
         }
-        match read(&folder) {
-            Ok(Some(journal)) if !journal.segments.is_empty() => unsaved.push(journal),
-            Ok(_) => {}
-            Err(error) => return Err(error.to_string()),
+        if is_dismissed(&folder) {
+            continue;
+        }
+        let journal = match read(&folder) {
+            Ok(journal) => journal,
+            // The archive is locked: no journal opens, and neither would audio.
+            Err(error) if !archive_open => return Err(error.to_string()),
+            Err(error) => {
+                warn!("Could not read a transcript journal: {error}");
+                None
+            }
+        };
+        match journal {
+            Some(journal) if !journal.segments.is_empty() => unsaved.push(journal),
+            journal if !recording => {
+                let Some(audio) = probe(&folder, archive_open) else {
+                    continue;
+                };
+                let (title, started_at) = journal
+                    .map(|journal| (journal.title, journal.started_at))
+                    .unwrap_or_default();
+                unsaved.push(Unsaved {
+                    folder_path: folder.to_string_lossy().into_owned(),
+                    title,
+                    started_at,
+                    last_updated: last_written(&folder),
+                    segments: Vec::new(),
+                    audio_only: Some(audio),
+                });
+            }
+            _ => {}
         }
     }
     unsaved.sort_by_key(|journal| std::cmp::Reverse(journal.last_updated));
@@ -278,7 +364,7 @@ pub async fn list_unsaved_recordings<R: tauri::Runtime>(
 
 /// Only folders inside the recording roots, so the window cannot point these
 /// commands at an arbitrary path.
-async fn checked_folder<R: tauri::Runtime>(
+pub(super) async fn checked_folder<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
     folder_path: &str,
 ) -> Result<PathBuf, String> {
@@ -286,14 +372,15 @@ async fn checked_folder<R: tauri::Runtime>(
         .canonicalize()
         .map_err(|error| format!("No such recording folder: {error}"))?;
     let roots = super::recording_preferences::recording_roots(app).await;
-    if roots.iter().any(|root| folder.starts_with(root)) {
+    if super::recording_preferences::is_meeting_folder(&folder, &roots) {
         Ok(folder)
     } else {
         Err("That folder is not a recording folder".to_string())
     }
 }
 
-/// Discards the transcript journal of an unsaved recording. The audio stays.
+/// The owner chose not to restore a recording: its journal is discarded and
+/// the folder is not offered again. The audio stays where it is.
 #[tauri::command]
 pub async fn discard_unsaved_transcript<R: tauri::Runtime>(
     app: tauri::AppHandle<R>,
@@ -301,6 +388,7 @@ pub async fn discard_unsaved_transcript<R: tauri::Runtime>(
 ) -> Result<(), String> {
     let folder = checked_folder(&app, &folder_path).await?;
     remove(&folder);
+    dismiss(&folder);
     Ok(())
 }
 
@@ -355,6 +443,18 @@ mod tests {
         remove(&folder);
         assert!(read(&folder).unwrap().is_none());
         assert!(find(&[root.path().to_path_buf()]).is_empty());
+    }
+
+    #[test]
+    fn a_folder_with_audio_and_no_journal_is_found() {
+        let root = tempfile::tempdir().unwrap();
+        let with_audio = root.path().join("rec-a");
+        let empty = root.path().join("rec-b");
+        std::fs::create_dir(&with_audio).unwrap();
+        std::fs::create_dir(&empty).unwrap();
+        std::fs::write(with_audio.join("system.mp4"), b"audio").unwrap();
+        std::fs::write(empty.join("metadata.json"), b"{}").unwrap();
+        assert_eq!(find(&[root.path().to_path_buf()]), vec![with_audio]);
     }
 
     #[test]

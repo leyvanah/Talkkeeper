@@ -7,7 +7,7 @@
 
 import React, { useState, useEffect } from 'react';
 import { formatDistanceToNow } from 'date-fns';
-import { AlertCircle, CheckCircle2, Clock, FileText, Trash2, XCircle } from 'lucide-react';
+import { AlertCircle, AudioLines, CheckCircle2, Clock, EyeOff, FileText, XCircle } from 'lucide-react';
 import {
   Dialog,
   DialogContent,
@@ -19,7 +19,7 @@ import {
 import { Button } from '@/components/ui/button';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Alert, AlertDescription } from '@/components/ui/alert';
-import type { MeetingMetadata, StoredTranscript } from '@/lib/unsaved-recordings';
+import type { AudioOnly, MeetingMetadata, StoredTranscript } from '@/lib/unsaved-recordings';
 import { cn } from '@/lib/utils';
 import { useTranslations } from 'next-intl';
 
@@ -65,6 +65,11 @@ export function TranscriptRecovery({
 
   const handleMeetingSelect = async (meetingId: string) => {
     setSelectedMeetingId(meetingId);
+    // A recording with only audio has no text to preview.
+    if (recoverableMeetings.find(m => m.meetingId === meetingId)?.audioOnly) {
+      setPreviewTranscripts([]);
+      return;
+    }
     setIsLoadingPreview(true);
 
     try {
@@ -116,6 +121,19 @@ export function TranscriptRecovery({
   };
 
   const selectedMeeting = recoverableMeetings.find(m => m.meetingId === selectedMeetingId);
+  const cannotRecover = selectedMeeting?.audioOnly?.readable === false;
+
+  const titleOf = (meeting: MeetingMetadata) => meeting.title.trim() || t('untitledRecording');
+
+  /** Size and, when known, length of a recording that has only audio. */
+  const describeAudio = (audio: AudioOnly) => {
+    const megabytes = audio.sizeBytes / (1024 * 1024);
+    const parts = [t('audioOnlySize', { size: megabytes < 10 ? Math.round(megabytes * 10) / 10 : Math.round(megabytes) })];
+    if (audio.durationSeconds) {
+      parts.push(t('audioOnlyDuration', { minutes: Math.max(1, Math.round(audio.durationSeconds / 60)) }));
+    }
+    return parts.join(' · ');
+  };
 
   return (
     <Dialog open={isOpen} onOpenChange={onClose}>
@@ -146,17 +164,28 @@ export function TranscriptRecovery({
                   >
                     <div className="flex items-start justify-between gap-2">
                       <div className="flex-1 min-w-0">
-                        <p className="font-medium text-sm truncate">{meeting.title}</p>
+                        <p className="font-medium text-sm truncate">{titleOf(meeting)}</p>
                         <p className="text-xs text-muted-foreground flex items-center gap-1 mt-1">
                           <Clock className="w-3 h-3" />
                           {formatDistanceToNow(new Date(meeting.lastUpdated), { addSuffix: true })}
                         </p>
-                        <p className="text-xs text-muted-foreground flex items-center gap-1 mt-1">
-                          <FileText className="w-3 h-3" />
-                          {t('transcriptCount', { count: meeting.transcriptCount })}
-                        </p>
+                        {meeting.audioOnly ? (
+                          <p className="text-xs text-muted-foreground flex items-center gap-1 mt-1">
+                            <AudioLines className="w-3 h-3" />
+                            {t('audioOnlyBadge')} · {describeAudio(meeting.audioOnly)}
+                          </p>
+                        ) : (
+                          <p className="text-xs text-muted-foreground flex items-center gap-1 mt-1">
+                            <FileText className="w-3 h-3" />
+                            {t('transcriptCount', { count: meeting.transcriptCount })}
+                          </p>
+                        )}
                       </div>
-                      {meeting.folderPath ? (
+                      {meeting.audioOnly?.readable === false ? (
+                        <span title={t('audioOnlyUnreadable')}>
+                          <XCircle className="w-4 h-4 text-red-500 flex-shrink-0" />
+                        </span>
+                      ) : meeting.folderPath ? (
                         <span title={t('audioAvailable')}>
                           <CheckCircle2 className="w-4 h-4 text-green-500 flex-shrink-0" />
                         </span>
@@ -180,16 +209,28 @@ export function TranscriptRecovery({
                 <>
                   {/* Meeting Info */}
                   <div className="p-4 border-b bg-muted/50">
-                    <h4 className="font-semibold">{selectedMeeting.title}</h4>
+                    <h4 className="font-semibold">{titleOf(selectedMeeting)}</h4>
                     <p className="text-sm text-muted-foreground mt-1">
                       {t('startedAt', { date: new Date(selectedMeeting.startTime).toLocaleString() })}
                     </p>
                     <div className="flex items-center gap-4 mt-2 text-sm">
-                      <span className="flex items-center gap-1">
-                        <FileText className="w-4 h-4" />
-                        {t('transcriptCount', { count: selectedMeeting.transcriptCount })}
-                      </span>
-                      {selectedMeeting.folderPath ? (
+                      {selectedMeeting.audioOnly ? (
+                        <span className="flex items-center gap-1">
+                          <AudioLines className="w-4 h-4" />
+                          {t('audioOnlyBadge')} · {describeAudio(selectedMeeting.audioOnly)}
+                        </span>
+                      ) : (
+                        <span className="flex items-center gap-1">
+                          <FileText className="w-4 h-4" />
+                          {t('transcriptCount', { count: selectedMeeting.transcriptCount })}
+                        </span>
+                      )}
+                      {cannotRecover ? (
+                        <span className="flex items-center gap-1 text-red-600">
+                          <XCircle className="w-4 h-4" />
+                          {t('audioOnlyUnreadable')}
+                        </span>
+                      ) : selectedMeeting.folderPath ? (
                         <span className="flex items-center gap-1 text-green-600">
                           <CheckCircle2 className="w-4 h-4" />
                           {t('audioAvailable')}
@@ -205,7 +246,13 @@ export function TranscriptRecovery({
 
                   {/* Transcript Preview */}
                   <ScrollArea className="flex-1 p-4">
-                    {isLoadingPreview ? (
+                    {selectedMeeting.audioOnly ? (
+                      <Alert variant={cannotRecover ? 'destructive' : 'default'}>
+                        <AlertDescription>
+                          {cannotRecover ? t('audioOnlyUnreadableExplanation') : t('audioOnlyExplanation')}
+                        </AlertDescription>
+                      </Alert>
+                    ) : isLoadingPreview ? (
                       <div className="flex items-center justify-center h-full text-muted-foreground">
                         {t('loadingPreview')}
                       </div>
@@ -276,7 +323,7 @@ export function TranscriptRecovery({
             {tCommon('cancel')}
           </Button>
           <Button
-            variant="destructive"
+            variant="outline"
             onClick={handleDelete}
             disabled={!selectedMeetingId || isRecovering || isDeleting}
           >
@@ -287,14 +334,14 @@ export function TranscriptRecovery({
               </>
             ) : (
               <>
-                <Trash2 className="w-4 h-4 mr-2" />
-                {tCommon('delete')}
+                <EyeOff className="w-4 h-4 mr-2" />
+                {t('dontRestoreButton')}
               </>
             )}
           </Button>
           <Button
             onClick={handleRecover}
-            disabled={!selectedMeetingId || isRecovering || isDeleting}
+            disabled={!selectedMeetingId || cannotRecover || isRecovering || isDeleting}
           >
             {isRecovering ? (
               <>

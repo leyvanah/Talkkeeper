@@ -16,6 +16,20 @@ export interface UnsavedRecording {
   /** Milliseconds since the epoch. */
   lastUpdated: number
   segments: JournalSegment[]
+  /** Present when there is no transcript to restore, only audio. */
+  audioOnly?: AudioOnly
+}
+
+/**
+ * A recording with audio on disk and nothing else: restoring it makes an
+ * empty meeting and recognises the audio again.
+ */
+export interface AudioOnly {
+  sizeBytes: number
+  /** Known only when the recording was stopped properly. */
+  durationSeconds?: number
+  /** False when the audio was sealed with a key this archive does not hold. */
+  readable: boolean
 }
 
 /** A line of transcript from the journal (the backend's TranscriptSegment). */
@@ -40,6 +54,7 @@ export interface MeetingMetadata {
   transcriptCount: number
   /** Set only when there is audio to recover alongside the transcript. */
   folderPath?: string
+  audioOnly?: AudioOnly
 }
 
 /** A line of transcript as the recovery dialog previews it. */
@@ -64,6 +79,7 @@ export function toMeetingMetadata(recording: UnsavedRecording): MeetingMetadata 
     lastUpdated: recording.lastUpdated,
     transcriptCount: recording.segments.length,
     folderPath: recording.folderPath,
+    audioOnly: recording.audioOnly,
   }
 }
 
