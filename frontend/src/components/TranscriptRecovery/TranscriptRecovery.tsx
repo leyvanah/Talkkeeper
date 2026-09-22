@@ -6,7 +6,6 @@
  */
 
 import React, { useState, useEffect } from 'react';
-import { formatDistanceToNow } from 'date-fns';
 import { AlertCircle, AudioLines, CheckCircle2, Clock, EyeOff, FileText, XCircle } from 'lucide-react';
 import {
   Dialog,
@@ -21,7 +20,8 @@ import { ScrollArea } from '@/components/ui/scroll-area';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import type { AudioOnly, MeetingMetadata, StoredTranscript } from '@/lib/unsaved-recordings';
 import { cn } from '@/lib/utils';
-import { useTranslations } from 'next-intl';
+import { useFormatter, useTranslations } from 'next-intl';
+import { toast } from 'sonner';
 
 interface TranscriptRecoveryProps {
   isOpen: boolean;
@@ -42,15 +42,20 @@ export function TranscriptRecovery({
 }: TranscriptRecoveryProps) {
   const t = useTranslations('recording');
   const tCommon = useTranslations('common');
+  const format = useFormatter();
   const [selectedMeetingId, setSelectedMeetingId] = useState<string | null>(null);
   const [previewTranscripts, setPreviewTranscripts] = useState<StoredTranscript[]>([]);
   const [isLoadingPreview, setIsLoadingPreview] = useState(false);
   const [isRecovering, setIsRecovering] = useState(false);
   const [isDeleting, setIsDeleting] = useState(false);
+  // "Don't recover" asks first, inside the dialog: window.confirm is not
+  // something the application window can be relied on to show.
+  const [confirmingDismiss, setConfirmingDismiss] = useState(false);
 
   // Reset selection when dialog opens
   useEffect(() => {
     if (isOpen) {
+      setConfirmingDismiss(false);
       setSelectedMeetingId(null);
       setPreviewTranscripts([]);
     }
@@ -65,6 +70,7 @@ export function TranscriptRecovery({
 
   const handleMeetingSelect = async (meetingId: string) => {
     setSelectedMeetingId(meetingId);
+    setConfirmingDismiss(false);
     // A recording with only audio has no text to preview.
     if (recoverableMeetings.find(m => m.meetingId === meetingId)?.audioOnly) {
       setPreviewTranscripts([]);
@@ -93,8 +99,8 @@ export function TranscriptRecovery({
       console.log('Recovery successful:', result);
       onClose();
     } catch (error) {
+      // The caller has already said what went wrong.
       console.error('Recovery failed:', error);
-      alert(t('recoverFailedAlert'));
     } finally {
       setIsRecovering(false);
     }
@@ -102,11 +108,7 @@ export function TranscriptRecovery({
 
   const handleDelete = async () => {
     if (!selectedMeetingId) return;
-
-    if (!confirm(t('confirmDeleteRecoverableMeeting'))) {
-      return;
-    }
-
+    setConfirmingDismiss(false);
     setIsDeleting(true);
     try {
       await onDelete(selectedMeetingId);
@@ -114,7 +116,9 @@ export function TranscriptRecovery({
       setPreviewTranscripts([]);
     } catch (error) {
       console.error('Delete failed:', error);
-      alert(t('deleteFailedAlert'));
+      toast.error(t('deleteFailedAlert'), {
+        description: error instanceof Error ? error.message : String(error),
+      });
     } finally {
       setIsDeleting(false);
     }
@@ -123,7 +127,11 @@ export function TranscriptRecovery({
   const selectedMeeting = recoverableMeetings.find(m => m.meetingId === selectedMeetingId);
   const cannotRecover = selectedMeeting?.audioOnly?.readable === false;
 
-  const titleOf = (meeting: MeetingMetadata) => meeting.title.trim() || t('untitledRecording');
+  const startOf = (meeting: MeetingMetadata) =>
+    format.dateTime(new Date(meeting.startTime), { dateStyle: 'medium', timeStyle: 'short' });
+  // Two recordings without a name must still be told apart: by when they began.
+  const titleOf = (meeting: MeetingMetadata) =>
+    meeting.title.trim() || t('recordingFrom', { date: startOf(meeting) });
 
   /** Size and, when known, length of a recording that has only audio. */
   const describeAudio = (audio: AudioOnly) => {
@@ -137,7 +145,12 @@ export function TranscriptRecovery({
 
   return (
     <Dialog open={isOpen} onOpenChange={onClose}>
-      <DialogContent className="max-w-4xl h-[80vh] flex flex-col p-0">
+      <DialogContent
+        className="max-w-4xl h-[80vh] flex flex-col p-0"
+        // Focusing the first recording on open drew a ring around it that
+        // looked like a second selection.
+        onOpenAutoFocus={(event) => event.preventDefault()}
+      >
         <DialogHeader className="px-6 pt-6">
           <DialogTitle className="text-2xl">{t('recoverInterruptedMeetingsTitle')}</DialogTitle>
           <DialogDescription>
@@ -155,10 +168,11 @@ export function TranscriptRecovery({
                   <button
                     key={meeting.meetingId}
                     onClick={() => handleMeetingSelect(meeting.meetingId)}
+                    aria-pressed={selectedMeetingId === meeting.meetingId}
                     className={cn(
-                      'w-full text-left p-3 rounded-lg border transition-colors',
+                      'w-full text-left p-3 rounded-lg border-2 transition-colors outline-none focus-visible:ring-2 focus-visible:ring-ring',
                       selectedMeetingId === meeting.meetingId
-                        ? 'bg-primary/10 border-primary'
+                        ? 'bg-accent border-foreground/70'
                         : 'hover:bg-muted border-transparent'
                     )}
                   >
@@ -167,7 +181,7 @@ export function TranscriptRecovery({
                         <p className="font-medium text-sm truncate">{titleOf(meeting)}</p>
                         <p className="text-xs text-muted-foreground flex items-center gap-1 mt-1">
                           <Clock className="w-3 h-3" />
-                          {formatDistanceToNow(new Date(meeting.lastUpdated), { addSuffix: true })}
+                          {meeting.title.trim() ? startOf(meeting) : format.relativeTime(new Date(meeting.startTime))}
                         </p>
                         {meeting.audioOnly ? (
                           <p className="text-xs text-muted-foreground flex items-center gap-1 mt-1">
@@ -211,7 +225,7 @@ export function TranscriptRecovery({
                   <div className="p-4 border-b bg-muted/50">
                     <h4 className="font-semibold">{titleOf(selectedMeeting)}</h4>
                     <p className="text-sm text-muted-foreground mt-1">
-                      {t('startedAt', { date: new Date(selectedMeeting.startTime).toLocaleString() })}
+                      {t('startedAt', { date: startOf(selectedMeeting) })}
                     </p>
                     <div className="flex items-center gap-4 mt-2 text-sm">
                       {selectedMeeting.audioOnly ? (
@@ -314,6 +328,20 @@ export function TranscriptRecovery({
           </div>
         </div>
 
+        {confirmingDismiss && selectedMeeting ? (
+          <DialogFooter className="px-6 pb-6 items-center">
+            <p className="text-sm text-muted-foreground mr-auto">
+              {t('confirmDeleteRecoverableMeeting')}
+            </p>
+            <Button variant="outline" onClick={() => setConfirmingDismiss(false)}>
+              {tCommon('cancel')}
+            </Button>
+            <Button onClick={handleDelete}>
+              <EyeOff className="w-4 h-4 mr-2" />
+              {t('dontRestoreConfirm')}
+            </Button>
+          </DialogFooter>
+        ) : (
         <DialogFooter className="px-6 pb-6">
           <Button
             variant="outline"
@@ -324,7 +352,7 @@ export function TranscriptRecovery({
           </Button>
           <Button
             variant="outline"
-            onClick={handleDelete}
+            onClick={() => setConfirmingDismiss(true)}
             disabled={!selectedMeetingId || isRecovering || isDeleting}
           >
             {isDeleting ? (
@@ -356,6 +384,7 @@ export function TranscriptRecovery({
             )}
           </Button>
         </DialogFooter>
+        )}
       </DialogContent>
     </Dialog>
   );
