@@ -19,6 +19,7 @@ import { useRecordingStart } from '@/hooks/useRecordingStart';
 import { useRecordingStop } from '@/hooks/useRecordingStop';
 import { useTranscriptRecovery } from '@/hooks/useTranscriptRecovery';
 import { TranscriptRecovery } from '@/components/TranscriptRecovery';
+import { usePostCall } from '@/contexts/PostCallContext';
 import { deleteLegacyRecoveryStore } from '@/lib/unsaved-recordings';
 import { toast } from 'sonner';
 import { useRouter } from 'next/navigation';
@@ -44,6 +45,7 @@ export default function Home() {
   // Hooks
   const { hasMicrophone } = usePermissionCheck();
   const { setIsMeetingActive, refetchMeetings } = useSidebar();
+  const { begin: beginPostCall } = usePostCall();
   const { modals, messages, showModal, hideModal } = useModalState(transcriptModelConfig);
   const { isRecordingDisabled, setIsRecordingDisabled } = useRecordingStateSync(isRecording, setIsRecordingState, setIsMeetingActive);
   const { handleRecordingStart } = useRecordingStart(isRecording, setIsRecordingState, showModal);
@@ -117,6 +119,17 @@ export default function Home() {
   const handleRecovery = async (meetingId: string) => {
     try {
       const result = await recoverMeeting(meetingId);
+
+      if (result.success && result.meetingId && result.transcribeFolder) {
+        // Only the audio was left: recognise it the way a stopped recording is.
+        beginPostCall(result.meetingId, result.transcribeFolder);
+        toast.success(t('restoredFromAudioTitle'), {
+          description: t('restoredFromAudioDescription'),
+        });
+        await refetchMeetings();
+        router.push(`/meeting-details?id=${encodeURIComponent(result.meetingId)}`);
+        return;
+      }
 
       if (result.success) {
         toast.success(t('recoveredSuccessTitle'), {

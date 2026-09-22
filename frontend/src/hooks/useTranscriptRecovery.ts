@@ -29,12 +29,28 @@ interface AudioRecoveryStatus {
   message: string;
 }
 
+export interface RecoveryResult {
+  success: boolean;
+  audioRecoveryStatus?: AudioRecoveryStatus | null;
+  meetingId?: string;
+  /**
+   * Set when only the audio was restored: the meeting is empty until the
+   * post-call processing recognises this folder again.
+   */
+  transcribeFolder?: string;
+}
+
+interface RestoredRecording {
+  meetingId: string;
+  folderPath: string;
+}
+
 export interface UseTranscriptRecoveryReturn {
   recoverableMeetings: MeetingMetadata[];
   isLoading: boolean;
   isRecovering: boolean;
   checkForRecoverableTranscripts: () => Promise<void>;
-  recoverMeeting: (meetingId: string) => Promise<{ success: boolean; audioRecoveryStatus?: AudioRecoveryStatus | null; meetingId?: string }>;
+  recoverMeeting: (meetingId: string) => Promise<RecoveryResult>;
   loadMeetingTranscripts: (meetingId: string) => Promise<StoredTranscript[]>;
   deleteRecoverableMeeting: (meetingId: string) => Promise<void>;
 }
@@ -60,6 +76,8 @@ export function useTranscriptRecovery(): UseTranscriptRecoveryReturn {
       // Verify audio checkpoint availability for each meeting
       const meetingsWithAudioStatus = await Promise.all(
         recentMeetings.map(async (meeting) => {
+          // Listed for its audio in the first place.
+          if (meeting.audioOnly) return meeting;
           if (meeting.folderPath) {
             try {
               const hasAudio = await invoke<boolean>('has_audio_checkpoints', {
@@ -107,14 +125,32 @@ export function useTranscriptRecovery(): UseTranscriptRecoveryReturn {
   /**
    * Save an unsaved recording to the database
    */
-  const recoverMeeting = useCallback(async (meetingId: string): Promise<{ success: boolean; audioRecoveryStatus?: AudioRecoveryStatus | null; meetingId?: string }> => {
+  const recoverMeeting = useCallback(async (meetingId: string): Promise<RecoveryResult> => {
     setIsRecovering(true);
     try {
       // 1. Load meeting metadata
       const recording = unsaved.current.get(meetingId);
       const metadata = recording ? toMeetingMetadata(recording) : null;
-      if (!metadata) {
+      if (!recording || !metadata) {
         throw new Error('Meeting metadata not found');
+      }
+
+      // Only audio survived: the backend makes an empty meeting of the folder
+      // and the caller has it recognised again.
+      if (recording.audioOnly) {
+        const restored = await invoke<RestoredRecording>('restore_recording_without_meeting', {
+          folderPath: recording.folderPath,
+          title: t('restoredRecordingTitle', {
+            date: new Date(metadata.startTime).toLocaleString(),
+          }),
+        });
+        unsaved.current.delete(meetingId);
+        setRecoverableMeetings(prev => prev.filter(m => m.meetingId !== meetingId));
+        return {
+          success: true,
+          meetingId: restored.meetingId,
+          transcribeFolder: restored.folderPath,
+        };
       }
 
       // 2. Load all transcripts
@@ -212,7 +248,7 @@ export function useTranscriptRecovery(): UseTranscriptRecoveryReturn {
     } finally {
       setIsRecovering(false);
     }
-  }, [loadMeetingTranscripts]);
+  }, [loadMeetingTranscripts, t]);
 
   /**
    * Delete a recoverable meeting
