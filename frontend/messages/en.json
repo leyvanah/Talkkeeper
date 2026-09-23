@@ -663,7 +663,9 @@
     "genBuiltinNotReadyDescription": "Please ensure the model is downloaded in settings",
     "genBuiltinValidationFailed": "Failed to validate built-in AI model",
     "summaryGenerationStopped": "Summary generation stopped",
-    "summaryGenerationStoppedDescription": "You can generate a new summary anytime"
+    "summaryGenerationStoppedDescription": "You can generate a new summary anytime",
+    "moreActions": "More",
+    "retranscribeMenu": "Transcribe again…"
   },
   "settings": {
     "language": "Language",

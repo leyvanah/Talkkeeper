@@ -480,27 +480,6 @@ html.dark {
   outline: none !important;
 }
 
-/* Transcript actions respond to the transcript column rather than the viewport.
-   A wide window can still have a narrow transcript beside the summary panel. */
-.transcript-actions-container {
-  container-type: inline-size;
-}
-
-.transcript-action-label {
-  display: none;
-}
-
-@container (min-width: 390px) {
-  .transcript-action-button {
-    width: auto;
-    padding-inline: 0.75rem;
-  }
-
-  .transcript-action-label {
-    display: inline;
-  }
-}
-
 /* Scrollbars. Default Windows scrollbars are bright and heavy, and this app is
    mostly long scrolling surfaces (transcripts, summaries), so they're a
    constant visual distraction if left alone. */

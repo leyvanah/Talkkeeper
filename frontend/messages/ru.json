@@ -663,7 +663,9 @@
     "genBuiltinIncompleteDescription": "У модели {model} есть сохранённая незавершённая загрузка. Продолжите её в настройках моделей.",
     "genBuiltinNotAvailableDescription": "{reason}. Проверьте настройки моделей.",
     "summaryGenerationStopped": "Генерация саммари остановлена",
-    "summaryGenerationStoppedDescription": "Новое саммари можно создать в любой момент"
+    "summaryGenerationStoppedDescription": "Новое саммари можно создать в любой момент",
+    "moreActions": "Ещё",
+    "retranscribeMenu": "Распознать заново…"
   },
   "settings": {
     "language": "Язык",

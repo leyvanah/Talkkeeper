@@ -17,7 +17,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useLocale, useTranslations } from 'next-intl';
 import { Transcript, TranscriptSegmentData } from '@/types';
-import { Calendar, Clock, MessagesSquare, Redo2, Table2, Undo2 } from 'lucide-react';
+import { MessagesSquare, Redo2, Table2, Undo2 } from 'lucide-react';
 import { SpeakerRenameDialog } from './SpeakerRenameDialog';
 import {
   VirtualizedTranscriptView,
@@ -26,6 +26,7 @@ import {
 import { TranscriptButtonGroup } from './TranscriptButtonGroup';
 import { RecordingPlayer, RecordingPlayerHandle } from './RecordingPlayer';
 import { MeetingClientBadge } from '@/components/MeetingClientBadge';
+import { WindowHeaderSlot } from '@/components/AppHeader';
 import { TranscriptTableView } from './TranscriptTableView';
 import { TRANSCRIPT_REWOUND } from './TranscriptLineEditor';
 import { createPlayhead } from '@/lib/playhead';
@@ -78,7 +79,9 @@ interface TranscriptPanelProps {
 }
 
 function fmtDate(d: Date, locale: string): string {
-  return d.toLocaleDateString(locale, { month: 'long', day: 'numeric', year: 'numeric' });
+  // The year only when it is not this one: the header has little room.
+  const thisYear = d.getFullYear() === new Date().getFullYear();
+  return d.toLocaleDateString(locale, { month: 'short', day: 'numeric', year: thisYear ? undefined : 'numeric' });
 }
 function fmtTime(d: Date, locale: string): string {
   return d.toLocaleTimeString(locale, { hour: 'numeric', minute: '2-digit' });
@@ -298,35 +301,37 @@ export function TranscriptPanel({
     const end = durationSec > 0 ? new Date(start.getTime() + durationSec * 1000) : null;
     return {
       dateLabel: fmtDate(start, locale),
-      timeLabel: end ? `${fmtTime(start, locale)} — ${fmtTime(end, locale)}` : fmtTime(start, locale),
+      timeLabel: end ? `${fmtTime(start, locale)}–${fmtTime(end, locale)}` : fmtTime(start, locale),
     };
   }, [createdAt, convertedSegments, locale]);
 
   return (
     <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden bg-[var(--af-bg)]">
-      {/* Header: what this recording is. Its name is in the window's own
-          header, which every page has. */}
-      <div className="min-w-0 px-4 pt-4 sm:px-6 sm:pt-5 lg:px-8">
-        <div className="flex min-w-0 flex-wrap items-center gap-x-4 gap-y-1 text-sm text-[var(--af-text-2)]">
+      {/* What this recording is and what can be done with it, in the window's
+          header next to its name, so the page needs no row of its own. */}
+      <WindowHeaderSlot>
+        <span className="flex min-w-0 flex-1 items-center gap-1 overflow-hidden text-sm text-[var(--af-text-3)]">
+          <span aria-hidden className="shrink-0">·</span>
           <MeetingClientBadge meetingId={meetingId} />
           {dateLabel && (
-            <span className="inline-flex min-w-0 items-center gap-1.5">
-              <Calendar size={15} className="shrink-0 text-[var(--af-text-3)]" />
-              <span className="truncate">{dateLabel}</span>
+            <span className="min-w-0 truncate" title={timeLabel ? `${dateLabel}, ${timeLabel}` : dateLabel}>
+              · {dateLabel}
+              {timeLabel && `, ${timeLabel}`}
             </span>
           )}
-          {timeLabel && (
-            <span className="inline-flex min-w-0 items-center gap-1.5">
-              <Clock size={15} className="shrink-0 text-[var(--af-text-3)]" />
-              <span className="truncate">{timeLabel}</span>
-            </span>
-          )}
-        </div>
-      </div>
+        </span>
+        <TranscriptButtonGroup
+          transcriptCount={usePagination ? (totalCount ?? convertedSegments.length) : (transcripts?.length || 0)}
+          onCopyTranscript={onCopyTranscript}
+          onOpenExport={onOpenExport}
+          onOpenMeetingFolder={onOpenMeetingFolder}
+          meetingId={meetingId}
+          meetingFolderPath={meetingFolderPath}
+          onRefetchTranscripts={onRefetchTranscripts}
+        />
+      </WindowHeaderSlot>
 
-      {/* The action container owns its responsive breakpoint, since this column
-          can be narrow even when the overall window is wide. */}
-      <div className="mt-4 flex min-w-0 items-center gap-2 border-b border-[var(--af-border)] px-4 sm:mt-5 sm:gap-3 sm:px-6 lg:px-8">
+      <div className="flex min-w-0 items-center gap-2 border-b border-[var(--af-border)] px-4 sm:gap-3 sm:px-6 lg:px-8">
         <span className="relative -mb-px shrink-0 py-2 text-sm font-medium text-[var(--af-accent)]">
           {t('transcriptTab')}
           <span className="absolute inset-x-0 -bottom-px h-0.5 rounded-full bg-[var(--af-accent)]" />
@@ -380,17 +385,6 @@ export function TranscriptPanel({
             ))}
           </div>
         )}
-        <div className="transcript-actions-container ml-auto min-w-0 flex-1 overflow-x-auto overscroll-x-contain py-1 no-scrollbar">
-          <TranscriptButtonGroup
-            transcriptCount={usePagination ? (totalCount ?? convertedSegments.length) : (transcripts?.length || 0)}
-            onCopyTranscript={onCopyTranscript}
-            onOpenExport={onOpenExport}
-            onOpenMeetingFolder={onOpenMeetingFolder}
-            meetingId={meetingId}
-            meetingFolderPath={meetingFolderPath}
-            onRefetchTranscripts={onRefetchTranscripts}
-          />
-        </div>
       </div>
 
       <SpeakerRenameDialog
