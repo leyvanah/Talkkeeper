@@ -16,9 +16,13 @@ use std::path::{Path, PathBuf};
 use log::{info, warn};
 use serde::Serialize;
 
+use super::archive_encryption::rekey_folder;
 use super::encrypted_audio::AudioSource;
 use super::streaming_encoder::partial_path_for;
 use crate::database::repositories::transcript::TranscriptsRepository;
+use crate::security::envelope::Dek;
+use crate::security::keystore::{Keystore, KeystoreError};
+use crate::security::session;
 use crate::security::stream::file_looks_encrypted;
 
 /// Left in a folder when the owner chose not to restore it. The audio stays;
@@ -132,6 +136,91 @@ pub(super) fn probe(folder: &Path, archive_open: bool) -> Option<AudioOnly> {
         duration_seconds: metadata_duration(folder),
         readable,
     })
+}
+
+/// Opens the key file of another archive — its `keystore.json`, or a key
+/// backup exported from it — with its password or its recovery code.
+///
+/// The file is only read, never written back: the attempt counter it keeps
+/// guards that archive's lock screen, and whoever holds a copy of the file can
+/// guess offline anyway, so it is reset here rather than honoured.
+fn open_foreign_key(path: &Path, secret: &str) -> Result<Dek, String> {
+    let mut keystore = Keystore::load_from(path)
+        .map_err(|error| format!("Could not read the key file: {error}"))?
+        .ok_or_else(|| "There is no key file at that path".to_string())?;
+    keystore.failed_attempts = 0;
+    keystore.locked_until = None;
+    match keystore.unlock_with_password(secret) {
+        Ok(dek) => Ok(dek),
+        Err(KeystoreError::WrongPassword) => keystore
+            .unlock_with_recovery(secret)
+            .map_err(|_| "The password or recovery code does not open this key file".to_string()),
+        Err(error) => Err(error.to_string()),
+    }
+}
+
+/// Brings a recording sealed with another archive's key under this one's, so
+/// that it can be restored here. The files are re-encrypted one by one, each
+/// verified before it replaces the original (see
+/// [`super::archive_encryption::rekey_folder`]); a failure leaves them as they
+/// were.
+#[tauri::command]
+pub async fn open_recording_with_other_key<R: tauri::Runtime>(
+    app: tauri::AppHandle<R>,
+    folder_path: String,
+    keystore_path: String,
+    secret: String,
+) -> Result<(), String> {
+    let folder = super::transcript_journal::checked_folder(&app, &folder_path).await?;
+    let folder = super::transcript_journal::plain(&folder);
+    if super::transcript_journal::is_active(&folder)
+        || super::recording_commands::is_recording_active()
+    {
+        return Err("A recording is running".to_string());
+    }
+    if session::archive_is_protected() && !session::archive_is_open() {
+        return Err("The archive is locked".to_string());
+    }
+    let secret = zeroize::Zeroizing::new(secret);
+    let keystore_path = PathBuf::from(keystore_path);
+
+    let task = tauri::async_runtime::spawn_blocking(move || {
+        // Not to be locked half-way through rewriting a recording.
+        let _busy = session::busy();
+        let theirs = open_foreign_key(&keystore_path, &secret)?;
+
+        super::streaming_encoder::recover_partial_tracks(&folder);
+        let sealed = track_files(&folder)
+            .into_iter()
+            .find(|track| file_looks_encrypted(track))
+            .ok_or_else(|| "This recording is not encrypted".to_string())?;
+        if AudioSource::open_with_key(&sealed, theirs.as_ref()).is_err() {
+            return Err("This key does not open this recording".to_string());
+        }
+
+        let report = match session::with_current_key(|ours| {
+            rekey_folder(&folder, theirs.as_ref(), Some(ours))
+        }) {
+            Some(report) => report,
+            // This archive has no password: its recordings are kept plain.
+            None if !session::archive_is_protected() => {
+                rekey_folder(&folder, theirs.as_ref(), None)
+            }
+            None => return Err("The archive is locked".to_string()),
+        };
+        if !report.is_complete() {
+            for (path, error) in &report.failed {
+                warn!("Could not re-encrypt {}: {error}", path.display());
+            }
+            return Err(format!(
+                "{} file(s) could not be re-encrypted and were left as they were",
+                report.failed.len()
+            ));
+        }
+        info!("A recording from another archive was re-encrypted: {} file(s)", report.converted);
+        Ok(())
+    });
+    task.await.map_err(|error| error.to_string())?
 }
 
 /// A recording made into a meeting again.
@@ -292,6 +381,25 @@ mod tests {
         let audio = probe(dir.path(), false).unwrap();
         assert!(audio.readable);
         assert_eq!(audio.size_bytes, 0);
+    }
+
+    #[test]
+    fn another_archives_key_opens_with_its_password_or_its_recovery_code() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("keystore.json");
+        let (mut keystore, code, dek) = Keystore::create("старый пароль", true).unwrap();
+        // That archive's lock screen had been throttled; the copy is not.
+        keystore.failed_attempts = 9;
+        keystore.locked_until = Some(i64::MAX);
+        keystore.save_to(&path).unwrap();
+
+        assert_eq!(*open_foreign_key(&path, "старый пароль").unwrap(), *dek);
+        assert_eq!(*open_foreign_key(&path, &code.unwrap()).unwrap(), *dek);
+        assert!(open_foreign_key(&path, "не тот пароль").is_err());
+        assert!(open_foreign_key(&dir.path().join("missing.json"), "x").is_err());
+        // Only read: the file is as it was.
+        let reread = Keystore::load_from(&path).unwrap().unwrap();
+        assert_eq!(reread.failed_attempts, 9);
     }
 
     #[test]

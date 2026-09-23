@@ -53,6 +53,7 @@ export interface UseTranscriptRecoveryReturn {
   recoverMeeting: (meetingId: string) => Promise<RecoveryResult>;
   loadMeetingTranscripts: (meetingId: string) => Promise<StoredTranscript[]>;
   deleteRecoverableMeeting: (meetingId: string) => Promise<void>;
+  openWithOtherKey: (meetingId: string, keystorePath: string, secret: string) => Promise<void>;
 }
 
 export function useTranscriptRecovery(): UseTranscriptRecoveryReturn {
@@ -264,6 +265,19 @@ export function useTranscriptRecovery(): UseTranscriptRecoveryReturn {
     }
   }, []);
 
+  /**
+   * Re-encrypt a recording sealed with another installation's key under this
+   * one's, so that it can be restored. Throws the backend's reason on failure.
+   */
+  const openWithOtherKey = useCallback(async (meetingId: string, keystorePath: string, secret: string) => {
+    await invoke('open_recording_with_other_key', { folderPath: meetingId, keystorePath, secret });
+    const readable = <T extends { audioOnly?: UnsavedRecording['audioOnly'] }>(item: T): T =>
+      item.audioOnly ? { ...item, audioOnly: { ...item.audioOnly, readable: true } } : item;
+    const recording = unsaved.current.get(meetingId);
+    if (recording) unsaved.current.set(meetingId, readable(recording));
+    setRecoverableMeetings(prev => prev.map(m => (m.meetingId === meetingId ? readable(m) : m)));
+  }, []);
+
   return {
     recoverableMeetings,
     isLoading,
@@ -271,6 +285,7 @@ export function useTranscriptRecovery(): UseTranscriptRecoveryReturn {
     checkForRecoverableTranscripts,
     recoverMeeting,
     loadMeetingTranscripts,
-    deleteRecoverableMeeting
+    deleteRecoverableMeeting,
+    openWithOtherKey,
   };
 }

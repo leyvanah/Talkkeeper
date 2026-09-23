@@ -685,6 +685,7 @@ pub fn run() {
             audio::transcript_journal::list_unsaved_recordings,
             audio::transcript_journal::discard_unsaved_transcript,
             audio::orphan_recordings::restore_recording_without_meeting,
+            audio::orphan_recordings::open_recording_with_other_key,
             // Reload sync commands (retrieve transcript history and meeting name)
             audio::recording_commands::get_transcript_history,
             audio::recording_commands::get_recording_meeting_name,

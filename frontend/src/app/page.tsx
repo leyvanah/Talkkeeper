@@ -64,7 +64,8 @@ export default function Home() {
     checkForRecoverableTranscripts,
     recoverMeeting,
     loadMeetingTranscripts,
-    deleteRecoverableMeeting
+    deleteRecoverableMeeting,
+    openWithOtherKey,
   } = useTranscriptRecovery();
 
   const router = useRouter();
@@ -218,6 +219,7 @@ export default function Home() {
         recoverableMeetings={recoverableMeetings}
         onRecover={handleRecovery}
         onDelete={deleteRecoverableMeeting}
+        onOpenWithOtherKey={openWithOtherKey}
         onLoadPreview={loadMeetingTranscripts}
       />
       <div className="flex flex-1 overflow-hidden">
