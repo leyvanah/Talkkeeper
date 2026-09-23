@@ -35,7 +35,7 @@ impl TranscriptsRepository {
              VALUES (?, ?, ?, ?, ?, ?)",
         )
         .bind(&meeting_id)
-        .bind(fields::seal(fields::MEETING_TITLE, meeting_title))
+        .bind(fields::seal(fields::MEETING_TITLE, meeting_title)?)
         .bind(recording_started_at)
         .bind(now)
         .bind(&folder_path)
@@ -65,12 +65,12 @@ impl TranscriptsRepository {
                 // finds the local user by matching the live "You" ranges, so
                 // omitting it here erased the user's identity from every
                 // meeting the moment it was saved.
-                "INSERT INTO transcripts (id, meeting_id, transcript, timestamp, audio_start_time, audio_end_time, duration, speaker)
-                 VALUES (?, ?, ?, ?, ?, ?, ?, ?)"
+                "INSERT INTO transcripts (id, meeting_id, transcript, timestamp, audio_start_time, audio_end_time, duration, speaker, source_track)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)"
             )
             .bind(&transcript_id)
             .bind(&meeting_id)
-            .bind(fields::seal(fields::TRANSCRIPT_TEXT, &segment.text))
+            .bind(fields::seal(fields::TRANSCRIPT_TEXT, &segment.text)?)
             .bind(timestamp)
             .bind(segment.audio_start_time)
             .bind(segment.audio_end_time)
@@ -78,7 +78,11 @@ impl TranscriptsRepository {
             .bind(fields::seal_joinable_opt(
                 fields::TRANSCRIPT_SPEAKER,
                 segment.speaker.as_deref(),
-            ))
+            )?)
+            // Fresh from the recorder the label is the source — "You" for the
+            // microphone, the rest for the speakers — so this is exact now and
+            // would be lost as soon as anyone renamed or relabelled a line.
+            .bind(crate::diarization::by_device::source_of_label(segment.speaker.as_deref()))
             .execute(&mut *transaction)
             .await;
 

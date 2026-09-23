@@ -3,7 +3,6 @@ import { useTranslations } from 'next-intl';
 import { ModelConfig } from '@/components/ModelSettingsModal';
 import { invoke as invokeTauri } from '@tauri-apps/api/core';
 import { toast } from 'sonner';
-import Analytics from '@/lib/analytics';
 
 interface UseModelConfigurationProps {
   serverAddress: string | null;
@@ -126,12 +125,6 @@ export function useModelConfiguration({ serverAddress }: UseModelConfigurationPr
         updatedConfig.provider !== modelConfig.provider ||
         updatedConfig.model !== modelConfig.model
       )) {
-        await Analytics.trackModelChanged(
-          modelConfig.provider,
-          modelConfig.model,
-          updatedConfig.provider,
-          updatedConfig.model
-        );
       }
 
       await invokeTauri('api_save_model_config', {
@@ -150,8 +143,6 @@ export function useModelConfiguration({ serverAddress }: UseModelConfigurationPr
       await emit('model-config-updated', payload);
 
       toast.success(t('summarySettingsSaved'));
-
-      await Analytics.trackSettingsChanged('model_config', `${payload.provider}_${payload.model}`);
     } catch (error) {
       console.error('Failed to save model config:', error);
       toast.error(t('summarySettingsSaveFailed'), { description: String(error) });

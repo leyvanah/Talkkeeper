@@ -1,7 +1,6 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { useLocale, useTranslations } from 'next-intl';
 import { Globe } from 'lucide-react';
-import Analytics from '@/lib/analytics';
 import { toast } from 'sonner';
 import { useConfig } from '@/contexts/ConfigContext';
 
@@ -133,7 +132,7 @@ export function LanguageSelection({
   const [saving, setSaving] = useState(false);
   const { setSelectedLanguage } = useConfig();
 
-  // The list carries English names for analytics; the UI shows each language in
+  // The list carries English names; the UI shows each language in
   // the active locale via Intl, so it does not need 90 hand-written translations.
   const displayNames = useMemo(() => {
     try {
@@ -163,14 +162,7 @@ export function LanguageSelection({
       onLanguageChange(languageCode);
       console.log('Language preference saved:', languageCode);
 
-      // Track language selection analytics
       const selectedLang = LANGUAGES.find(lang => lang.code === languageCode);
-      await Analytics.track('language_selected', {
-        language_code: languageCode,
-        language_name: selectedLang?.name || 'Unknown',
-        is_auto_detect: (languageCode === 'auto').toString(),
-        is_auto_translate: (languageCode === 'auto-translate').toString()
-      });
 
       // Show success toast
       const languageName = selectedLang ? languageLabel(selectedLang) : languageCode;

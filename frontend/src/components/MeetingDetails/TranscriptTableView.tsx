@@ -51,7 +51,8 @@ import {
 import { getSpeakerSides, sideOf, SpeakerSide } from '@/services/speakerRoleService';
 import { Playhead } from '@/lib/playhead';
 import { TranscriptLineEditor } from './TranscriptLineEditor';
-import type { LineEdits as TableLineEdits } from '@/services/transcriptEditService';
+import type { LineEdits as TableLineEdits, LineRef } from '@/services/transcriptEditService';
+import { SpeakerLabelMenu } from './SpeakerLabelMenu';
 
 interface TranscriptTableViewProps {
   segments: TranscriptSegmentData[];
@@ -100,6 +101,16 @@ const DEFAULT_SCALE = 32;
 const SCALE_STORAGE_KEY = 'transcript_timeline_scale';
 
 const LAYOUT = { gap: 6, padding: 12 };
+/**
+ * Pauses longer than a second and a half are shortened, to two seconds at
+ * most: a recording that starts with a minute of silence no longer opens on
+ * an empty screen, and a long pause is marked rather than drawn.
+ */
+const QUIET = { keep: 1.5, rate: 0.1, most: 2 };
+/** A shortened pause is marked only from this long: a shorter one is barely shortened. */
+const QUIET_MARK_MIN = 5;
+/** A shortened pause is labelled only where it has room for the text. */
+const QUIET_LABEL_MIN = 18;
 
 /** `m:ss`, `h:mm:ss` past an hour, with tenths when asked. */
 function clock(seconds: number, tenths = false): string {
@@ -189,6 +200,7 @@ const Bubble = memo(function Bubble({
   onRenameSpeaker,
   onMeasure,
   lineEdits,
+  nextLine,
 }: {
   placed: PlacedLine;
   pieces: Piece[];
@@ -200,6 +212,8 @@ const Bubble = memo(function Bubble({
   onRenameSpeaker?: (speaker: string) => void;
   onMeasure: (key: string, element: HTMLElement | null) => void;
   lineEdits?: TableLineEdits;
+  /** The line said after this one, which it can be joined with. */
+  nextLine?: LineRef;
 }) {
   const t = useTranslations('recording');
   const tm = useTranslations('meetingDetails');
@@ -218,21 +232,24 @@ const Bubble = memo(function Bubble({
     >
       <div className="flex items-center gap-1.5 text-[11px]" style={{ height: LABEL_ROW }}>
         <span aria-hidden className={`h-1.5 w-1.5 shrink-0 rounded-full ${speakerDot(line.speaker)}`} />
-        {line.speaker &&
-          (onRenameSpeaker ? (
-            <button
-              type="button"
-              onClick={() => onRenameSpeaker(line.speaker!)}
-              title={t('renameSpeakerTitle', { speaker: line.speaker })}
-              className={`truncate font-semibold ${speakerColor(line.speaker)} hover:underline`}
-            >
-              {displaySpeaker(line.speaker, userName)}
-            </button>
-          ) : (
-            <span className={`truncate font-semibold ${speakerColor(line.speaker)}`}>
-              {displaySpeaker(line.speaker, userName)}
-            </span>
-          ))}
+        {line.speaker && (
+          <SpeakerLabelMenu
+            speaker={line.speaker}
+            label={displaySpeaker(line.speaker, userName)}
+            displayOf={(option) => displaySpeaker(option, userName)}
+            className={`truncate font-semibold ${speakerColor(line.speaker)}`}
+            onRename={onRenameSpeaker}
+            choice={
+              lineEdits
+                ? {
+                    existing: lineEdits.speakers,
+                    fresh: lineEdits.freshSpeaker,
+                    choose: (next) => lineEdits.onSetSpeaker(line, next),
+                  }
+                : undefined
+            }
+          />
+        )}
         <span className="shrink-0 tabular-nums text-[var(--af-text-3)]">
           {clock(line.start, true)}
           {line.end != null && line.end > line.start && ` – ${clock(line.end, true)}`}
@@ -258,9 +275,11 @@ const Bubble = memo(function Bubble({
         // Above the box: its text comes later in the page and would show through.
         <div className="absolute left-0 right-0 z-10" style={{ top: LABEL_ROW + LABEL_GAP }}>
           <TranscriptLineEditor
-            initialText={line.text}
+            initialText={line.stored ?? line.text}
             onSave={(text) => lineEdits.onEditLine(line, text)}
             onRemove={() => lineEdits.onRemoveLine(line)}
+            onSplit={(first, second) => lineEdits.onSplitLine(line, first, second)}
+            onMergeNext={nextLine ? () => lineEdits.onMergeLines(line, nextLine) : undefined}
             onClose={() => setEditing(false)}
           />
         </div>
@@ -382,9 +401,20 @@ export function TranscriptTableView({
         words: segment.words,
         ids: segment.ids,
         edited: segment.edited,
+        stored: segment.text,
       })),
     [segments],
   );
+  // Joining goes with the line said next, whichever column it is in.
+  const nextOf = useMemo(() => {
+    const byTime = [...lines].sort((a, b) => a.start - b.start);
+    return new Map<string, LineRef>(
+      byTime.slice(0, -1).map((line, index) => {
+        const next = byTime[index + 1];
+        return [line.id, { id: next.id, ids: next.ids }];
+      }),
+    );
+  }, [lines]);
   const piecesOf = useMemo(
     () => new Map(lines.map((line) => [line.id, piecesForLine(line)])),
     [lines],
@@ -461,7 +491,7 @@ export function TranscriptTableView({
           const text = own.reduce((sum, h) => sum + h, 0) + PIECE_GAP * Math.max(0, own.length - 1);
           return LABEL_ROW / 2 + LABEL_GAP + BORDER * 2 + PAD_Y * 2 + text;
         },
-        { pxPerSecond: scale, ...LAYOUT },
+        { pxPerSecond: scale, ...LAYOUT, quiet: QUIET },
       ),
     // measureVersion stands for the heights, which live in a ref.
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -731,6 +761,32 @@ export function TranscriptTableView({
               />
             ))}
 
+          {/* Shortened pauses: a faint band across the columns, behind the
+              lines, with how long the pause really was. */}
+          {layout.quiet
+            .filter((pause) => pause.to - pause.from >= QUIET_MARK_MIN)
+            .map((pause) => {
+            const length = clock(pause.to - pause.from);
+            return (
+              <div
+                key={`quiet-${pause.from}`}
+                aria-hidden
+                title={t('timelinePauseHint', { duration: length })}
+                className="absolute flex items-center justify-center border-y border-dashed border-[var(--af-border)] text-[10px] text-[var(--af-text-3)]"
+                style={{
+                  top: pause.top,
+                  height: Math.max(0, pause.bottom - pause.top),
+                  left: 0,
+                  right: 0,
+                  background:
+                    'repeating-linear-gradient(135deg, transparent 0 6px, color-mix(in srgb, var(--af-border) 35%, transparent) 6px 7px)',
+                }}
+              >
+                {pause.bottom - pause.top >= QUIET_LABEL_MIN && t('timelinePause', { duration: length })}
+              </div>
+            );
+          })}
+
           {playhead && (
             <div
               ref={lineRef}
@@ -766,6 +822,7 @@ export function TranscriptTableView({
               onRenameSpeaker={onRenameSpeaker}
               onMeasure={onMeasure}
               lineEdits={lineEdits}
+              nextLine={nextOf.get(placed.line.id)}
             />
           ))}
         </div>

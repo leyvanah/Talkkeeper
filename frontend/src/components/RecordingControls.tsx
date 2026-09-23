@@ -24,13 +24,12 @@
 import { invoke } from '@tauri-apps/api/core';
 
 import { useCallback, useEffect, useState } from 'react';
-import { Play, Pause, Square, Mic, MicOff, Volume2, VolumeX, AlertCircle, X, Minimize2 } from 'lucide-react';
+import { Play, Pause, Square, Mic, MicOff, Volume2, VolumeX, AlertCircle, X, Minimize2, Loader2 } from 'lucide-react';
 import { LiveAudioVisualizer } from './LiveAudioVisualizer';
 import { ProcessRequest, SummaryResponse } from '@/types/summary';
 import { listen } from '@tauri-apps/api/event';
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
-import Analytics from '@/lib/analytics';
 import { useRecordingState } from '@/contexts/RecordingStateContext';
 import { usePermissionCheck } from '@/hooks/usePermissionCheck';
 import { useTranslations } from 'next-intl';
@@ -257,8 +256,6 @@ export const RecordingControls: React.FC<RecordingControlsProps> = ({
       setRecordingPath(savePath);
       // setShowPlayback(true);
       setIsProcessing(false);
-      // Track successful transcription
-      Analytics.trackTranscriptionSuccess();
       // Native stop emits one main-window-only completion event. The global
       // post-processing provider handles transcript drain/save/navigation for
       // every stop origin, so do not start a second frontend owner here.
@@ -347,10 +344,6 @@ export const RecordingControls: React.FC<RecordingControlsProps> = ({
     setIsChangingMicrophoneMute(true);
     try {
       await invoke<boolean>('set_microphone_muted', { muted: !isMicrophoneMuted });
-      Analytics.trackButtonClick(
-        isMicrophoneMuted ? 'unmute_microphone' : 'mute_microphone',
-        'recording_controls'
-      );
     } catch (error) {
       console.error('Failed to change microphone mute state:', error);
     } finally {
@@ -364,10 +357,6 @@ export const RecordingControls: React.FC<RecordingControlsProps> = ({
     setIsChangingSystemAudioMute(true);
     try {
       await invoke<boolean>('set_system_audio_muted', { muted: !isSystemAudioMuted });
-      Analytics.trackButtonClick(
-        isSystemAudioMuted ? 'unmute_system_audio' : 'mute_system_audio',
-        'recording_controls'
-      );
     } catch (error) {
       console.error('Failed to change system audio mute state:', error);
     } finally {
@@ -380,7 +369,6 @@ export const RecordingControls: React.FC<RecordingControlsProps> = ({
   // current duration seeds the bar so its timer continues rather than resets.
   const collapseToBar = useCallback(() => {
     const elapsed = Math.max(0, Math.floor(recordingState.recordingDuration ?? 0));
-    Analytics.trackButtonClick('enter_compact_mode', 'recording_controls');
     invoke('enter_compact_mode', { elapsedSeconds: elapsed }).catch((e) =>
       console.error('Failed to enter compact mode:', e)
     );
@@ -410,8 +398,6 @@ export const RecordingControls: React.FC<RecordingControlsProps> = ({
           console.log('transcript-error event received:', event);
           console.error('Transcription error received:', event.payload);
           const errorMessage = event.payload as string;
-
-          Analytics.trackTranscriptionError(errorMessage);
           console.log('Tracked transcription error:', errorMessage);
 
           setTranscriptionErrors(prev => {
@@ -442,8 +428,6 @@ export const RecordingControls: React.FC<RecordingControlsProps> = ({
           } else {
             errorMessage = String(event.payload);
           }
-
-          Analytics.trackTranscriptionError(errorMessage);
           console.log('Tracked transcription error:', errorMessage);
 
           setTranscriptionErrors(prev => {
@@ -507,288 +491,214 @@ export const RecordingControls: React.FC<RecordingControlsProps> = ({
     };
   }, [onRecordingStop, onTranscriptionError]);
 
+  // The theme's own surface, so the bar belongs to every theme alike.
+  const panel =
+    'flex items-center rounded-2xl border border-[var(--af-border)] bg-[var(--af-panel)] text-[var(--af-text)] shadow-[var(--af-shadow-md)]';
+
   return (
     <TooltipProvider>
-      <div className="flex flex-col space-y-2">
-        <div className={`flex items-center rounded-3xl border border-white/10 bg-[#0f1218]/90 text-white shadow-2xl backdrop-blur-xl ${isRecording ? 'w-[640px] max-w-full gap-3 px-5 py-4' : 'w-[540px] max-w-full gap-4 px-5 py-4'}`}>
-          {isProcessing && !isParentProcessing ? (
-            <div className="flex items-center space-x-2">
-              <div className="animate-spin rounded-full h-5 w-5 border-b-2 border-white"></div>
-              <span className="text-sm text-gray-300">{t('processingRecording')}</span>
+      <div className="flex flex-col items-center space-y-2">
+        {isProcessing && !isParentProcessing ? (
+          <div className={`${panel} gap-2 px-4 py-3`}>
+            <Loader2 size={16} className="animate-spin text-[var(--af-text-3)]" />
+            <span className="text-sm text-[var(--af-text-2)]">{t('processingRecording')}</span>
+          </div>
+        ) : showPlayback ? (
+          <div className={`${panel} gap-3 px-4 py-3`}>
+            <button
+              onClick={handleStartRecording}
+              className="flex h-10 w-10 items-center justify-center rounded-full bg-red-500 text-white transition-colors hover:bg-red-600"
+            >
+              <Mic size={16} />
+            </button>
+            <div className="flex items-center gap-2 text-sm text-[var(--af-text-2)]">
+              <span className="min-w-[40px] tabular-nums">{formatTime(currentTime)}</span>
+              <div className="relative h-1 w-24 rounded-full bg-[var(--af-border)]">
+                <div className="absolute h-full rounded-full bg-[var(--af-accent)]" style={{ width: `${progress}%` }} />
+              </div>
+              <span className="min-w-[40px] tabular-nums">{formatTime(duration)}</span>
             </div>
-          ) : (
-            <>
-              {showPlayback ? (
-                <>
+          </div>
+        ) : !isRecording ? (
+          // At rest there is no panel: the button, what it does, and one quiet
+          // line saying what will be recorded.
+          <div className="flex flex-col items-center gap-2">
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <button
+                  onClick={() => {
+                    handleStartRecording();
+                  }}
+                  disabled={isStarting || isProcessing || isRecordingDisabled || isValidatingModel}
+                  aria-label={t('startRecording')}
+                  className={`relative flex h-14 w-14 shrink-0 items-center justify-center rounded-full text-white transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-red-500 focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--af-bg)] ${
+                    isStarting || isProcessing || isValidatingModel ? 'bg-red-500/50' : 'bg-red-500 hover:bg-red-600'
+                  }`}
+                >
+                  {isStarting || isValidatingModel ? <Loader2 size={22} className="animate-spin" /> : <Mic size={24} />}
+                </button>
+              </TooltipTrigger>
+              <TooltipContent>
+                <p>{t('startRecordingTooltip')}</p>
+              </TooltipContent>
+            </Tooltip>
+
+            <div className="text-sm font-medium text-[var(--af-text)]">
+              {isStarting || isValidatingModel ? startupMessage || t('starting') : t('startRecording')}
+            </div>
+
+            <div className="flex max-w-[28rem] items-center gap-1.5 text-xs text-[var(--af-text-3)]">
+              <span className="min-w-0 truncate" title={t('microphoneTitle', { micName })}>{micName}</span>
+              <span aria-hidden>·</span>
+              <span
+                className={`inline-flex shrink-0 items-center gap-1.5 ${hasSystemAudio ? '' : 'text-red-400'}`}
+                title={hasSystemAudio ? t('detected') : t('notDetected')}
+              >
+                {t('systemAudio')}
+                <span className={`h-1.5 w-1.5 rounded-full ${hasSystemAudio ? 'bg-emerald-500' : 'bg-red-500'}`} />
+                {!hasSystemAudio && <span>{t('notDetected')}</span>}
+              </span>
+            </div>
+          </div>
+        ) : (
+          // While recording: one line on the theme's own surface, readable
+          // over the live transcript it floats above.
+          <div className={`${panel} w-[600px] max-w-full gap-4 px-4 py-2.5`}>
+            <div className="flex shrink-0 items-center gap-2.5">
+              <span
+                className={`h-2.5 w-2.5 rounded-full ${isPaused ? 'bg-orange-400' : 'animate-pulse bg-red-500'}`}
+                aria-hidden
+              />
+              <div className="leading-tight">
+                <div className="text-[15px] font-medium tabular-nums">{formatElapsed(elapsedSeconds)}</div>
+                <div className={`text-[11px] ${isPaused ? 'text-orange-400' : 'text-[var(--af-text-3)]'}`}>
+                  {isStopping ? t('stopping') : isPaused ? t('paused') : t('recordingLabel')}
+                </div>
+              </div>
+            </div>
+
+            {/* Live input levels (Rust-driven, per source), each with its mute. */}
+            <div className="flex min-w-0 flex-1 flex-col gap-1">
+              {([
+                ['mic', isMicrophoneMuted, handleMicrophoneMute, t('muteMicrophone'), t('unmuteMicrophone'), Mic, MicOff],
+                ['system', isSystemAudioMuted, handleSystemAudioMute, t('muteSystemAudio'), t('unmuteSystemAudio'), Volume2, VolumeX],
+              ] as const).map(([source, muted, toggle, muteLabel, unmuteLabel, On, Off]) => (
+                <div key={source} className="flex items-center gap-2">
                   <button
-                    onClick={handleStartRecording}
-                    className="w-10 h-10 flex items-center justify-center bg-red-500 rounded-full text-white hover:bg-red-600 transition-colors"
+                    type="button"
+                    onClick={toggle}
+                    disabled={isStopping || isChangingMicrophoneMute || isChangingSystemAudioMute}
+                    title={muted ? unmuteLabel : muteLabel}
+                    aria-label={muted ? unmuteLabel : muteLabel}
+                    aria-pressed={muted}
+                    className={`flex h-6 w-6 shrink-0 items-center justify-center rounded-md transition-colors disabled:opacity-40 ${
+                      muted
+                        ? 'bg-orange-500/15 text-orange-400 hover:bg-orange-500/25'
+                        : 'text-[var(--af-text-3)] hover:bg-[var(--af-hover)] hover:text-[var(--af-text)]'
+                    }`}
                   >
-                    <Mic size={16} />
+                    {muted ? <Off size={13} /> : <On size={13} />}
                   </button>
+                  <LiveAudioVisualizer
+                    active={isRecording && !isPaused && !muted}
+                    source={source}
+                    fill
+                    bars={28}
+                    className="flex-1"
+                  />
+                </div>
+              ))}
+            </div>
 
-                  <div className="w-px h-6 bg-gray-200 mx-1" />
+            <div className="flex shrink-0 items-center gap-1.5">
+              <button
+                onClick={() => {
+                  if (isPaused) {
+                    handleResumeRecording();
+                  } else {
+                    handlePauseRecording();
+                  }
+                }}
+                disabled={isPausing || isResuming || isStopping || isChangingMicrophoneMute || isChangingSystemAudioMute}
+                title={isPaused ? t('resumeRecordingTooltip') : t('pauseRecordingTooltip')}
+                className="inline-flex h-8 items-center gap-1.5 rounded-lg border border-[var(--af-border)] px-2.5 text-xs text-[var(--af-text-2)] transition-colors hover:bg-[var(--af-hover)] hover:text-[var(--af-text)] disabled:opacity-40"
+              >
+                {isPaused ? <Play size={13} /> : <Pause size={13} />}
+                {isPaused ? t('resume') : t('pause')}
+              </button>
 
-                  <div className="flex items-center space-x-1 mx-2">
-                    <div className="text-sm text-gray-600 min-w-[40px]">
-                      {formatTime(currentTime)}
-                    </div>
-                    <div
-                      className="relative w-24 h-1 bg-gray-200 rounded-full"
+              <button
+                onClick={() => {
+                  handleStopRecording();
+                }}
+                disabled={isStopping || isPausing || isResuming || isChangingMicrophoneMute || isChangingSystemAudioMute}
+                title={t('stopRecordingTooltip')}
+                className="inline-flex h-8 items-center gap-1.5 rounded-lg border border-red-500/40 px-2.5 text-xs text-red-500 transition-colors hover:bg-red-500/10 disabled:opacity-40"
+              >
+                <Square size={11} fill="currentColor" />
+                {t('stop')}
+              </button>
+
+              <div className="relative">
+                {showCompactTip && (
+                  <div
+                    role="dialog"
+                    aria-label={t('shrinkToFloatingBarAria')}
+                    className="absolute bottom-[calc(100%+12px)] right-0 z-50 w-[260px] rounded-xl border border-[var(--af-border)] bg-[var(--af-panel)] px-3.5 py-3 text-left shadow-lg"
+                  >
+                    {/* Caret pointing at the minimize button */}
+                    <span
+                      aria-hidden
+                      className="absolute -bottom-1.5 right-3 h-3 w-3 rotate-45 border-b border-r border-[var(--af-border)] bg-[var(--af-panel)]"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => setShowCompactTip(false)}
+                      className="absolute right-2 top-2 rounded p-0.5 text-[var(--af-text-3)] hover:text-[var(--af-text)]"
+                      aria-label={t('dismiss')}
                     >
-                      <div
-                        className="absolute h-full bg-blue-500 rounded-full"
-                        style={{ width: `${progress}%` }}
-                      />
+                      <X size={14} />
+                    </button>
+                    <div className="pr-5 text-sm font-semibold text-[var(--af-text)]">
+                      {t('youAreRecording')}
                     </div>
-                    <div className="text-sm text-gray-600 min-w-[40px]">
-                      {formatTime(duration)}
-                    </div>
+                    <p className="mt-1 text-xs leading-relaxed text-[var(--af-text-2)]">
+                      {t('shrinkTipDescription')}
+                    </p>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setShowCompactTip(false);
+                        collapseToBar();
+                      }}
+                      className="mt-3 w-full rounded-lg bg-[var(--af-accent)] px-3 py-1.5 text-xs font-semibold text-[var(--af-accent-contrast)] transition-[filter] hover:brightness-110"
+                    >
+                      {t('shrinkToBar')}
+                    </button>
                   </div>
-
-                  <button
-                    className="w-10 h-10 flex items-center justify-center bg-gray-300 rounded-full text-white cursor-not-allowed"
-                    disabled
-                  >
-                    <Play size={16} />
-                  </button>
-                </>
-              ) : (
-                <>
-                  {!isRecording ? (
-                    // Idle bar — the "start" twin of the recording bar: red mic
-                    // button + a Start/Ready label where the timer sits, then the
-                    // idle Mic/System meters stretching to the right.
-                    <div className="flex w-full items-center gap-4">
-                      <div className="flex items-center gap-3 pl-0.5">
-                        <Tooltip>
-                          <TooltipTrigger asChild>
-                            <button
-                              onClick={() => {
-                                Analytics.trackButtonClick('start_recording', 'recording_controls');
-                                handleStartRecording();
-                              }}
-                              disabled={isStarting || isProcessing || isRecordingDisabled || isValidatingModel}
-                              className={`w-12 h-12 flex items-center justify-center shrink-0 ${isStarting || isProcessing || isValidatingModel ? 'bg-gray-400' : 'bg-red-500 hover:bg-red-600'
-                                } rounded-full text-white transition-colors relative`}
-                            >
-                              {isStarting || isValidatingModel ? (
-                                <div className="animate-spin rounded-full h-5 w-5 border-b-2 border-white"></div>
-                              ) : (
-                                <Mic size={20} />
-                              )}
-
-                              {(isStarting || isValidatingModel) && (
-                                <div className="absolute -top-9 left-1/2 -translate-x-1/2 whitespace-nowrap rounded-full bg-[var(--af-panel-2,#1f2937)] px-3 py-1 text-xs font-medium text-[var(--af-text,#e5e7eb)] shadow-lg">
-                                  {startupMessage || t('starting')}
-                                </div>
-                              )}
-                            </button>
-                          </TooltipTrigger>
-                          <TooltipContent>
-                            <p>{t('startRecordingTooltip')}</p>
-                          </TooltipContent>
-                        </Tooltip>
-
-                        <button
-                          onClick={() => {
-                            if (isStarting || isProcessing || isRecordingDisabled || isValidatingModel) return;
-                            Analytics.trackButtonClick('start_recording', 'recording_controls');
-                            handleStartRecording();
-                          }}
-                          className="text-left leading-tight"
-                        >
-                          <div className="font-semibold tracking-tight text-white">
-                            {isStarting || isValidatingModel ? t('starting') : t('startRecording')}
-                          </div>
-                          <div className="text-[11px] text-red-400">{t('ready')}</div>
-                        </button>
-                      </div>
-
-                      <div className="h-10 w-px bg-white/10" />
-
-                      <div className="flex min-w-0 flex-1 flex-col gap-1.5 text-[12px]">
-                        <div className="flex min-w-0 items-center gap-2" title={t('microphoneTitle', { micName })}>
-                          <Mic size={13} className="shrink-0 text-gray-400" />
-                          <span className="truncate text-gray-300">{micName}</span>
-                        </div>
-                        <div className="flex items-center gap-2">
-                          <Volume2 size={13} className="shrink-0 text-gray-400" />
-                          <span className="text-gray-400">{t('systemAudio')}</span>
-                          <span
-                            className={`ml-0.5 h-2 w-2 rounded-full ${hasSystemAudio ? 'bg-emerald-500' : 'bg-red-500'}`}
-                          />
-                          <span className={hasSystemAudio ? 'text-emerald-400' : 'text-red-400'}>
-                            {hasSystemAudio ? t('detected') : t('notDetected')}
-                          </span>
-                        </div>
-                      </div>
-                    </div>
-                  ) : (
-                    // Recording bar — mirrors the floating compact bar.
-                    <div className="flex w-full items-center gap-4">
-                      {/* Status + timer */}
-                      <div className="flex items-center gap-3 pl-1">
-                        <span className="relative flex h-6 w-6 items-center justify-center">
-                          <span className={`absolute inset-0 rounded-full ${isPaused ? 'bg-orange-500/20' : 'bg-red-500/20 animate-pulse'}`} />
-                          <span className={`h-3 w-3 rounded-full ${isPaused ? 'bg-orange-400' : 'bg-red-500'}`} />
-                        </span>
-                        <div className="text-left leading-tight">
-                          <div className="font-semibold tabular-nums tracking-tight">{formatElapsed(elapsedSeconds)}</div>
-                          <div className={`text-[11px] ${isPaused ? 'text-orange-400' : 'text-red-400'}`}>
-                            {isStopping ? t('stopping') : isPaused ? t('paused') : t('recordingLabel')}
-                          </div>
-                        </div>
-                      </div>
-
-                      <div className="h-10 w-px bg-white/10" />
-
-                      {/* Live input levels (Rust-driven, per source) — stretch to
-                          fill the space between the timer and the controls. */}
-                      <div className="flex min-w-0 flex-1 flex-col gap-1.5">
-                        <div className="flex items-center gap-2">
-                          <span className={`w-12 shrink-0 text-[11px] ${isMicrophoneMuted ? 'text-orange-400' : 'text-gray-400'}`}>
-                            {t('mic')}
-                          </span>
-                          <LiveAudioVisualizer active={isRecording && !isPaused && !isMicrophoneMuted} source="mic" fill bars={28} className="flex-1" />
-                          <button
-                            type="button"
-                            onClick={handleMicrophoneMute}
-                            disabled={isStopping || isChangingMicrophoneMute || isChangingSystemAudioMute}
-                            title={isMicrophoneMuted ? t('unmuteMicrophone') : t('muteMicrophone')}
-                            aria-label={isMicrophoneMuted ? t('unmuteMicrophone') : t('muteMicrophone')}
-                            aria-pressed={isMicrophoneMuted}
-                            className={`flex h-7 w-7 shrink-0 items-center justify-center rounded-lg border transition-colors disabled:opacity-40 ${
-                              isMicrophoneMuted
-                                ? 'border-orange-500/40 bg-orange-500/15 text-orange-300 hover:bg-orange-500/25'
-                                : 'border-white/10 bg-white/5 text-gray-400 hover:bg-white/10 hover:text-gray-200'
-                            }`}
-                          >
-                            {isMicrophoneMuted ? <MicOff size={13} /> : <Mic size={13} />}
-                          </button>
-                        </div>
-                        <div className="flex items-center gap-2">
-                          <span className={`w-12 shrink-0 text-[11px] ${isSystemAudioMuted ? 'text-orange-400' : 'text-gray-400'}`}>
-                            {t('system')}
-                          </span>
-                          <LiveAudioVisualizer active={isRecording && !isPaused && !isSystemAudioMuted} source="system" fill bars={28} className="flex-1" />
-                          <button
-                            type="button"
-                            onClick={handleSystemAudioMute}
-                            disabled={isStopping || isChangingMicrophoneMute || isChangingSystemAudioMute}
-                            title={isSystemAudioMuted ? t('unmuteSystemAudio') : t('muteSystemAudio')}
-                            aria-label={isSystemAudioMuted ? t('unmuteSystemAudio') : t('muteSystemAudio')}
-                            aria-pressed={isSystemAudioMuted}
-                            className={`flex h-7 w-7 shrink-0 items-center justify-center rounded-lg border transition-colors disabled:opacity-40 ${
-                              isSystemAudioMuted
-                                ? 'border-orange-500/40 bg-orange-500/15 text-orange-300 hover:bg-orange-500/25'
-                                : 'border-white/10 bg-white/5 text-gray-400 hover:bg-white/10 hover:text-gray-200'
-                            }`}
-                          >
-                            {isSystemAudioMuted ? <VolumeX size={13} /> : <Volume2 size={13} />}
-                          </button>
-                        </div>
-                      </div>
-
-                      <div className="flex shrink-0 items-center gap-2">
-                        <button
-                          onClick={() => {
-                            if (isPaused) {
-                              Analytics.trackButtonClick('resume_recording', 'recording_controls');
-                              handleResumeRecording();
-                            } else {
-                              Analytics.trackButtonClick('pause_recording', 'recording_controls');
-                              handlePauseRecording();
-                            }
-                          }}
-                          disabled={isPausing || isResuming || isStopping || isChangingMicrophoneMute || isChangingSystemAudioMute}
-                          title={isPaused ? t('resumeRecordingTooltip') : t('pauseRecordingTooltip')}
-                          className="flex h-12 w-14 flex-col items-center justify-center rounded-2xl border border-white/10 bg-white/5 text-xs text-gray-300 transition-colors hover:bg-white/10 disabled:opacity-40"
-                        >
-                          {isPaused ? <Play size={15} /> : <Pause size={15} />}
-                          <span className="mt-0.5 text-[10px]">{isPaused ? t('resume') : t('pause')}</span>
-                        </button>
-
-                        <button
-                          onClick={() => {
-                            Analytics.trackButtonClick('stop_recording', 'recording_controls');
-                            handleStopRecording();
-                          }}
-                          disabled={isStopping || isPausing || isResuming || isChangingMicrophoneMute || isChangingSystemAudioMute}
-                          title={t('stopRecordingTooltip')}
-                          className="flex h-12 w-14 flex-col items-center justify-center rounded-2xl border border-red-500/30 bg-red-500/15 text-xs text-red-300 transition-colors hover:bg-red-500/25 disabled:opacity-40"
-                        >
-                          <Square size={13} fill="currentColor" />
-                          <span className="mt-0.5 text-[10px]">{t('stop')}</span>
-                        </button>
-
-                        <div className="relative">
-                          {showCompactTip && (
-                            <div
-                              role="dialog"
-                              aria-label={t('shrinkToFloatingBarAria')}
-                              className="absolute bottom-[calc(100%+12px)] right-0 z-50 w-[260px] rounded-xl border border-white/10 bg-[var(--af-panel,#0f1218)] px-3.5 py-3 text-left shadow-2xl shadow-black/50"
-                            >
-                              {/* Caret pointing at the minimize button */}
-                              <span
-                                aria-hidden
-                                className="absolute -bottom-1.5 right-4 h-3 w-3 rotate-45 border-b border-r border-white/10 bg-[var(--af-panel,#0f1218)]"
-                              />
-                              <button
-                                type="button"
-                                onClick={() => setShowCompactTip(false)}
-                                className="absolute right-2 top-2 rounded p-0.5 text-[var(--af-text-3)] hover:text-[var(--af-text)]"
-                                aria-label={t('dismiss')}
-                              >
-                                <X size={14} />
-                              </button>
-                              <div className="pr-5 text-sm font-semibold text-[var(--af-text)]">
-                                {t('youAreRecording')}
-                              </div>
-                              <p className="mt-1 text-xs leading-relaxed text-[var(--af-text-2)]">
-                                {t('shrinkTipDescription')}
-                              </p>
-                              <button
-                                type="button"
-                                onClick={() => {
-                                  setShowCompactTip(false);
-                                  collapseToBar();
-                                }}
-                                className="mt-3 w-full rounded-lg bg-white px-3 py-1.5 text-xs font-semibold text-gray-900 transition-colors hover:bg-gray-100"
-                              >
-                                {t('shrinkToBar')}
-                              </button>
-                            </div>
-                          )}
-                          <button
-                            onClick={() => {
-                              setShowCompactTip(false);
-                              collapseToBar();
-                            }}
-                            disabled={isStopping}
-                            title={t('shrinkToFloatingBarAria')}
-                            className={`flex h-12 w-12 items-center justify-center rounded-2xl border text-gray-300 transition-colors disabled:opacity-40 ${
-                              showCompactTip
-                                ? 'border-[var(--af-accent)]/60 bg-[var(--af-accent)]/15 ring-2 ring-[var(--af-accent)]/30'
-                                : 'border-white/10 bg-white/5 hover:bg-white/10'
-                            }`}
-                          >
-                            <Minimize2 size={14} />
-                          </button>
-                        </div>
-                      </div>
-                    </div>
-                  )}
-
-                </>
-              )}
-            </>
-          )}
-        </div>
+                )}
+                <button
+                  onClick={() => {
+                    setShowCompactTip(false);
+                    collapseToBar();
+                  }}
+                  disabled={isStopping}
+                  title={t('shrinkToFloatingBarAria')}
+                  aria-label={t('shrinkToFloatingBarAria')}
+                  className={`flex h-8 w-8 items-center justify-center rounded-lg text-[var(--af-text-3)] transition-colors hover:bg-[var(--af-hover)] hover:text-[var(--af-text)] disabled:opacity-40 ${
+                    showCompactTip ? 'ring-2 ring-[var(--af-accent)]/40' : ''
+                  }`}
+                >
+                  <Minimize2 size={14} />
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
 
         {/* Show validation status only */}
         {isValidatingModel && (
-          <div className="text-xs text-gray-600 text-center mt-2">
+          <div className="mt-2 text-center text-xs text-[var(--af-text-3)]">
             {t('validatingSpeechRecognition')}
           </div>
         )}

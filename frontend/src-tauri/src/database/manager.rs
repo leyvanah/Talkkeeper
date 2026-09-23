@@ -40,15 +40,25 @@ impl DatabaseManager {
             }
         }
 
-        let migration_pool = SqlitePool::connect(tauri_db_path).await?;
+        let migration_pool = SqlitePool::connect_with(Self::connect_options(tauri_db_path)?).await?;
 
         Self::run_migrations(&migration_pool).await?;
         // A failed checksum pass can leave another pooled SQLite connection
         // holding the pre-migration schema. Reopen before serving app queries.
         migration_pool.close().await;
-        let pool = SqlitePool::connect(tauri_db_path).await?;
+        let pool = SqlitePool::connect_with(Self::connect_options(tauri_db_path)?).await?;
 
         Ok(DatabaseManager { pool })
+    }
+
+    /// How every connection to the archive is opened.
+    ///
+    /// `secure_delete` makes SQLite overwrite what it frees with zeros. Without
+    /// it a deleted meeting, or a value replaced by its sealed form, stays
+    /// readable in the file's free pages until something runs VACUUM.
+    fn connect_options(path: &str) -> Result<sqlx::sqlite::SqliteConnectOptions> {
+        use std::str::FromStr;
+        Ok(sqlx::sqlite::SqliteConnectOptions::from_str(path)?.pragma("secure_delete", "ON"))
     }
 
     async fn run_migrations(pool: &SqlitePool) -> Result<()> {
@@ -231,17 +241,29 @@ impl DatabaseManager {
                     log::warn!("Database appears corrupted, likely due to orphaned WAL file. Attempting recovery...");
                     log::warn!("Error details: {}", error_msg);
 
-                    // Delete potentially corrupted WAL/SHM files
-                    if wal_path.exists() {
-                        match fs::remove_file(&wal_path) {
-                            Ok(_) => log::info!("Removed orphaned WAL file: {:?}", wal_path),
-                            Err(e) => log::warn!("Failed to remove WAL file: {}", e),
+                    // The WAL holds committed transactions that have not been
+                    // copied into the database yet — the most recent work. It
+                    // is set aside with the database, never simply deleted,
+                    // so it can still be replayed by hand if the retry below
+                    // opens a database without it.
+                    let db_path = app_data_dir.join("meeting_minutes.sqlite");
+                    match quarantine(&app_data_dir, &[&db_path, &wal_path, &shm_path]) {
+                        Ok(folder) => log::error!(
+                            "Database and journal copied aside before recovery: {}",
+                            folder.display()
+                        ),
+                        Err(error) => {
+                            log::error!(
+                                "Could not copy the database aside ({error}); not touching the journal"
+                            );
+                            return Err(e);
                         }
                     }
-                    if shm_path.exists() {
-                        match fs::remove_file(&shm_path) {
-                            Ok(_) => log::info!("Removed orphaned SHM file: {:?}", shm_path),
-                            Err(e) => log::warn!("Failed to remove SHM file: {}", e),
+                    for journal in [&wal_path, &shm_path] {
+                        if let Err(error) = fs::remove_file(journal) {
+                            if error.kind() != std::io::ErrorKind::NotFound {
+                                log::warn!("Could not move the journal out of the way: {error}");
+                            }
                         }
                     }
 
@@ -355,9 +377,63 @@ impl DatabaseManager {
     }
 }
 
+/// Copies the given files into `<root>/recovery/<timestamp>/`, skipping any
+/// that do not exist, and returns that folder. Copies rather than moves: the
+/// caller decides what to remove once the copies are safe.
+pub(crate) fn quarantine(root: &Path, files: &[&Path]) -> std::io::Result<std::path::PathBuf> {
+    let stamp = chrono::Utc::now().format("%Y%m%dT%H%M%S%.3fZ").to_string();
+    let folder = root.join("recovery").join(stamp);
+    fs::create_dir_all(&folder)?;
+    for file in files {
+        if !file.exists() {
+            continue;
+        }
+        let name = file
+            .file_name()
+            .ok_or_else(|| std::io::Error::other("a file to set aside has no name"))?;
+        fs::copy(file, folder.join(name))?;
+    }
+    Ok(folder)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn connections_overwrite_what_they_free() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("archive.sqlite");
+        let options = DatabaseManager::connect_options(path.to_str().unwrap())
+            .unwrap()
+            .create_if_missing(true);
+        let pool = SqlitePool::connect_with(options).await.unwrap();
+        let (secure_delete,): (i64,) = sqlx::query_as("PRAGMA secure_delete")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(secure_delete, 1);
+    }
+
+    #[test]
+    fn a_journal_is_set_aside_before_anything_removes_it() {
+        let root = tempfile::tempdir().unwrap();
+        let db = root.path().join("meeting_minutes.sqlite");
+        let wal = root.path().join("meeting_minutes.sqlite-wal");
+        let shm = root.path().join("meeting_minutes.sqlite-shm");
+        fs::write(&db, b"db").unwrap();
+        fs::write(&wal, b"latest work").unwrap();
+
+        let folder = quarantine(root.path(), &[&db, &wal, &shm]).unwrap();
+
+        assert!(folder.starts_with(root.path().join("recovery")));
+        assert_eq!(fs::read(folder.join("meeting_minutes.sqlite-wal")).unwrap(), b"latest work");
+        assert!(folder.join("meeting_minutes.sqlite").is_file());
+        // A missing file is skipped, not an error.
+        assert!(!folder.join("meeting_minutes.sqlite-shm").exists());
+        // The originals are untouched: removing them is the caller's call.
+        assert!(wal.is_file());
+    }
 
     /// Migrations released before the convention below; their checksums are
     /// already out in the wild with platform-specific line endings.

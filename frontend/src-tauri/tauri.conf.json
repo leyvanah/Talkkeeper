@@ -1,7 +1,7 @@
 {
     "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
     "productName": "Talkkeeper",
-    "version": "0.2.21",
+    "version": "0.2.32",
     "identifier": "com.meetily.ai",
     "build": {
         "frontendDist": "../out",
@@ -28,34 +28,19 @@
             "csp": {
                 "default-src": "'self'",
                 "style-src": "'self' 'unsafe-inline'",
-                "img-src": "'self' asset: https://asset.localhost data:",
+                "img-src": "'self' data:",
                 "media-src": "'self' recording: http://recording.localhost https://recording.localhost blob: data:",
-                "connect-src": "'self' recording: http://recording.localhost https://recording.localhost http://localhost:11434 http://localhost:5167 http://localhost:8178 https://api.ollama.ai"
-            },
-            "assetProtocol": {
-                "enable": true,
-                "scope": [
-                    "$APPDATA/**"
-                ]
+                "connect-src": "'self' recording: http://recording.localhost https://recording.localhost"
             },
             "capabilities": [
                 {
                     "identifier": "main",
-                    "description": "Main window capability with file system and media access",
+                    "description": "Main window: window controls, events, store, save and open dialogs, writing the file the owner picked in it",
                     "windows": [
                         "main",
                         "minibar"
                     ],
                     "permissions": [
-                        "fs:default",
-                        "fs:allow-read-file",
-                        "fs:read-all",
-                        "fs:write-all",
-                        "fs:allow-app-read",
-                        "fs:allow-app-write",
-                        "fs:allow-download-write",
-                        "fs:allow-download-read",
-                        "fs:scope-download",
                         "core:path:default",
                         "core:event:default",
                         "core:window:default",
@@ -73,18 +58,10 @@
                         "core:window:allow-close",
                         "store:default",
                         "dialog:allow-save",
+                        "dialog:allow-open",
                         "notification:default",
                         "notification:allow-is-permission-granted",
-                        "updater:default",
-                        "process:default",
-                        {
-                            "identifier": "fs:scope",
-                            "allow": [
-                                {
-                                    "path": "$APPDATA/*"
-                                }
-                            ]
-                        }
+                        "fs:allow-write-file"
                     ]
                 }
             ]
@@ -135,14 +112,6 @@
                     "Russian": "./windows/Russian.nsh"
                 }
             }
-        }
-    },
-    "plugins": {
-        "updater": {
-            "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDc1MjA0M0FCMkRCNzM2QUIKUldTck5yY3RxME1nZFZmNTlaSFpLYVYxelh1RFp6cE9lOFZ2VkE0VlFXdThWUzRUK091c2ZQQ3AK",
-            "endpoints": [
-                "https://github.com/TylerBuza/Meetily-ActuallyFree/releases/latest/download/latest.json"
-            ]
         }
     }
 }

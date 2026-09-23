@@ -94,3 +94,7 @@ CLAUDE.md
 
 # Unreferenced MSVC bootstrapper: install Build Tools from Microsoft instead
 frontend/vs_buildtools.exe
+
+# Local build leftovers
+*.pid
+tsconfig.tsbuildinfo

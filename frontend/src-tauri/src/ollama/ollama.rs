@@ -162,6 +162,7 @@ async fn get_models_via_http_async(endpoint: Option<&str>) -> Result<Vec<OllamaM
     let client = Client::new();
     let base_url = endpoint.unwrap_or("http://localhost:11434");
     let url = format!("{}/api/tags", base_url);
+    crate::network_policy::check(&url)?;
 
     let response = client
         .get(&url)
@@ -281,6 +282,7 @@ pub async fn pull_ollama_model<R: Runtime>(
     let client = Client::new();
     let base_url = endpoint.as_deref().unwrap_or("http://localhost:11434");
     let url = format!("{}/api/pull", base_url);
+    crate::network_policy::check(&url)?;
 
     let payload = serde_json::json!({
         "name": model_name,
@@ -440,6 +442,7 @@ pub async fn delete_ollama_model(
     let client = Client::new();
     let base_url = endpoint.as_deref().unwrap_or("http://localhost:11434");
     let url = format!("{}/api/delete", base_url);
+    crate::network_policy::check(&url)?;
 
     let payload = serde_json::json!({
         "name": model_name

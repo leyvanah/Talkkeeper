@@ -1,6 +1,6 @@
 {
     "name": "meetily",
-    "version": "0.2.21",
+    "version": "0.2.32",
     "private": true,
     "main": "electron/main.js",
     "scripts": {
@@ -25,7 +25,8 @@
         "tauri:build:coreml": "tauri build -- --features coreml",
         "tauri:build:openblas": "tauri build -- --features openblas",
         "tauri:build:hipblas": "tauri build -- --features hipblas",
-        "lint": "next lint"
+        "lint": "next lint",
+        "test": "node --experimental-strip-types --no-warnings --test \"tests/lib/*.test.*\""
     },
     "dependencies": {
         "@blocknote/core": "0.36.0",

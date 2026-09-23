@@ -53,6 +53,8 @@ export interface RecordingEncryption {
 export interface FieldEncryption {
   sealed: number
   plaintext: number
+  /** Whether the copy taken before the first encryption is still on disk. */
+  plaintextBackup: boolean
 }
 
 /**
@@ -97,6 +99,8 @@ interface SecurityContextValue {
   fieldEncryption: () => Promise<FieldEncryption>
   /** Seals the ones that are not, and reports the new count. */
   encryptFields: () => Promise<FieldEncryption>
+  /** Deletes the unencrypted copy taken before the first encryption. */
+  deletePlaintextBackup: () => Promise<FieldEncryption>
   /** Opens the archive with a Windows Hello prompt. */
   quickUnlock: (prompt: string) => Promise<void>
   /** Turns quick unlock on, proving the password first. */
@@ -209,6 +213,8 @@ export function SecurityProvider({ children }: { children: React.ReactNode }) {
       encryptRecordings: () => invoke<RecordingEncryption>('security_encrypt_recordings'),
       fieldEncryption: () => invoke<FieldEncryption>('security_field_encryption'),
       encryptFields: () => invoke<FieldEncryption>('security_encrypt_fields'),
+      deletePlaintextBackup: () =>
+        invoke<FieldEncryption>('security_delete_plaintext_backup'),
       disable: (password) => run<void>('security_disable', { password }),
       quickUnlock: (prompt) => run<void>('security_quick_unlock', { prompt }),
       quickEnable: (password) => run<void>('security_quick_enable', { password }),

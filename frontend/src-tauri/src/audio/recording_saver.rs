@@ -264,6 +264,7 @@ impl RecordingSaver {
         transcript_segments: &Arc<Mutex<Vec<TranscriptSegment>>>,
         segment: TranscriptSegment,
     ) {
+        super::transcript_journal::append(&segment);
         if let Ok(mut segments) = transcript_segments.lock() {
             // Check if segment with same sequence_id exists (update it)
             if let Some(existing) = segments.iter_mut().find(|s| s.sequence_id == segment.sequence_id) {
@@ -420,6 +421,10 @@ impl RecordingSaver {
         // Write initial metadata.json
         self.write_metadata(&meeting_folder, &metadata)?;
 
+        // The transcript as it arrives, sealed line by line, so a crash does
+        // not take it along. Deleted once the meeting is saved.
+        super::transcript_journal::begin(&meeting_folder, meeting_name, &metadata.created_at);
+
         self.meeting_folder = Some(meeting_folder);
         self.metadata = Some(metadata);
 
@@ -449,6 +454,7 @@ impl RecordingSaver {
         recording_duration: Option<f64>
     ) -> Result<Option<String>, String> {
         info!("Stopping recording saver");
+        super::transcript_journal::end();
 
         if let Ok(mut is_saving) = self.is_saving.lock() {
             *is_saving = false;

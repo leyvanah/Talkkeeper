@@ -36,7 +36,7 @@ impl TranscriptChunksRepository {
             "#
         )
         .bind(meeting_id)
-        .bind(fields::seal(fields::CHUNK_TEXT, text))
+        .bind(fields::seal(fields::CHUNK_TEXT, text)?)
         .bind(model)
         .bind(model_name)
         .bind(chunk_size)

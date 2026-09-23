@@ -98,11 +98,11 @@ impl ClientsRepository {
              VALUES (?, ?, ?, NULL, ?, ?)",
         )
         .bind(&id)
-        .bind(fields::seal(fields::CLIENT_DISPLAY_NAME, display_name))
+        .bind(fields::seal(fields::CLIENT_DISPLAY_NAME, display_name)?)
         .bind(fields::lookup(
             fields::CLIENT_LOOKUP,
             &normalize_display_name(display_name),
-        ))
+        )?)
         .bind(&now)
         .bind(&now)
         .execute(pool)
@@ -132,11 +132,11 @@ impl ClientsRepository {
         let result = sqlx::query(
             "UPDATE clients SET display_name = ?, normalized_name = ?, updated_at = ? WHERE id = ?",
         )
-        .bind(fields::seal(fields::CLIENT_DISPLAY_NAME, display_name))
+        .bind(fields::seal(fields::CLIENT_DISPLAY_NAME, display_name)?)
         .bind(fields::lookup(
             fields::CLIENT_LOOKUP,
             &normalize_display_name(display_name),
-        ))
+        )?)
         .bind(Utc::now().to_rfc3339())
         .bind(client_id)
         .execute(pool)
@@ -155,7 +155,7 @@ impl ClientsRepository {
     ) -> Result<(), SqlxError> {
         let notes = notes.map(str::trim).filter(|value| !value.is_empty());
         let result = sqlx::query("UPDATE clients SET notes = ?, updated_at = ? WHERE id = ?")
-            .bind(fields::seal_opt(fields::CLIENT_NOTES, notes))
+            .bind(fields::seal_opt(fields::CLIENT_NOTES, notes)?)
             .bind(Utc::now().to_rfc3339())
             .bind(client_id)
             .execute(pool)

@@ -49,7 +49,8 @@ async fn archive() -> SqlitePool {
          CREATE TABLE transcripts (id TEXT PRIMARY KEY, meeting_id TEXT NOT NULL, \
              transcript TEXT NOT NULL, timestamp TEXT NOT NULL, summary TEXT, \
              action_items TEXT, key_points TEXT, audio_start_time REAL, \
-             audio_end_time REAL, duration REAL, speaker TEXT, words TEXT, edited_at TEXT); \
+             audio_end_time REAL, duration REAL, speaker TEXT, words TEXT, edited_at TEXT, \
+             source_track TEXT, speaker_set_at TEXT); \
          CREATE TABLE transcript_removals (id TEXT PRIMARY KEY, meeting_id TEXT NOT NULL, \
              audio_start_time REAL NOT NULL, audio_end_time REAL NOT NULL, track TEXT NOT NULL, \
              removed_at TEXT NOT NULL); \
@@ -71,6 +72,11 @@ async fn archive() -> SqlitePool {
     .execute(&pool)
     .await
     .unwrap();
+    // Taken from the migration itself, so this table cannot fall behind.
+    sqlx::raw_sql(include_str!("../migrations/20260920000000_add_privacy_settings.sql"))
+        .execute(&pool)
+        .await
+        .unwrap();
     pool
 }
 
@@ -225,15 +231,15 @@ async fn a_person_profile_still_joins_to_the_lines_they_said() {
          VALUES (?, ?, ?, NULL, 'now', 'now')",
     )
     .bind("person-anna")
-    .bind(fields::seal(fields::PERSON_NAME, "Анна"))
-    .bind(fields::lookup(fields::PERSON_LOOKUP, "анна"))
+    .bind(fields::seal(fields::PERSON_NAME, "Анна").unwrap())
+    .bind(fields::lookup(fields::PERSON_LOOKUP, "анна").unwrap())
     .execute(&pool)
     .await
     .unwrap();
     sqlx::query("INSERT INTO person_speakers VALUES (?, ?, ?)")
         .bind("person-anna")
         .bind(&meeting_id)
-        .bind(fields::seal_joinable(fields::SPEAKER_LABEL, "Анна"))
+        .bind(fields::seal_joinable(fields::SPEAKER_LABEL, "Анна").unwrap())
         .execute(&pool)
         .await
         .unwrap();
@@ -348,7 +354,7 @@ async fn a_correction_is_sealed_and_a_removal_leaves_no_words() {
     .unwrap();
     let words = r#"[{"w":"первая","s":0.1,"e":0.6},{"w":"реплика","s":0.6,"e":1.4}]"#;
     sqlx::query("UPDATE transcripts SET words = ? WHERE meeting_id = ? AND id = ?")
-        .bind(fields::seal(fields::TRANSCRIPT_WORDS, words))
+        .bind(fields::seal(fields::TRANSCRIPT_WORDS, words).unwrap())
         .bind(&meeting_id)
         .bind(&ids[0])
         .execute(&pool)
@@ -483,4 +489,32 @@ async fn a_second_pass_has_nothing_left_to_do() {
         .unwrap()
         .unwrap();
     assert_eq!(meeting.title, "Первая");
+}
+
+#[tokio::test]
+async fn the_crash_journal_holds_no_words() {
+    use app_lib::audio::recording_saver::TranscriptSegment as LiveSegment;
+    use app_lib::audio::transcript_journal;
+
+    open_the_archive();
+    let folder = tempfile::tempdir().unwrap();
+    transcript_journal::begin(folder.path(), "Разговор о бюджете", "2026-09-18T10:00:00Z");
+    transcript_journal::append(&LiveSegment {
+        id: "seg_1".to_string(),
+        text: "Совершенно секретная реплика".to_string(),
+        audio_start_time: 0.0,
+        audio_end_time: 1.0,
+        duration: 1.0,
+        display_time: "[00:00]".to_string(),
+        confidence: 1.0,
+        sequence_id: 1,
+        speaker: Some("You".to_string()),
+    });
+    transcript_journal::end();
+
+    let raw = std::fs::read_to_string(folder.path().join(transcript_journal::JOURNAL_FILE)).unwrap();
+    assert_eq!(raw.lines().count(), 2);
+    assert!(raw.lines().all(|line| line.starts_with("tkf1:")));
+    assert!(!raw.contains("секретная"));
+    assert!(!raw.contains("бюджете"));
 }

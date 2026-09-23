@@ -563,6 +563,9 @@ impl SummaryService {
         );
 
         let client = reqwest::Client::new();
+        // What identifies the people in this recording is replaced before it
+        // can reach a model off this machine, and put back in the answer.
+        let hidden = crate::privacy::vocabulary::shield_for(&pool, Some(&meeting_id)).await;
         let result = generate_meeting_summary(
             &client,
             &provider,
@@ -580,6 +583,7 @@ impl SummaryService {
             custom_openai_top_p,
             app_data_dir.as_ref(),
             Some(&cancellation_token),
+            hidden.as_ref(),
             summary_language.as_deref(),
             detected_summary_language.as_deref(),
             cached_english.as_deref(),
@@ -590,6 +594,8 @@ impl SummaryService {
 
         match result {
             Ok((final_markdown, english_markdown, num_chunks)) => {
+                let final_markdown = crate::privacy::restore(hidden.as_ref(), &final_markdown);
+                let english_markdown = crate::privacy::restore(hidden.as_ref(), &english_markdown);
                 if cancellation_token.is_cancelled() {
                     info!("Discarding completed summary after cancellation for meeting_id: {}", meeting_id);
                     if let Err(db_err) = SummaryProcessesRepository::update_process_cancelled(&pool, &meeting_id).await {

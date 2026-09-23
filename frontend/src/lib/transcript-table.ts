@@ -37,6 +37,11 @@ export interface TimelineLine {
   ids?: string[];
   /** A person corrected it. */
   edited?: boolean;
+  /**
+   * The text as stored, when `text` shows something else (the timed words).
+   * A correction starts from this, so nothing the timings left out is lost.
+   */
+  stored?: string;
 }
 
 export interface PlacedLine {
@@ -55,10 +60,47 @@ export interface Anchor {
 
 export interface TimelineLayout {
   placed: PlacedLine[];
-  /** Ascending in both `t` and `y`. */
+  /**
+   * Ascending in both `t` and `y`. Their `t` is shown time — the recording's
+   * time with its long pauses shortened (see `QuietOptions`).
+   */
   anchors: Anchor[];
   height: number;
   pxPerSecond: number;
+  /** Recording time to shown time; the identity when no pause is shortened. */
+  warp: Warp;
+  /** The pauses that were shortened, where they are on screen. */
+  quiet: QuietStretch[];
+}
+
+/**
+ * Shortening the stretches where nobody says anything.
+ *
+ * A proportional axis gives a silence as much room as speech, and a meeting
+ * has plenty of it: the minute before anyone speaks, someone thinking. A
+ * pause no longer than `keep` seconds stays as it is — it is part of how a
+ * conversation reads. A longer one is shown as `keep` plus `rate` of the rest,
+ * and never as more than `most` seconds. Both columns share the one axis, so an
+ * interruption still sits beside the words it cut into.
+ */
+export interface QuietOptions {
+  keep: number;
+  rate: number;
+  most: number;
+}
+
+/** A shortened pause: its real times and its place on screen. */
+export interface QuietStretch {
+  from: number;
+  to: number;
+  top: number;
+  bottom: number;
+}
+
+/** Matching points of recording time and shown time, ascending in both. */
+export interface Warp {
+  real: number[];
+  shown: number[];
 }
 
 export interface LayoutOptions {
@@ -67,6 +109,68 @@ export interface LayoutOptions {
   gap: number;
   /** Space above time zero and below the last line. */
   padding: number;
+  /** Shorten long pauses; without it, time is shown as recorded. */
+  quiet?: QuietOptions;
+}
+
+/** When someone is speaking: the words where they have times, else the line. */
+function speechOf(lines: TimelineLine[]): Array<[number, number]> {
+  const spans: Array<[number, number]> = [];
+  for (const line of lines) {
+    if (line.words?.length) {
+      for (const word of line.words) spans.push([word.s, Math.max(word.s, word.e)]);
+    } else {
+      spans.push([line.start, endOf(line)]);
+    }
+  }
+  return spans.sort((a, b) => a[0] - b[0]);
+}
+
+/** The pauses of `quiet` and how long each is shown for. */
+export function buildWarp(lines: TimelineLine[], quiet?: QuietOptions): Warp {
+  const warp: Warp = { real: [0], shown: [0] };
+  if (!quiet) return warp;
+  let spokenUntil = 0;
+  for (const [start, end] of speechOf(lines)) {
+    const pause = start - spokenUntil;
+    if (pause > quiet.keep) {
+      const shown = Math.min(pause, quiet.most, quiet.keep + (pause - quiet.keep) * quiet.rate);
+      const at = toShown(warp, spokenUntil);
+      warp.real.push(spokenUntil, start);
+      warp.shown.push(at, at + shown);
+    }
+    spokenUntil = Math.max(spokenUntil, end);
+  }
+  return warp;
+}
+
+/** Index of the last point at or before `value` in an ascending list. */
+function pointBefore(points: number[], value: number): number {
+  let low = 0;
+  let high = points.length - 1;
+  while (low < high) {
+    const mid = (low + high + 1) >> 1;
+    if (points[mid] <= value) low = mid;
+    else high = mid - 1;
+  }
+  return low;
+}
+
+/** Map through piecewise-linear points; past the last one, a second is a second. */
+function through(from: number[], to: number[], value: number): number {
+  const i = pointBefore(from, value);
+  const next = i + 1;
+  if (next >= from.length || value <= from[i]) return to[i] + (value - from[i]);
+  if (from[next] === from[i]) return to[i];
+  return to[i] + ((value - from[i]) / (from[next] - from[i])) * (to[next] - to[i]);
+}
+
+export function toShown(warp: Warp, t: number): number {
+  return through(warp.real, warp.shown, t);
+}
+
+export function toReal(warp: Warp, t: number): number {
+  return through(warp.shown, warp.real, t);
 }
 
 /**
@@ -88,9 +192,12 @@ export function layoutTimeline(
   lines: TimelineLine[],
   sideOf: (speaker?: string) => TimelineColumn,
   heightOf: (line: TimelineLine) => number,
-  { pxPerSecond, gap, padding }: LayoutOptions,
+  { pxPerSecond, gap, padding, quiet }: LayoutOptions,
 ): TimelineLayout {
   const sorted = [...lines].sort((a, b) => a.start - b.start || endOf(a) - endOf(b));
+  // Everything below is placed in shown time.
+  const warp = buildWarp(sorted, quiet);
+  const shown = (t: number) => toShown(warp, t);
   const anchors: Anchor[] = [{ t: 0, y: padding }];
   const placed: PlacedLine[] = [];
   // Where each column is free from, in pixels.
@@ -102,7 +209,8 @@ export function layoutTimeline(
     const column = sideOf(line.speaker);
     const height = heightOf(line);
     const last = anchors[anchors.length - 1];
-    const start = line.start - last.t < SAME_INSTANT ? last.t : line.start;
+    const lineStart = shown(line.start);
+    const start = lineStart - last.t < SAME_INSTANT ? last.t : lineStart;
     const cols = columnsOf(column);
     // Below whatever is already in the column, with a gap once there is
     // something to keep a gap from.
@@ -149,7 +257,7 @@ export function layoutTimeline(
   // Close the axis at the last moment anyone was speaking, and below the last
   // line on screen, whichever is further.
   const last = anchors[anchors.length - 1];
-  const spokenUntil = sorted.reduce((latest, line) => Math.max(latest, endOf(line)), last.t);
+  const spokenUntil = sorted.reduce((latest, line) => Math.max(latest, shown(endOf(line))), last.t);
   const finalY = Math.max(last.y + (spokenUntil - last.t) * pxPerSecond, free.host, free.client);
   if (finalY > last.y) {
     // The anchor the last lines sit on must not move; the extra room belongs
@@ -158,12 +266,21 @@ export function layoutTimeline(
     anchors.push({ t: finalT, y: finalY });
   }
 
-  return {
+  const layout: TimelineLayout = {
     placed,
     anchors,
     height: anchors[anchors.length - 1].y + padding,
     pxPerSecond,
+    warp,
+    quiet: [],
   };
+  // The warp's points after the first come in pairs, one pair per pause.
+  for (let i = 1; i + 1 < warp.real.length; i += 2) {
+    const from = warp.real[i];
+    const to = warp.real[i + 1];
+    layout.quiet.push({ from, to, top: yAt(layout, from), bottom: yAt(layout, to) });
+  }
+  return layout;
 }
 
 /** Index of the last anchor at or before `value` on the given axis. */
@@ -179,8 +296,9 @@ function anchorBefore(anchors: Anchor[], value: number, axis: 't' | 'y'): number
 }
 
 /** Where a moment of the recording is on screen. */
-export function yAt(layout: TimelineLayout, t: number): number {
+export function yAt(layout: TimelineLayout, seconds: number): number {
   const { anchors, pxPerSecond } = layout;
+  const t = toShown(layout.warp, seconds);
   const i = anchorBefore(anchors, t, 't');
   const a = anchors[i];
   const b = anchors[i + 1];
@@ -190,6 +308,10 @@ export function yAt(layout: TimelineLayout, t: number): number {
 
 /** Which moment of the recording is at a position on screen. */
 export function timeAt(layout: TimelineLayout, y: number): number {
+  return Math.max(0, toReal(layout.warp, shownTimeAt(layout, y)));
+}
+
+function shownTimeAt(layout: TimelineLayout, y: number): number {
   const { anchors, pxPerSecond } = layout;
   const i = anchorBefore(anchors, y, 'y');
   const a = anchors[i];
@@ -204,6 +326,10 @@ export function timeAt(layout: TimelineLayout, y: number): number {
   return a.t + ((y - a.y) / (b.y - a.y)) * (b.t - a.t);
 }
 
+/** Closest two ruler marks may be, and two labelled ones, in pixels. */
+const MIN_TICK_GAP = 3;
+const MIN_LABEL_GAP = 24;
+
 export interface Tick {
   t: number;
   y: number;
@@ -217,6 +343,11 @@ export interface Tick {
  * Every second gets a mark. Labels are spaced so they never crowd: every five
  * seconds at the default scale, every second when zoomed in, and tenths of a
  * second get their own marks once there is room for them.
+ *
+ * A shortened pause gets no marks inside it — its seconds are squeezed too
+ * tight to tell apart; the pause is drawn as one stretch instead. Near its
+ * edges a mark too close to the one before is left out, and a label too close
+ * to the one before loses its text.
  */
 export function ticksBetween(layout: TimelineLayout, fromY: number, toY: number): Tick[] {
   const pps = layout.pxPerSecond;
@@ -228,12 +359,27 @@ export function ticksBetween(layout: TimelineLayout, fromY: number, toY: number)
   // Counting in steps rather than adding floats keeps 0.1 from drifting.
   const firstIndex = Math.round(from / step);
   const lastIndex = Math.ceil(to / step);
+  let lastY = -Infinity;
+  let lastLabelY = -Infinity;
+  let pause = 0;
   for (let index = firstIndex; index <= lastIndex; index++) {
     const t = Math.round(index * step * 10) / 10;
+    while (pause < layout.quiet.length && layout.quiet[pause].to <= t) pause++;
+    const inside = layout.quiet[pause];
+    if (inside && inside.from < t) {
+      // Skip to the end of the pause; the loop's own step lands on it.
+      index = Math.max(index, Math.ceil(inside.to / step) - 1);
+      continue;
+    }
+    const y = yAt(layout, t);
+    if (y - lastY < MIN_TICK_GAP) continue;
     const whole = Number.isInteger(t);
-    const kind: Tick['kind'] =
+    let kind: Tick['kind'] =
       whole && t % labelEvery === 0 ? 'label' : whole ? 'major' : 'minor';
-    ticks.push({ t, y: yAt(layout, t), kind });
+    if (kind === 'label' && y - lastLabelY < MIN_LABEL_GAP) kind = 'major';
+    if (kind === 'label') lastLabelY = y;
+    lastY = y;
+    ticks.push({ t, y, kind });
   }
   return ticks;
 }

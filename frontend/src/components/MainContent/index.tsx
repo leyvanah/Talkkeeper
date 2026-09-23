@@ -2,7 +2,6 @@
 
 import React from 'react';
 import { AppHeader } from '@/components/AppHeader';
-import { RetranscriptionIndicator } from '@/components/shared/RetranscriptionIndicator';
 
 interface MainContentProps {
   children: React.ReactNode;
@@ -24,10 +23,6 @@ const MainContent: React.FC<MainContentProps> = ({ children }) => {
       <div className="min-w-0 min-h-0 flex-1 overflow-hidden">
         {children}
       </div>
-      {/* Background work reports here rather than over the page. It belongs to
-          this column and not to the window, because the sidebar is fixed and
-          full-height: a strip across the window would run underneath it. */}
-      <RetranscriptionIndicator />
     </main>
   );
 };

@@ -131,7 +131,8 @@ async fn start_retranscription<R: Runtime>(
     // The external service holds its own model - there is nothing local to unload
     let use_external = provider.as_deref() == Some("externalStt");
     let use_gigaam = provider.as_deref() == Some("gigaam");
-    let batch_lease = super::common::acquire_stt_batch_lease().await;
+    // Held for the whole job, except while it steps aside for a recording.
+    let mut batch_lease = Some(super::common::acquire_stt_batch_lease().await);
     let result = run_retranscription(
         app.clone(),
         meeting_id.clone(),
@@ -140,6 +141,7 @@ async fn start_retranscription<R: Runtime>(
         model,
         provider,
         initial_prompt,
+        &mut batch_lease,
     )
     .await;
     drop(batch_lease);
@@ -299,8 +301,13 @@ pub(crate) fn silence_the_speakers(
     own_speech: &crate::audio::own_speech::WindowTimeline,
     far_end: &crate::audio::own_speech::WindowTimeline,
 ) -> f64 {
+    silence_spans(samples, sample_rate, &echo_spans(own_speech, far_end))
+}
+
+/// Silence the given stretches, wherever the answer came from.
+pub(crate) fn silence_spans(samples: &mut [f32], sample_rate: u32, spans: &[(f64, f64)]) -> f64 {
     let mut silenced_ms = 0.0f64;
-    for (from_ms, to_ms) in echo_spans(own_speech, far_end) {
+    for &(from_ms, to_ms) in spans {
         let first = ((from_ms / 1000.0) * sample_rate as f64).round() as usize;
         let last = (((to_ms / 1000.0) * sample_rate as f64).round() as usize).min(samples.len());
         if first >= last {
@@ -310,6 +317,33 @@ pub(crate) fn silence_the_speakers(
         silenced_ms += (last - first) as f64 / sample_rate as f64 * 1000.0;
     }
     silenced_ms
+}
+
+/// The loudness of the system track, window by window.
+///
+/// Read separately from the pass over the sources: the microphone is decoded
+/// first and has to be judged before its voice detection runs, and holding
+/// both hour-long tracks in memory at once to avoid one decode is not a trade
+/// worth making.
+async fn measure_the_far_end(
+    sources: &[RetranscriptionSource],
+) -> Option<crate::audio::echo_offline::Envelope> {
+    let system = sources
+        .iter()
+        .find(|source| source.speaker_hint == Some("Guest"))?;
+    let path = system.path.clone();
+    let decoded = tokio::task::spawn_blocking(move || decode_audio_file(&path))
+        .await
+        .ok()?
+        .ok()?;
+    let samples = tokio::task::spawn_blocking(move || decoded.to_whisper_format())
+        .await
+        .ok()?;
+    Some(crate::audio::echo_offline::Envelope::measure(
+        &samples,
+        WORKING_SAMPLE_RATE,
+        crate::audio::echo_offline::WINDOW_MS,
+    ))
 }
 
 fn create_source_labeled_segments(
@@ -326,6 +360,7 @@ fn create_source_labeled_segments(
 }
 
 /// Internal function to run retranscription
+#[allow(clippy::too_many_arguments)]
 async fn run_retranscription<R: Runtime>(
     app: AppHandle<R>,
     meeting_id: String,
@@ -334,6 +369,7 @@ async fn run_retranscription<R: Runtime>(
     model: Option<String>,
     provider: Option<String>,
     initial_prompt: Option<String>,
+    lease: &mut Option<super::common::SttBatchLease>,
 ) -> Result<RetranscriptionResult> {
     let folder_path = PathBuf::from(&meeting_folder_path);
     let audio_path = find_audio_file(&folder_path)?;
@@ -355,8 +391,19 @@ async fn run_retranscription<R: Runtime>(
 
     // What the detector answered while this was being recorded, if it was on
     // and the recording closed cleanly. Absent for everything recorded before
-    // this existed, and then nothing is dropped — the behaviour until now.
+    // this existed, and for everything recorded with Windows cancelling the
+    // echo instead — which is the default.
     let own_speech_record = read_timelines(&folder_path);
+
+    // Without that record, the echo is measured from the tracks themselves:
+    // they came off one clock, and the speakers' return is the system track
+    // again, quieter and a little later. Only the loudness of each window is
+    // kept, so this costs one decode and a few hundred numbers a second.
+    let system_envelope = if own_speech_record.is_none() {
+        measure_the_far_end(&sources).await
+    } else {
+        None
+    };
 
     // Retained source tracks prevent one speaker from masking the other. Older
     // recordings fall back to the mixed playback file.
@@ -364,6 +411,8 @@ async fn run_retranscription<R: Runtime>(
         if RETRANSCRIPTION_CANCELLED.load(Ordering::SeqCst) {
             return Err(anyhow!("Retranscription cancelled"));
         }
+        // Finding speech is heavy too; it waits for a recording like the rest.
+        step_aside_for_recording(&app, &meeting_id, lease, 5).await?;
 
         emit_progress(
             &app,
@@ -390,9 +439,11 @@ async fn run_retranscription<R: Runtime>(
         // Before voice detection, take out what the detector said was only the
         // speakers coming back. Without this the pass would hand the owner's
         // channel words the other person said — which is what it used to do.
-        if source.gated_by_the_record {
-            match own_speech_record.as_ref() {
-                Some((own_speech, far_end)) => {
+        let is_microphone = source.speaker_hint == Some("You");
+        if is_microphone {
+            match (own_speech_record.as_ref(), system_envelope.as_ref()) {
+                // What the detector answered while it was recorded.
+                (Some((own_speech, far_end)), _) if source.gated_by_the_record => {
                     let silenced = silence_the_speakers(
                         &mut audio_samples,
                         WORKING_SAMPLE_RATE,
@@ -406,7 +457,28 @@ async fn run_retranscription<R: Runtime>(
                         );
                     }
                 }
-                None => info!(
+                // Nobody judged this recording while it ran: measure it now.
+                (None, Some(system)) => {
+                    let mic = crate::audio::echo_offline::Envelope::measure(
+                        &audio_samples,
+                        WORKING_SAMPLE_RATE,
+                        crate::audio::echo_offline::WINDOW_MS,
+                    );
+                    let measured = crate::audio::echo_offline::measure(&mic, system);
+                    info!(
+                        "🔇 Echo measured from the tracks: {}",
+                        crate::audio::echo_offline::describe(&measured)
+                    );
+                    if !measured.spans.is_empty() {
+                        let silenced =
+                            silence_spans(&mut audio_samples, WORKING_SAMPLE_RATE, &measured.spans);
+                        info!(
+                            "🔇 Silenced {:.1}s of the microphone the speakers had played under",
+                            silenced / 1000.0
+                        );
+                    }
+                }
+                _ => info!(
                     "No own-speech record for this recording: reading the microphone as it was stored"
                 ),
             }
@@ -502,12 +574,12 @@ async fn run_retranscription<R: Runtime>(
     emit_progress(&app, &meeting_id, "transcribing", 25, "Loading transcription engine...");
 
     // Initialize the appropriate engine once (not per-segment)
-    let whisper_engine = if !use_parakeet && !use_external && !use_gigaam {
+    let mut whisper_engine = if !use_parakeet && !use_external && !use_gigaam {
         Some(get_or_init_whisper(&app, model.as_deref()).await?)
     } else {
         None
     };
-    let parakeet_engine = if use_parakeet {
+    let mut parakeet_engine = if use_parakeet {
         Some(get_or_init_parakeet(&app, model.as_deref()).await?)
     } else {
         None
@@ -517,7 +589,7 @@ async fn run_retranscription<R: Runtime>(
     } else {
         None
     };
-    let gigaam_engine = if use_gigaam {
+    let mut gigaam_engine = if use_gigaam {
         Some(super::import::get_or_init_gigaam().await?)
     } else {
         None
@@ -567,6 +639,20 @@ async fn run_retranscription<R: Runtime>(
 
         // Calculate progress (25% to 80% range for transcription)
         let progress = 25 + ((i as f32 / processable_count as f32) * 55.0) as u32;
+
+        // A recording started meanwhile has the machine first. The model may
+        // have been let go while the job waited, so it is asked for again.
+        if step_aside_for_recording(&app, &meeting_id, lease, progress).await? {
+            if let Some(engine) = whisper_engine.as_mut() {
+                *engine = get_or_init_whisper(&app, model.as_deref()).await?;
+            }
+            if let Some(engine) = parakeet_engine.as_mut() {
+                *engine = get_or_init_parakeet(&app, model.as_deref()).await?;
+            }
+            if let Some(engine) = gigaam_engine.as_mut() {
+                *engine = super::import::get_or_init_gigaam().await?;
+            }
+        }
         let segment_duration_sec = (segment.end_timestamp_ms - segment.start_timestamp_ms) / 1000.0;
         emit_progress(
             &app,
@@ -780,12 +866,12 @@ async fn run_retranscription<R: Runtime>(
     // timings line up with them by position.
     for (segment, words) in segments.iter().zip(all_words.iter()) {
         sqlx::query(
-            "INSERT INTO transcripts (id, meeting_id, transcript, timestamp, audio_start_time, audio_end_time, duration, speaker, words)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)"
+            "INSERT INTO transcripts (id, meeting_id, transcript, timestamp, audio_start_time, audio_end_time, duration, speaker, words, source_track)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
         )
         .bind(&segment.id)
         .bind(&meeting_id)
-        .bind(fields::seal(fields::TRANSCRIPT_TEXT, &segment.text))
+        .bind(fields::seal(fields::TRANSCRIPT_TEXT, &segment.text)?)
         .bind(&segment.timestamp)
         .bind(segment.audio_start_time)
         .bind(segment.audio_end_time)
@@ -793,12 +879,15 @@ async fn run_retranscription<R: Runtime>(
         .bind(fields::seal_joinable_opt(
             fields::TRANSCRIPT_SPEAKER,
             segment.speaker.as_deref(),
-        ))
+        )?)
         .bind(
             words
                 .as_deref()
-                .map(|words| fields::seal(fields::TRANSCRIPT_WORDS, &to_json(words))),
+                .map(|words| fields::seal(fields::TRANSCRIPT_WORDS, &to_json(words)))
+                .transpose()?,
         )
+        // Each line was recognised from one track, and its label says which.
+        .bind(crate::diarization::by_device::source_of_label(segment.speaker.as_deref()))
         .execute(&mut *tx)
         .await
         .map_err(|e| anyhow!("Failed to insert transcript: {}", e))?;
@@ -841,6 +930,42 @@ async fn run_retranscription<R: Runtime>(
         duration_seconds,
         language,
     })
+}
+
+/// A recording comes first. While one is on, the job waits between segments
+/// and lets go of the engine, so the recording is neither slowed down by it
+/// nor made to wait for it when it stops; it picks up where it was once the
+/// recording ends. Returns whether it waited.
+async fn step_aside_for_recording<R: Runtime>(
+    app: &AppHandle<R>,
+    meeting_id: &str,
+    lease: &mut Option<super::common::SttBatchLease>,
+    progress: u32,
+) -> Result<bool> {
+    if !crate::audio::recording_commands::is_recording_active() {
+        return Ok(false);
+    }
+    info!("Retranscription paused while a recording is on");
+    *lease = None;
+    let mut waited_secs: u64 = 0;
+    while crate::audio::recording_commands::is_recording_active() {
+        if RETRANSCRIPTION_CANCELLED.load(Ordering::SeqCst) {
+            return Err(anyhow!("Retranscription cancelled"));
+        }
+        // Said again now and then: the window takes a job it has not heard
+        // from for minutes for a stalled one, and a recording lasts longer.
+        if waited_secs % 30 == 0 {
+            emit_progress(app, meeting_id, "paused", progress, "Paused while recording");
+        }
+        // Waiting is not idleness: the idle unloader must leave the model be.
+        super::common::mark_stt_activity();
+        tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+        waited_secs += 1;
+    }
+    *lease = Some(super::common::acquire_stt_batch_lease().await);
+    info!("Retranscription resumed after the recording");
+    emit_progress(app, meeting_id, "transcribing", progress, "Resuming...");
+    Ok(true)
 }
 
 /// Emit progress event
@@ -1196,6 +1321,7 @@ pub async fn start_retranscription_command<R: Runtime>(
 
     // Spawn the retranscription in a background task
     tauri::async_runtime::spawn(async move {
+        let _busy = crate::security::session::busy();
         let _operation_guard = crate::diarization::operation_guard().await;
         let result = start_retranscription(
             guard,

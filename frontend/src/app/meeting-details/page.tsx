@@ -4,12 +4,12 @@ import { useState, useEffect, useCallback, useRef, Suspense } from "react";
 import { Transcript, Summary } from "@/types";
 import PageContent from "./page-content";
 import { useRouter, useSearchParams } from "next/navigation";
-import Analytics from "@/lib/analytics";
 import { invoke } from "@tauri-apps/api/core";
 import { LoaderIcon } from "lucide-react";
 import { useConfig } from "@/contexts/ConfigContext";
 import { usePaginatedTranscripts } from "@/hooks/usePaginatedTranscripts";
 import { shouldSetUpAutoSummary } from "@/lib/meeting-summary-policy";
+import { usePostCall } from "@/contexts/PostCallContext";
 
 interface MeetingDetailsResponse {
   id: string;
@@ -23,7 +23,12 @@ interface MeetingDetailsResponse {
 function MeetingDetailsContent() {
   const searchParams = useSearchParams();
   const meetingId = searchParams.get('id');
-  const source = searchParams.get('source'); // Check if navigated from recording
+  // Navigated here from a recording - or, just as much, came back to one whose
+  // processing is still under way or whose summary has not started yet.
+  const { isPending: postCallPending } = usePostCall();
+  const source = searchParams.get('source') === 'recording' || (meetingId && postCallPending(meetingId))
+    ? 'recording'
+    : searchParams.get('source');
   const { setCurrentMeeting, refetchMeetings, stopSummaryPolling } = useSidebar();
   const { isAutoSummary, setModelConfig } = useConfig(); // Get auto-summary toggle state
   const router = useRouter();
@@ -207,7 +212,6 @@ function MeetingDetailsContent() {
       console.warn('No valid meeting ID in URL - meetingId:', meetingId);
       setError("No meeting selected");
       setIsLoading(false);
-      Analytics.trackPageView('meeting_details');
       return;
     }
 

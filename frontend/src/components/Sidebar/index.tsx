@@ -34,7 +34,6 @@ import type { CurrentMeeting, SidebarItem } from '@/components/Sidebar/SidebarPr
 import { ConfirmationModal } from '../ConfirmationModel/confirmation-modal';
 import { ModelConfig } from '@/components/ModelSettingsModal';
 import { TranscriptModelProps } from '@/components/TranscriptSettings';
-import Analytics from '@/lib/analytics';
 import { invoke } from '@tauri-apps/api/core';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
 import { toast } from 'sonner';
@@ -311,9 +310,6 @@ const Sidebar: React.FC = () => {
       // Emit event to sync other components
       const { emit } = await import('@tauri-apps/api/event');
       await emit('model-config-updated', config);
-
-      // Track settings change
-      await Analytics.trackSettingsChanged('model_config', `${config.provider}_${config.model}`);
     } catch (error) {
       console.error('Error saving model config:', error);
       setSettingsSaveSuccess(false);
@@ -341,7 +337,6 @@ const Sidebar: React.FC = () => {
 
       // Track settings change
       const transcriptConfigToSave = updatedConfig || transcriptModelConfig;
-      await Analytics.trackSettingsChanged('transcript_config', `${transcriptConfigToSave.provider}_${transcriptConfigToSave.model}`);
     } catch (error) {
       console.error('Failed to save transcript config:', error);
       setSettingsSaveSuccess(false);
@@ -367,9 +362,6 @@ const Sidebar: React.FC = () => {
       setMeetings(updatedMeetings);
       // The client folder's count and "last seen" moved with it.
       await refetchClients();
-
-      // Track meeting deletion
-      Analytics.trackMeetingDeleted(itemId);
 
       // Show success toast
       toast.success(t('meetingDeletedSuccess'), {
@@ -446,7 +438,6 @@ const Sidebar: React.FC = () => {
     for (const id of ids) {
       try {
         await invoke('api_delete_meeting', { meetingId: id });
-        Analytics.trackMeetingDeleted(id);
         ok++;
       } catch (error) {
         console.error('Failed to delete meeting', id, error);
@@ -508,9 +499,6 @@ const Sidebar: React.FC = () => {
       if (currentMeeting?.id === meetingId) {
         setCurrentMeeting({ id: meetingId, title: newTitle });
       }
-
-      // Track the edit
-      Analytics.trackButtonClick('edit_meeting_title', 'sidebar');
 
       toast.success(t('titleUpdatedSuccess'));
 
@@ -754,7 +742,7 @@ const Sidebar: React.FC = () => {
             if (selectedIds.size > 0) clearSelection();
             setCurrentMeeting({ id: item.id, title: item.title });
             const basePath = item.id.startsWith('intro-call') ? '/' :
-              item.id.includes('-') ? `/meeting-details?id=${item.id}` : `/notes/${item.id}`;
+              `/meeting-details?id=${item.id}`;
             router.push(basePath);
           }}
         >
@@ -946,7 +934,7 @@ const Sidebar: React.FC = () => {
               >
                 <Search className="h-4 w-4 shrink-0" />
                 <span className="min-w-0 flex-1 truncate">{t('searchEverything')}</span>
-                <kbd className="shrink-0 rounded border border-[var(--af-border-strong)] bg-[var(--af-panel-2)] px-1.5 py-0.5 text-[10px] font-medium text-[var(--af-text-3)]">Ctrl K</kbd>
+                <kbd className="shrink-0 font-sans text-[11px] text-[var(--af-text-3)] opacity-70">Ctrl+K</kbd>
               </button>
 
               <button

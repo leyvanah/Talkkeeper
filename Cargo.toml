@@ -8,7 +8,7 @@ members = [
 # Shared workspace settings
 [workspace.package]
 edition = "2021"
-rust-version = "1.77.2"
+rust-version = "1.80"
 
 # Shared dependencies that can be inherited by workspace members
 [workspace.dependencies]
@@ -16,3 +16,11 @@ anyhow = "1.0"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 tokio = { version = "1.32.0", features = ["full"] }
+
+# Dependencies are optimized even in dev builds. whisper.cpp, ONNX Runtime and
+# the DSP crates are unusable unoptimized (a Whisper pass that takes minutes
+# in release took over half an hour in `tauri dev`), and the cmake builds
+# follow opt-level: 0 gives a Debug whisper.cpp, 2 a RelWithDebInfo one.
+# The application crate itself stays at opt-level 0 so rebuilds stay quick.
+[profile.dev.package."*"]
+opt-level = 2

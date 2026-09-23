@@ -4,7 +4,6 @@ import { useTranslations } from 'next-intl';
 import { motion } from 'framer-motion';
 import { Summary, SummaryResponse } from '@/types';
 import { useSidebar } from '@/components/Sidebar/SidebarProvider';
-import Analytics from '@/lib/analytics';
 import { invoke } from '@tauri-apps/api/core';
 import { toast } from 'sonner';
 import { TranscriptPanel } from '@/components/MeetingDetails/TranscriptPanel';
@@ -21,7 +20,7 @@ import { useTemplates } from '@/hooks/meeting-details/useTemplates';
 import { useCopyOperations } from '@/hooks/meeting-details/useCopyOperations';
 import { useMeetingOperations } from '@/hooks/meeting-details/useMeetingOperations';
 import { useConfig } from '@/contexts/ConfigContext';
-import { PostCallProcessingDialog } from '@/components/MeetingDetails/PostCallProcessingDialog';
+import { usePostCall } from '@/contexts/PostCallContext';
 import { MeetingExportDialog } from '@/components/MeetingDetails/MeetingExportDialog';
 import { SummaryRegenerationDialog } from '@/components/MeetingDetails/SummaryRegenerationDialog';
 
@@ -63,7 +62,7 @@ export default function PageContent({
   loadedCount?: number;
   onLoadMore?: () => void;
 }) {
-  console.log('ðŸ“„ PAGE CONTENT: Initializing with data:', {
+  console.log('📄 PAGE CONTENT: Initializing with data:', {
     meetingId: meeting.id,
     summaryDataKeys: summaryData ? Object.keys(summaryData) : null,
     transcriptsCount: meeting.transcripts?.length
@@ -76,7 +75,6 @@ export default function PageContent({
   const [templateEditorOpen, setTemplateEditorOpen] = useState(false);
   const [isRecording] = useState(false);
   const [summaryResponse] = useState<SummaryResponse | null>(null);
-  const [postCallProcessingCompletedMeetingId, setPostCallProcessingCompletedMeetingId] = useState<string | null>(null);
   const [exportOpen, setExportOpen] = useState(false);
   const [regenerationRequest, setRegenerationRequest] = useState<{
     open: boolean;
@@ -102,17 +100,17 @@ export default function PageContent({
 
   // Callback to register the modal open function
   const handleRegisterModalOpen = (openFn: () => void) => {
-    console.log('ðŸ“ Registering modal open function in PageContent');
+    console.log('📝 Registering modal open function in PageContent');
     openModelSettingsRef.current = openFn;
   };
 
   // Callback to trigger modal open (called from error handler)
   const handleOpenModelSettings = () => {
-    console.log('ðŸ”” Opening model settings from PageContent');
+    console.log('🔔 Opening model settings from PageContent');
     if (openModelSettingsRef.current) {
       openModelSettingsRef.current();
     } else {
-      console.warn('âš ï¸ Modal open function not yet registered');
+      console.warn('⚠️ Modal open function not yet registered');
     }
   };
 
@@ -172,10 +170,23 @@ export default function PageContent({
     meeting,
   });
 
-  // Track page view
+  // The work after a recording belongs to the application, not to this page:
+  // the page only asks for it (again, harmlessly, on every visit) and reloads
+  // the transcript each time the work replaces it.
+  const postCall = usePostCall();
   useEffect(() => {
-    Analytics.trackPageView('meeting_details');
-  }, []);
+    if (isPostCallRecording) postCall.begin(meeting.id, meeting.folder_path ?? null);
+  }, [isPostCallRecording, meeting.id, meeting.folder_path, postCall.begin]);
+  const transcriptVersion = postCall.transcriptVersion(meeting.id);
+  const refetchRef = useRef(onRefetchTranscripts);
+  refetchRef.current = onRefetchTranscripts;
+  useEffect(() => {
+    if (transcriptVersion === 0) return;
+    void refetchRef.current?.()?.catch((error) =>
+      console.error('Failed to reload the transcript after processing:', error),
+    );
+  }, [transcriptVersion]);
+  const postCallDone = postCall.isDone(meeting.id);
 
   // Auto-generate summary when flag is set
   useEffect(() => {
@@ -183,18 +194,19 @@ export default function PageContent({
       if (
         shouldAutoGenerate &&
         meetingData.transcripts.length > 0 &&
-        (!isPostCallRecording || postCallProcessingCompletedMeetingId === meeting.id)
+        (!isPostCallRecording || postCallDone)
       ) {
         if (isPostCallRecording) {
           const summaryStartKey = `post-call-summary-started:${meeting.id}`;
           if (sessionStorage.getItem(summaryStartKey)) {
+            postCall.release(meeting.id);
             onAutoGenerateComplete?.();
             return;
           }
 
           let attempt = autoSummaryInFlight.get(meeting.id);
           if (!attempt) {
-            console.log(`ðŸ¤– Auto-generating summary with ${modelConfig.provider}/${modelConfig.model}...`);
+            console.log(`🤖 Auto-generating summary with ${modelConfig.provider}/${modelConfig.model}...`);
             attempt = summaryGeneration.handleGenerateSummary('');
             autoSummaryInFlight.set(meeting.id, attempt);
           }
@@ -210,12 +222,13 @@ export default function PageContent({
 
           if (accepted) {
             sessionStorage.setItem(summaryStartKey, 'started');
+            postCall.release(meeting.id);
             onAutoGenerateComplete?.();
           }
           return;
         }
 
-        console.log(`ðŸ¤– Auto-generating summary with ${modelConfig.provider}/${modelConfig.model}...`);
+        console.log(`🤖 Auto-generating summary with ${modelConfig.provider}/${modelConfig.model}...`);
         await summaryGeneration.handleGenerateSummary('');
         onAutoGenerateComplete?.();
       }
@@ -227,7 +240,8 @@ export default function PageContent({
     meeting.id,
     meetingData.transcripts.length,
     isPostCallRecording,
-    postCallProcessingCompletedMeetingId,
+    postCallDone,
+    postCall.release,
     modelConfig.provider,
     modelConfig.model,
     summaryGeneration.handleGenerateSummary,
@@ -344,13 +358,6 @@ export default function PageContent({
         initialContext={regenerationRequest.initialContext}
         speakerNamesChanged={regenerationRequest.speakerNamesChanged}
         onRegenerate={summaryGeneration.handleRegenerateSummary}
-      />
-      <PostCallProcessingDialog
-        enabled={isPostCallRecording}
-        meetingId={meeting.id}
-        meetingFolderPath={meeting.folder_path}
-        onRefetchTranscripts={onRefetchTranscripts}
-        onComplete={() => setPostCallProcessingCompletedMeetingId(meeting.id)}
       />
     </motion.div>
   );

@@ -79,7 +79,8 @@ export default function GlobalSearchDialog() {
   useEffect(() => {
     const openSearch = () => setOpen(true);
     const onKeyDown = (event: KeyboardEvent) => {
-      if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'k') {
+      // By the key's place, not its letter: on a Russian layout it is «л».
+      if ((event.metaKey || event.ctrlKey) && event.code === 'KeyK') {
         event.preventDefault();
         setOpen((current) => !current);
       }
@@ -208,7 +209,7 @@ export default function GlobalSearchDialog() {
         className: 'rounded-xl bg-[var(--af-panel)] text-[var(--af-text)]',
       }}
     >
-      <div className="border-b border-[var(--af-border)] p-2 [&_[cmdk-input-wrapper]]:rounded-lg [&_[cmdk-input-wrapper]]:border [&_[cmdk-input-wrapper]]:border-[var(--af-border)] [&_[cmdk-input-wrapper]]:bg-[var(--af-panel-2)] [&_[cmdk-input-wrapper]]:px-3 [&_[cmdk-input-wrapper]]:shadow-sm [&_[cmdk-input-wrapper]]:transition-shadow [&_[cmdk-input-wrapper]]:focus-within:border-[var(--af-accent)] [&_[cmdk-input-wrapper]]:focus-within:ring-2 [&_[cmdk-input-wrapper]]:focus-within:ring-[var(--af-accent)]/25 [&_[cmdk-input-wrapper]_svg]:text-[var(--af-accent)]">
+      <div className="border-b border-[var(--af-border)] p-2 [&_[cmdk-input-wrapper]]:rounded-lg [&_[cmdk-input-wrapper]]:border [&_[cmdk-input-wrapper]]:border-[var(--af-border)] [&_[cmdk-input-wrapper]]:bg-[var(--af-panel-2)] [&_[cmdk-input-wrapper]]:px-3 [&_[cmdk-input-wrapper]]:transition-colors [&_[cmdk-input-wrapper]]:focus-within:border-[var(--af-border-strong)] [&_[cmdk-input-wrapper]_svg]:text-[var(--af-text-3)]">
         <CommandInput
           value={query}
           onValueChange={setQuery}

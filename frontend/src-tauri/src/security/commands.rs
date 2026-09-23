@@ -245,7 +245,46 @@ pub async fn security_field_encryption(
     Ok(FieldEncryption {
         sealed: counts.sealed,
         plaintext: counts.plaintext,
+        plaintext_backup: database_backup_path().exists(),
     })
+}
+
+/// Deletes the copy of the database taken before the first encryption.
+///
+/// That copy is the whole archive in the clear, so it is the owner's to keep
+/// only for as long as they need to be sure the encrypted one reads back —
+/// the settings screen shows it and offers this. Refused while the archive is
+/// locked, like everything else that changes it.
+#[tauri::command]
+pub async fn security_delete_plaintext_backup(
+    state: State<'_, crate::state::AppState>,
+) -> Result<FieldEncryption, SecurityError> {
+    if super::session::archive_is_protected() && !super::session::archive_is_open() {
+        return Err(SecurityError::new("locked", "the archive is locked"));
+    }
+    remove_database_backup()
+        .map_err(|error| SecurityError::new("backupDeleteFailed", error.to_string()))?;
+    security_field_encryption(state).await
+}
+
+/// Removes the pre-encryption copy and any journal SQLite left beside it.
+fn remove_database_backup() -> std::io::Result<()> {
+    remove_database_backup_at(&database_backup_path())
+}
+
+fn remove_database_backup_at(backup: &std::path::Path) -> std::io::Result<()> {
+    for path in [
+        backup.to_path_buf(),
+        backup.with_extension("sqlite-wal"),
+        backup.with_extension("sqlite-shm"),
+    ] {
+        match std::fs::remove_file(&path) {
+            Ok(()) => log::info!("Removed the pre-encryption database copy"),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error),
+        }
+    }
+    Ok(())
 }
 
 /// Bring the titles, transcripts, names and summaries already in the
@@ -290,6 +329,9 @@ async fn convert_database(
     match crate::database::field_encryption::convert_all(pool, direction).await {
         Ok(report) => {
             log::info!("Database fields: {}", report.summary());
+            if direction == DatabaseDirection::Encrypt && report.converted > 0 {
+                compact_database(pool).await;
+            }
             Ok(())
         }
         Err(error) => {
@@ -305,12 +347,27 @@ async fn convert_database(
     }
 }
 
+/// Rewrites the database file and empties its journal, so the plaintext the
+/// encryption pass replaced is gone from free pages and from the WAL rather
+/// than waiting for SQLite to reuse the space. A failure is logged: the
+/// values themselves are already sealed.
+async fn compact_database(pool: &sqlx::SqlitePool) {
+    for statement in ["VACUUM", "PRAGMA wal_checkpoint(TRUNCATE)"] {
+        if let Err(error) = sqlx::query(statement).execute(pool).await {
+            log::warn!("{statement} after encryption failed: {error}");
+        }
+    }
+}
+
 /// The state of the text columns in the database.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct FieldEncryption {
     pub sealed: usize,
     pub plaintext: usize,
+    /// Whether the copy taken before the first encryption is still on disk.
+    /// It is the archive in the clear, so the window says so.
+    pub plaintext_backup: bool,
 }
 
 /// The state of the recordings on disk.
@@ -636,6 +693,12 @@ pub async fn security_lock<R: Runtime>(app: AppHandle<R>) -> Result<(), Security
             "the archive cannot be locked while recording",
         ));
     }
+    if super::session::background_work_running() {
+        return Err(SecurityError::new(
+            "jobInProgress",
+            "the archive cannot be locked while a summary, transcription or import is running",
+        ));
+    }
 
     let state = app.state::<SecurityState>();
     state.session.lock();
@@ -767,6 +830,13 @@ pub async fn security_disable<R: Runtime>(
     std::fs::remove_file(&state.path).map_err(KeystoreError::Io)?;
     *state.keystore_guard() = None;
     state.session.set_configured(false);
+
+    // The copy from before encryption has nothing left to protect against,
+    // and kept, it would outlive the next password as a stale plaintext
+    // archive — `back_up` never overwrites it.
+    if let Err(error) = remove_database_backup() {
+        log::warn!("Could not remove the pre-encryption database copy: {error}");
+    }
     log::info!("Password protection removed");
     Ok(())
 }
@@ -787,9 +857,12 @@ pub fn start_idle_locker<R: Runtime>(app: AppHandle<R>) {
             if !state.session.idle_expired() {
                 continue;
             }
-            if crate::audio::recording_commands::is_recording().await {
+            if crate::audio::recording_commands::is_recording().await
+                || super::session::background_work_running()
+            {
                 // Deliberately not locking, and deliberately not resetting the
-                // idle clock either: the moment recording stops, this locks.
+                // idle clock either: the moment the recording or the job
+                // stops, this locks.
                 continue;
             }
 
@@ -833,6 +906,21 @@ pub fn initialize(app: &AppHandle<impl Runtime>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn removing_the_plaintext_copy_takes_its_journal_with_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let backup = dir.path().join("meeting_minutes.before-encryption.sqlite");
+        std::fs::write(&backup, b"copy").unwrap();
+        std::fs::write(backup.with_extension("sqlite-wal"), b"wal").unwrap();
+
+        remove_database_backup_at(&backup).unwrap();
+
+        assert!(!backup.exists());
+        assert!(!backup.with_extension("sqlite-wal").exists());
+        // Nothing left to remove is not an error: the command is safe to repeat.
+        remove_database_backup_at(&backup).unwrap();
+    }
 
     #[test]
     fn a_wrong_password_reaches_the_window_as_its_own_code() {

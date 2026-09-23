@@ -402,6 +402,7 @@ pub async fn api_process_transcript<R: Runtime>(
     let meeting_id_clone = m_id.clone();
     let process_id_clone = process_id.clone();
     tauri::async_runtime::spawn(async move {
+        let _busy = crate::security::session::busy();
         SummaryService::process_transcript_background(
             app,
             pool,

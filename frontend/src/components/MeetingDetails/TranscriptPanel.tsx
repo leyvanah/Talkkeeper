@@ -17,7 +17,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useLocale, useTranslations } from 'next-intl';
 import { Transcript, TranscriptSegmentData } from '@/types';
-import { Calendar, Clock, MessagesSquare, Table2 } from 'lucide-react';
+import { MessagesSquare, Redo2, Table2, Undo2 } from 'lucide-react';
 import { SpeakerRenameDialog } from './SpeakerRenameDialog';
 import {
   VirtualizedTranscriptView,
@@ -26,13 +26,23 @@ import {
 import { TranscriptButtonGroup } from './TranscriptButtonGroup';
 import { RecordingPlayer, RecordingPlayerHandle } from './RecordingPlayer';
 import { MeetingClientBadge } from '@/components/MeetingClientBadge';
+import { WindowHeaderSlot } from '@/components/AppHeader';
 import { TranscriptTableView } from './TranscriptTableView';
+import { TRANSCRIPT_REWOUND } from './TranscriptLineEditor';
 import { createPlayhead } from '@/lib/playhead';
+import { speakerChoices } from '@/lib/transcript-speakers';
 import { toast } from 'sonner';
 import {
   editTranscriptLine,
+  EditHistory,
+  mergeTranscriptLines,
+  redoTranscriptEdit,
+  setTranscriptLineSpeaker,
+  splitTranscriptLine,
   LineEdits,
   removeTranscriptLine,
+  transcriptEditHistory,
+  undoTranscriptEdit,
 } from '@/services/transcriptEditService';
 
 type TranscriptLayout = 'chat' | 'table';
@@ -69,7 +79,9 @@ interface TranscriptPanelProps {
 }
 
 function fmtDate(d: Date, locale: string): string {
-  return d.toLocaleDateString(locale, { month: 'long', day: 'numeric', year: 'numeric' });
+  // The year only when it is not this one: the header has little room.
+  const thisYear = d.getFullYear() === new Date().getFullYear();
+  return d.toLocaleDateString(locale, { month: 'short', day: 'numeric', year: thisYear ? undefined : 'numeric' });
 }
 function fmtTime(d: Date, locale: string): string {
   return d.toLocaleTimeString(locale, { hour: 'numeric', minute: '2-digit' });
@@ -111,9 +123,33 @@ export function TranscriptPanel({
   const seekTo = useCallback((seconds: number) => playerRef.current?.seek(seconds), []);
   // Corrections, on a saved meeting only. The transcript is read again after
   // each, so both layouts show what was stored rather than a local guess.
+  // Who a line can be given to: the speakers the loaded transcript has.
+  const choices = useMemo(
+    () => speakerChoices((usePagination && segments ? segments : transcripts).map((line) => line.speaker)),
+    [usePagination, segments, transcripts],
+  );
+  // What can be undone and redone, as the backend keeps it. Asked again after
+  // every correction and whenever the transcript is reloaded — a rerun of
+  // recognition or speakers clears it there.
+  const [history, setHistory] = useState<EditHistory>({ canUndo: false, canRedo: false });
+  const refreshHistory = useCallback(async () => {
+    if (!meetingId) return;
+    try {
+      setHistory(await transcriptEditHistory(meetingId));
+    } catch (error) {
+      console.warn('Could not read the correction history:', error);
+    }
+  }, [meetingId]);
   const lineEdits = useMemo<LineEdits | undefined>(() => {
     if (!meetingId || isRecording) return undefined;
-    const report = (key: 'transcriptEditFailed' | 'transcriptRemoveFailed') => (error: unknown) => {
+    const report = (
+      key:
+        | 'transcriptEditFailed'
+        | 'transcriptRemoveFailed'
+        | 'transcriptSpeakerFailed'
+        | 'transcriptSplitFailed'
+        | 'transcriptMergeFailed',
+    ) => (error: unknown) => {
       toast.error(t(key), { description: error instanceof Error ? error.message : String(error) });
       throw error;
     };
@@ -126,8 +162,80 @@ export function TranscriptPanel({
         await removeTranscriptLine(meetingId, line).catch(report('transcriptRemoveFailed'));
         await onRefetchTranscripts?.();
       },
+      onSetSpeaker: async (line, speaker) => {
+        await setTranscriptLineSpeaker(meetingId, line, speaker).catch(report('transcriptSpeakerFailed'));
+        await onRefetchTranscripts?.();
+      },
+      onSplitLine: async (line, first, second) => {
+        await splitTranscriptLine(meetingId, line, first, second).catch(report('transcriptSplitFailed'));
+        await onRefetchTranscripts?.();
+      },
+      onMergeLines: async (line, next) => {
+        await mergeTranscriptLines(meetingId, [line, next]).catch(report('transcriptMergeFailed'));
+        await onRefetchTranscripts?.();
+      },
+      speakers: choices.existing,
+      freshSpeaker: choices.fresh,
     };
-  }, [meetingId, isRecording, onRefetchTranscripts, t]);
+  }, [meetingId, isRecording, onRefetchTranscripts, t, choices]);
+
+  // Every correction ends in a reload of the transcript, and so does a rerun:
+  // either way the history may have changed.
+  useEffect(() => {
+    void refreshHistory();
+  }, [refreshHistory, transcripts, segments]);
+
+  const [walking, setWalking] = useState(false);
+  const walkHistory = useCallback(
+    async (direction: 'undo' | 'redo') => {
+      if (!meetingId || walking) return;
+      setWalking(true);
+      // An editor open on the old text must not write it back.
+      window.dispatchEvent(new Event(TRANSCRIPT_REWOUND));
+      try {
+        setHistory(
+          await (direction === 'undo' ? undoTranscriptEdit(meetingId) : redoTranscriptEdit(meetingId)),
+        );
+        await onRefetchTranscripts?.();
+      } catch (error) {
+        toast.error(t(direction === 'undo' ? 'transcriptUndoFailed' : 'transcriptRedoFailed'), {
+          description: error instanceof Error ? error.message : String(error),
+        });
+      } finally {
+        setWalking(false);
+      }
+    },
+    [meetingId, walking, onRefetchTranscripts, t],
+  );
+
+  // Ctrl+Z / Ctrl+Y (and Ctrl+Shift+Z), as in any editor — but not while a
+  // text field has the keys, where they undo typing.
+  useEffect(() => {
+    if (!lineEdits) return;
+    const onKey = (event: KeyboardEvent) => {
+      if (!(event.ctrlKey || event.metaKey) || event.altKey) return;
+      const target = event.target as HTMLElement | null;
+      if (
+        target &&
+        (target.isContentEditable || ['INPUT', 'TEXTAREA', 'SELECT'].includes(target.tagName))
+      ) {
+        return;
+      }
+      // By the key's place, not its letter, so a Russian layout works too.
+      const key = event.code;
+      const redo = key === 'KeyY' || (key === 'KeyZ' && event.shiftKey);
+      const undo = key === 'KeyZ' && !event.shiftKey;
+      if (undo && history.canUndo) {
+        event.preventDefault();
+        void walkHistory('undo');
+      } else if (redo && history.canRedo) {
+        event.preventDefault();
+        void walkHistory('redo');
+      }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [lineEdits, history, walkHistory]);
 
   // One per meeting: a new recording starts from the top.
   const playhead = useMemo(() => createPlayhead(), [meetingId]);
@@ -193,80 +301,90 @@ export function TranscriptPanel({
     const end = durationSec > 0 ? new Date(start.getTime() + durationSec * 1000) : null;
     return {
       dateLabel: fmtDate(start, locale),
-      timeLabel: end ? `${fmtTime(start, locale)} — ${fmtTime(end, locale)}` : fmtTime(start, locale),
+      timeLabel: end ? `${fmtTime(start, locale)}–${fmtTime(end, locale)}` : fmtTime(start, locale),
     };
   }, [createdAt, convertedSegments, locale]);
 
+  const toolButton =
+    'flex h-7 w-7 shrink-0 items-center justify-center rounded-md transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--af-accent)]';
+
   return (
     <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden bg-[var(--af-bg)]">
-      {/* Header: what this recording is. Its name is in the window's own
-          header, which every page has. */}
-      <div className="min-w-0 px-4 pt-4 sm:px-6 sm:pt-5 lg:px-8">
-        <div className="flex min-w-0 flex-wrap items-center gap-x-4 gap-y-1 text-sm text-[var(--af-text-2)]">
+      {/* What this recording is and what can be done with it, in the window's
+          header next to its name, so the page needs no row of its own. */}
+      <WindowHeaderSlot>
+        <span className="flex min-w-0 flex-1 items-center gap-1 overflow-hidden text-sm text-[var(--af-text-3)]">
+          <span aria-hidden className="shrink-0">·</span>
           <MeetingClientBadge meetingId={meetingId} />
           {dateLabel && (
-            <span className="inline-flex min-w-0 items-center gap-1.5">
-              <Calendar size={15} className="shrink-0 text-[var(--af-text-3)]" />
-              <span className="truncate">{dateLabel}</span>
+            <span className="min-w-0 truncate" title={timeLabel ? `${dateLabel}, ${timeLabel}` : dateLabel}>
+              · {dateLabel}
+              {timeLabel && `, ${timeLabel}`}
             </span>
           )}
-          {timeLabel && (
-            <span className="inline-flex min-w-0 items-center gap-1.5">
-              <Clock size={15} className="shrink-0 text-[var(--af-text-3)]" />
-              <span className="truncate">{timeLabel}</span>
-            </span>
-          )}
-        </div>
-      </div>
-
-      {/* The action container owns its responsive breakpoint, since this column
-          can be narrow even when the overall window is wide. */}
-      <div className="mt-4 flex min-w-0 items-center gap-2 border-b border-[var(--af-border)] px-4 sm:mt-5 sm:gap-3 sm:px-6 lg:px-8">
-        <span className="relative -mb-px shrink-0 py-2 text-sm font-medium text-[var(--af-accent)]">
-          {t('transcriptTab')}
-          <span className="absolute inset-x-0 -bottom-px h-0.5 rounded-full bg-[var(--af-accent)]" />
         </span>
-        {canShowTable && (
-          <div
-            role="radiogroup"
-            aria-label={t('transcriptViewLabel')}
-            className="flex shrink-0 items-center rounded-md border border-[var(--af-border)] p-0.5"
-          >
-            {([
-              ['chat', MessagesSquare, t('transcriptViewChat')],
-              ['table', Table2, t('transcriptViewTable')],
-            ] as const).map(([value, Icon, label]) => (
+        <TranscriptButtonGroup
+          transcriptCount={usePagination ? (totalCount ?? convertedSegments.length) : (transcripts?.length || 0)}
+          onCopyTranscript={onCopyTranscript}
+          onOpenExport={onOpenExport}
+          onOpenMeetingFolder={onOpenMeetingFolder}
+          meetingId={meetingId}
+          meetingFolderPath={meetingFolderPath}
+          onRefetchTranscripts={onRefetchTranscripts}
+        />
+      </WindowHeaderSlot>
+
+      {/* Only how the transcript reads and taking corrections back: the rest of
+          what can be done with the meeting is in the window's header. */}
+      {(canShowTable || lineEdits) && (
+        <div className="flex min-w-0 items-center gap-0.5 px-3 py-1.5 sm:px-5 lg:px-7">
+          {canShowTable && (
+            <div role="radiogroup" aria-label={t('transcriptViewLabel')} className="flex shrink-0 items-center gap-0.5">
+              {([
+                ['chat', MessagesSquare, t('transcriptViewChat')],
+                ['table', Table2, t('transcriptViewTable')],
+              ] as const).map(([value, Icon, label]) => (
+                <button
+                  key={value}
+                  type="button"
+                  role="radio"
+                  aria-checked={layout === value}
+                  aria-label={label}
+                  title={label}
+                  onClick={() => chooseLayout(value)}
+                  className={`${toolButton} ${
+                    layout === value
+                      ? 'bg-[var(--af-active)] text-[var(--af-text)]'
+                      : 'text-[var(--af-text-3)] hover:bg-[var(--af-hover)] hover:text-[var(--af-text)]'
+                  }`}
+                >
+                  <Icon size={16} />
+                </button>
+              ))}
+            </div>
+          )}
+          {canShowTable && lineEdits && (
+            <span aria-hidden className="mx-1.5 h-4 w-px shrink-0 bg-[var(--af-border)]" />
+          )}
+          {lineEdits &&
+            ([
+              ['undo', Undo2, t('transcriptUndo'), history.canUndo],
+              ['redo', Redo2, t('transcriptRedo'), history.canRedo],
+            ] as const).map(([direction, Icon, label, enabled]) => (
               <button
-                key={value}
+                key={direction}
                 type="button"
-                role="radio"
-                aria-checked={layout === value}
                 aria-label={label}
                 title={label}
-                onClick={() => chooseLayout(value)}
-                className={`rounded px-1.5 py-1 transition-colors ${
-                  layout === value
-                    ? 'bg-[var(--af-panel-2)] text-[var(--af-accent)]'
-                    : 'text-[var(--af-text-3)] hover:text-[var(--af-text)]'
-                }`}
+                disabled={!enabled || walking}
+                onClick={() => void walkHistory(direction)}
+                className={`${toolButton} text-[var(--af-text-2)] hover:bg-[var(--af-hover)] hover:text-[var(--af-text)] disabled:opacity-30 disabled:hover:bg-transparent`}
               >
-                <Icon size={15} />
+                <Icon size={16} />
               </button>
             ))}
-          </div>
-        )}
-        <div className="transcript-actions-container ml-auto min-w-0 flex-1 overflow-x-auto overscroll-x-contain py-1 no-scrollbar">
-          <TranscriptButtonGroup
-            transcriptCount={usePagination ? (totalCount ?? convertedSegments.length) : (transcripts?.length || 0)}
-            onCopyTranscript={onCopyTranscript}
-            onOpenExport={onOpenExport}
-            onOpenMeetingFolder={onOpenMeetingFolder}
-            meetingId={meetingId}
-            meetingFolderPath={meetingFolderPath}
-            onRefetchTranscripts={onRefetchTranscripts}
-          />
         </div>
-      </div>
+      )}
 
       <SpeakerRenameDialog
         open={renameTarget !== null}

@@ -280,7 +280,7 @@ fn convert_to_wav_with_ffmpeg(
     let ffmpeg_path = find_ffmpeg_path().ok_or_else(|| {
         anyhow!(
             "FFmpeg not found. FFmpeg is required to decode .{} files. \
-             It will be downloaded automatically on next launch, or install it manually.",
+             The copy bundled with the application is missing; reinstalling restores it.",
             input_path
                 .extension()
                 .and_then(|e| e.to_str())

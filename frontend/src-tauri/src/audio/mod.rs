@@ -6,6 +6,7 @@ pub mod echo_cancel;
 pub mod echo_filter;
 // Telling the owner apart from the speakers with a second microphone stream
 // that is read but never recorded.
+pub mod echo_offline;
 pub mod own_speech;
 // Keeping what that detector answered, so a later pass over the stored audio
 // reaches the same verdict the live one did.
@@ -62,6 +63,8 @@ pub mod constants;
 
 // Retranscription module (re-process stored audio with different settings)
 pub mod retranscription;
+pub mod transcript_journal;
+pub mod orphan_recordings;
 
 // Import module (import external audio files as new meetings)
 pub mod import;

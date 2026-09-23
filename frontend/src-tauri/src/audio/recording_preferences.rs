@@ -184,6 +184,11 @@ pub struct RecordingPreferences {
     /// the ordinary one, room and all.
     #[serde(default)]
     pub own_speech_detector: bool,
+    /// Recognise speech while recording, for the text on screen (default on).
+    /// Off, a recording is only sound, like a dictaphone: its text is made
+    /// afterwards, and the machine is left alone while it runs.
+    #[serde(default = "default_live_transcription")]
+    pub live_transcription: bool,
     #[cfg(target_os = "macos")]
     #[serde(default)]
     pub system_audio_backend: Option<String>,
@@ -209,6 +214,10 @@ fn default_system_echo_cancellation() -> bool {
     true
 }
 
+fn default_live_transcription() -> bool {
+    true
+}
+
 impl Default for RecordingPreferences {
     fn default() -> Self {
         Self {
@@ -224,6 +233,7 @@ impl Default for RecordingPreferences {
             single_remote_speaker: true,
             system_echo_cancellation: true,
             own_speech_detector: false,
+            live_transcription: true,
             #[cfg(target_os = "macos")]
             system_audio_backend: Some("coreaudio".to_string()),
         }
@@ -405,7 +415,7 @@ pub async fn load_recording_preferences<R: Runtime>(
                 let p = {
                     let mut p = p;
                     let backend = crate::audio::capture::get_current_backend();
-                    p.system_audio_backend = Some(backend.to_string());
+                    p.system_audio_backend = Some(backend.id());
                     p
                 };
                 p
@@ -678,7 +688,7 @@ pub async fn get_available_audio_backends() -> Result<Vec<String>, String> {
     #[cfg(target_os = "macos")]
     {
         let backends = crate::audio::capture::get_available_backends();
-        Ok(backends.iter().map(|b| b.to_string()).collect())
+        Ok(backends.iter().map(|b| b.id()).collect())
     }
 
     #[cfg(not(target_os = "macos"))]
@@ -694,7 +704,7 @@ pub async fn get_current_audio_backend() -> Result<String, String> {
     #[cfg(target_os = "macos")]
     {
         let backend = crate::audio::capture::get_current_backend();
-        Ok(backend.to_string())
+        Ok(backend.id())
     }
 
     #[cfg(not(target_os = "macos"))]
@@ -754,7 +764,7 @@ pub async fn get_audio_backend_info() -> Result<Vec<BackendInfo>, String> {
         let backends = AudioCaptureBackend::available_backends()
             .into_iter()
             .map(|backend| BackendInfo {
-                id: backend.to_string(),
+                id: backend.id(),
                 name: backend.name().to_string(),
                 description: backend.description().to_string(),
             })

@@ -4,7 +4,6 @@ import { Switch } from '@/components/ui/switch';
 import { FolderCog, FolderOpen } from 'lucide-react';
 import { invoke } from '@tauri-apps/api/core';
 import { DeviceSelection, SelectedDevices } from '@/components/DeviceSelection';
-import Analytics from '@/lib/analytics';
 import { toast } from 'sonner';
 import { useConfig } from '@/contexts/ConfigContext';
 
@@ -27,6 +26,8 @@ export interface RecordingPreferences {
   /** Let Windows remove the speakers' echo before we receive the sound. */
   system_echo_cancellation?: boolean;
   own_speech_detector?: boolean;
+  /** Recognise speech while recording; off, a recording is only sound. */
+  live_transcription?: boolean;
 }
 
 interface RecordingSettingsProps {
@@ -49,6 +50,7 @@ export function RecordingSettings({ onSave }: RecordingSettingsProps) {
     single_remote_speaker: true,
     system_echo_cancellation: true,
     own_speech_detector: false,
+    live_transcription: true,
   });
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -97,11 +99,6 @@ export function RecordingSettings({ onSave }: RecordingSettingsProps) {
     const newPreferences = { ...preferences, auto_save: enabled };
     setPreferences(newPreferences);
     await savePreferences(newPreferences);
-
-    // Track auto-save setting change
-    await Analytics.track('auto_save_recording_toggled', {
-      enabled: enabled.toString()
-    });
   };
 
   const handleSystemEchoCancellationToggle = async (enabled: boolean) => {
@@ -118,6 +115,12 @@ export function RecordingSettings({ onSave }: RecordingSettingsProps) {
 
   const handleEchoCancellationToggle = async (enabled: boolean) => {
     const newPreferences = { ...preferences, echo_cancellation: enabled };
+    setPreferences(newPreferences);
+    await savePreferences(newPreferences);
+  };
+
+  const handleLiveTranscriptionToggle = async (enabled: boolean) => {
+    const newPreferences = { ...preferences, live_transcription: enabled };
     setPreferences(newPreferences);
     await savePreferences(newPreferences);
   };
@@ -156,13 +159,6 @@ export function RecordingSettings({ onSave }: RecordingSettingsProps) {
     };
     setPreferences(newPreferences);
     await savePreferences(newPreferences);
-
-    // Track default device preference changes
-    // Note: Individual device selection analytics are tracked in DeviceSelection component
-    await Analytics.track('default_devices_changed', {
-      has_preferred_microphone: (!!devices.micDevice).toString(),
-      has_preferred_system_audio: (!!devices.systemDevice).toString()
-    });
   };
 
   const handleOpenFolder = async () => {
@@ -190,7 +186,6 @@ export function RecordingSettings({ onSave }: RecordingSettingsProps) {
       updateRecordingsLocation(selectedFolder);
       onSave?.(newPreferences);
       toast.success(t('recordingsFolderUpdated'));
-      Analytics.track('recordings_folder_changed', { source: 'recording_settings' }).catch(console.error);
     } catch (error) {
       console.error('Failed to change recordings folder:', error);
       toast.error(t('recordingsFolderUpdateFailed'), {
@@ -209,9 +204,6 @@ export function RecordingSettings({ onSave }: RecordingSettingsProps) {
       await store.set('show_recording_notification', enabled);
       await store.save();
       toast.success(t('preferenceSaved'));
-      await Analytics.track('recording_notification_preference_changed', {
-        enabled: enabled.toString()
-      });
     } catch (error) {
       console.error('Failed to save notification preference:', error);
       toast.error(t('preferenceSaveFailed'));
@@ -269,6 +261,22 @@ export function RecordingSettings({ onSave }: RecordingSettingsProps) {
         <Switch
           checked={preferences.auto_save}
           onCheckedChange={handleAutoSaveToggle}
+          disabled={saving}
+          className="shrink-0"
+        />
+      </div>
+
+      {/* Live text, or only sound now and the text afterwards */}
+      <div className="flex min-w-0 items-start justify-between gap-3 rounded-lg border p-4 sm:items-center">
+        <div className="min-w-0 flex-1">
+          <div className="font-medium">{t('liveTextTitle')}</div>
+          <div className="text-sm text-gray-600">
+            {t('liveTextDescription')}
+          </div>
+        </div>
+        <Switch
+          checked={preferences.live_transcription !== false}
+          onCheckedChange={handleLiveTranscriptionToggle}
           disabled={saving}
           className="shrink-0"
         />

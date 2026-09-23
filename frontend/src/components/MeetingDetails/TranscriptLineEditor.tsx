@@ -6,23 +6,40 @@
  * Enter saves, Escape cancels, Shift+Enter is a new line for the rare line
  * that wants one. Removing asks first: a removed line does not come back, not
  * even when the recording is recognized again — which is the point.
+ *
+ * The line can also be cut in two where the cursor stands — for the turn
+ * where the recognizer ran two voices together — or joined with the line
+ * after it. Each line keeps its own stretch of the recording, so playback
+ * still finds it. Who said a line is changed on its speaker's name, not here.
  */
 
 import { useEffect, useRef, useState } from 'react';
 import { useTranslations } from 'next-intl';
-import { Check, Trash2, X } from 'lucide-react';
+import { Check, Combine, Scissors, Trash2, X } from 'lucide-react';
+import { splitPoint } from '@/lib/transcript-split';
+
+/** Sent when an editor opens; any other editor closes. */
+const EDITOR_OPENED = 'transcript-line-editor-opened';
+/** Sent when a correction was undone or redone; every editor closes. */
+export const TRANSCRIPT_REWOUND = 'transcript-rewound';
 
 export interface LineEditActions {
   /** Save new text for the line. Rejects to keep the editor open. */
   onSave: (text: string) => Promise<void>;
   /** Remove the line. Rejects to keep the editor open. */
   onRemove: () => Promise<void>;
+  /** Cut the line in two. Rejects to keep the editor open. */
+  onSplit?: (first: string, second: string) => Promise<void>;
+  /** Join the line with the one after it. Absent for the last line. */
+  onMergeNext?: () => Promise<void>;
 }
 
 export function TranscriptLineEditor({
   initialText,
   onSave,
   onRemove,
+  onSplit,
+  onMergeNext,
   onClose,
 }: LineEditActions & {
   initialText: string;
@@ -30,6 +47,8 @@ export function TranscriptLineEditor({
 }) {
   const t = useTranslations('meetingDetails');
   const [text, setText] = useState(initialText);
+  // Where the cursor stands, which is where a split cuts.
+  const [cursor, setCursor] = useState(initialText.length);
   const [busy, setBusy] = useState(false);
   const [confirmRemove, setConfirmRemove] = useState(false);
   const area = useRef<HTMLTextAreaElement>(null);
@@ -41,6 +60,31 @@ export function TranscriptLineEditor({
     element.setSelectionRange(element.value.length, element.value.length);
   }, []);
 
+  // One line at a time. An editor holds the text as it was when it opened;
+  // left open while another line is joined into it, or while a correction is
+  // undone, it would write that old text back over the new.
+  const closeRef = useRef(onClose);
+  closeRef.current = onClose;
+  useEffect(() => {
+    const token = {};
+    window.dispatchEvent(new CustomEvent(EDITOR_OPENED, { detail: token }));
+    const onOpened = (event: Event) => {
+      if ((event as CustomEvent).detail !== token) closeRef.current();
+    };
+    const onRewound = () => closeRef.current();
+    window.addEventListener(EDITOR_OPENED, onOpened);
+    window.addEventListener(TRANSCRIPT_REWOUND, onRewound);
+    return () => {
+      window.removeEventListener(EDITOR_OPENED, onOpened);
+      window.removeEventListener(TRANSCRIPT_REWOUND, onRewound);
+    };
+  }, []);
+
+  const trackCursor = () => {
+    const element = area.current;
+    if (element) setCursor(element.selectionStart);
+  };
+
   // Grow with the text rather than scroll inside a box.
   useEffect(() => {
     const element = area.current;
@@ -51,6 +95,10 @@ export function TranscriptLineEditor({
 
   const trimmed = text.trim();
   const unchanged = trimmed === initialText.trim();
+  const cut = splitPoint(text, cursor);
+  const first = text.slice(0, cut).trim();
+  const second = text.slice(cut).trim();
+  const canSplit = !!onSplit && !!first && !!second;
 
   const run = async (action: () => Promise<void>) => {
     setBusy(true);
@@ -77,6 +125,23 @@ export function TranscriptLineEditor({
     void run(() => onSave(trimmed));
   };
 
+  const split = () => {
+    if (busy || !canSplit) return;
+    void run(() => onSplit!(first, second));
+  };
+
+  const mergeNext = () => {
+    if (busy || !onMergeNext) return;
+    // Text typed here first, so the join carries it.
+    void run(async () => {
+      if (!unchanged && trimmed) await onSave(trimmed);
+      await onMergeNext();
+    });
+  };
+
+  const quiet =
+    'inline-flex items-center gap-1 rounded-md px-2 py-1 text-[var(--af-text-2)] hover:bg-[var(--af-panel-2)] disabled:opacity-40';
+
   return (
     <div
       className="rounded-lg border border-[var(--af-accent)] bg-[var(--af-panel)] p-2 shadow-lg"
@@ -91,8 +156,12 @@ export function TranscriptLineEditor({
         title={t('transcriptEditHint')}
         onChange={(event) => {
           setText(event.target.value);
+          setCursor(event.target.selectionStart);
           setConfirmRemove(false);
         }}
+        onSelect={trackCursor}
+        onKeyUp={trackCursor}
+        onClick={trackCursor}
         onKeyDown={(event) => {
           if (event.key === 'Escape') {
             event.preventDefault();
@@ -134,16 +203,36 @@ export function TranscriptLineEditor({
               onClick={() => setConfirmRemove(true)}
               title={t('transcriptRemove')}
               aria-label={t('transcriptRemove')}
-              className="mr-auto rounded-md p-1 text-[var(--af-text-3)] hover:bg-red-500/15 hover:text-red-500 disabled:opacity-50"
+              className="rounded-md p-1 text-[var(--af-text-3)] hover:bg-red-500/15 hover:text-red-500 disabled:opacity-50"
             >
               <Trash2 size={14} />
             </button>
-            <button
-              type="button"
-              disabled={busy}
-              onClick={onClose}
-              className="inline-flex items-center gap-1 rounded-md px-2 py-1 text-[var(--af-text-2)] hover:bg-[var(--af-panel-2)]"
-            >
+            {onSplit && (
+              <button
+                type="button"
+                disabled={busy || !canSplit}
+                onClick={split}
+                title={t('transcriptSplitHint')}
+                className={quiet}
+              >
+                <Scissors size={13} />
+                {t('transcriptSplit')}
+              </button>
+            )}
+            {onMergeNext && (
+              <button
+                type="button"
+                disabled={busy}
+                onClick={mergeNext}
+                title={t('transcriptMergeHint')}
+                className={quiet}
+              >
+                <Combine size={13} />
+                {t('transcriptMerge')}
+              </button>
+            )}
+            <span className="mr-auto" />
+            <button type="button" disabled={busy} onClick={onClose} className={quiet}>
               <X size={13} />
               {t('transcriptEditCancel')}
             </button>

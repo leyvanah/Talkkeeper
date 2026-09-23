@@ -2,7 +2,7 @@
 
 import { useState } from 'react'
 import { useLocale, useTranslations } from 'next-intl'
-import { FileArchive, Loader2, Send, ShieldCheck } from 'lucide-react'
+import { FileArchive, Loader2, ShieldCheck } from 'lucide-react'
 import { toast } from 'sonner'
 import { Button } from '@/components/ui/button'
 import {
@@ -16,7 +16,6 @@ import {
   chooseCrashReportDestination,
   createCrashReportZip,
   dismissCrashReport,
-  openCrashReportIssue,
   type PendingCrashReport,
 } from '@/services/crashReportService'
 
@@ -25,7 +24,7 @@ interface CrashReportDialogProps {
   onResolved: () => void
 }
 
-type PendingAction = 'send' | 'save' | 'ignore' | null
+type PendingAction = 'save' | 'ignore' | null
 
 export default function CrashReportDialog({ report, onResolved }: CrashReportDialogProps) {
   const t = useTranslations('app')
@@ -61,24 +60,6 @@ export default function CrashReportDialog({ report, onResolved }: CrashReportDia
     } catch (error) {
       console.error('[CrashReport] Failed to save report:', error)
       toast.error(t('crashSaveFailed'))
-    } finally {
-      setPendingAction(null)
-    }
-  }
-
-  const handleSend = async () => {
-    setPendingAction('send')
-    try {
-      const destination = await createZip()
-      if (!destination) return
-      await openCrashReportIssue(report)
-      await finishDialog()
-      toast.success(t('crashReady'), {
-        description: 'GitHub opened with the report details. Attach the ZIP you just saved.',
-      })
-    } catch (error) {
-      console.error('[CrashReport] Failed to prepare report:', error)
-      toast.error(t('crashPrepareFailed'))
     } finally {
       setPendingAction(null)
     }
@@ -146,21 +127,17 @@ export default function CrashReportDialog({ report, onResolved }: CrashReportDia
           </details>
 
           <p className="text-xs leading-relaxed text-[var(--af-text-3)]">
-            {t('crashSendNote')}
+            {t('crashSaveNote')}
           </p>
 
-          <div className="grid grid-cols-1 gap-2 pt-1 sm:grid-cols-3">
+          <div className="grid grid-cols-1 gap-2 pt-1 sm:grid-cols-2">
             <Button variant="ghost" onClick={handleIgnore} disabled={busy}>
               {pendingAction === 'ignore' && <Loader2 className="animate-spin" />}
               {t('crashIgnore')}
             </Button>
-            <Button variant="outline" onClick={handleSave} disabled={busy}>
+            <Button onClick={handleSave} disabled={busy}>
               {pendingAction === 'save' ? <Loader2 className="animate-spin" /> : <FileArchive />}
               {t('crashSaveZip')}
-            </Button>
-            <Button onClick={handleSend} disabled={busy}>
-              {pendingAction === 'send' ? <Loader2 className="animate-spin" /> : <Send />}
-              {t('crashSend')}
             </Button>
           </div>
         </div>

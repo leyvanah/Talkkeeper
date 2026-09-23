@@ -2,12 +2,20 @@
  * useTranscriptRecovery Hook
  *
  * Orchestrates transcript recovery operations for interrupted meetings.
- * Provides functionality to detect, preview, and recover meetings from IndexedDB.
+ * Detects, previews and recovers recordings whose transcript never reached the
+ * database. The transcript comes from the backend journal of each recording
+ * (sealed with the archive key); nothing is kept in the window.
  */
 
-import { useState, useCallback } from 'react';
+import { useState, useCallback, useRef } from 'react';
 import { invoke } from '@tauri-apps/api/core';
-import { indexedDBService, MeetingMetadata, StoredTranscript } from '@/services/indexedDBService';
+import {
+  type MeetingMetadata,
+  type StoredTranscript,
+  type UnsavedRecording,
+  toMeetingMetadata,
+  toStoredTranscripts,
+} from '@/lib/unsaved-recordings';
 import { storageService } from '@/services/storageService';
 import { applyPinnedSummaryLanguageToMeeting } from '@/lib/summary-language-preferences';
 import { toast } from 'sonner';
@@ -21,14 +29,31 @@ interface AudioRecoveryStatus {
   message: string;
 }
 
+export interface RecoveryResult {
+  success: boolean;
+  audioRecoveryStatus?: AudioRecoveryStatus | null;
+  meetingId?: string;
+  /**
+   * Set when only the audio was restored: the meeting is empty until the
+   * post-call processing recognises this folder again.
+   */
+  transcribeFolder?: string;
+}
+
+interface RestoredRecording {
+  meetingId: string;
+  folderPath: string;
+}
+
 export interface UseTranscriptRecoveryReturn {
   recoverableMeetings: MeetingMetadata[];
   isLoading: boolean;
   isRecovering: boolean;
   checkForRecoverableTranscripts: () => Promise<void>;
-  recoverMeeting: (meetingId: string) => Promise<{ success: boolean; audioRecoveryStatus?: AudioRecoveryStatus | null; meetingId?: string }>;
+  recoverMeeting: (meetingId: string) => Promise<RecoveryResult>;
   loadMeetingTranscripts: (meetingId: string) => Promise<StoredTranscript[]>;
   deleteRecoverableMeeting: (meetingId: string) => Promise<void>;
+  openWithOtherKey: (meetingId: string, keystorePath: string, secret: string) => Promise<void>;
 }
 
 export function useTranscriptRecovery(): UseTranscriptRecoveryReturn {
@@ -36,30 +61,24 @@ export function useTranscriptRecovery(): UseTranscriptRecoveryReturn {
   const [recoverableMeetings, setRecoverableMeetings] = useState<MeetingMetadata[]>([]);
   const [isLoading, setIsLoading] = useState(false);
   const [isRecovering, setIsRecovering] = useState(false);
+  /** The journals as last read, by folder. */
+  const unsaved = useRef<Map<string, UnsavedRecording>>(new Map());
 
   /**
-   * Check for recoverable meetings in IndexedDB
+   * Look for recordings whose transcript was never saved
    */
   const checkForRecoverableTranscripts = useCallback(async () => {
     setIsLoading(true);
     try {
-      const meetings = await indexedDBService.getAllMeetings();
-
-      // Filter out meetings older than 7 days and newer than 15 seconds
-      // The 15 seconds threshold prevents showing meetings from the current session(jus in case)
-      // where recording just stopped but hasn't been fully saved yet
-      const cutoffTime = Date.now() - (7 * 24 * 60 * 60 * 1000);
-      const secondsAgo = Date.now() - (2 * 1000);
-
-      const recentMeetings = meetings.filter(m => {
-        const isWithinRetention = m.lastUpdated > cutoffTime; // Not older than 7 days
-        const isOldEnough = m.lastUpdated < secondsAgo; // Older than 15 seconds
-        return isWithinRetention && isOldEnough;
-      });
+      const found = await invoke<UnsavedRecording[]>('list_unsaved_recordings');
+      unsaved.current = new Map(found.map((recording) => [recording.folderPath, recording]));
+      const recentMeetings = found.map(toMeetingMetadata);
 
       // Verify audio checkpoint availability for each meeting
       const meetingsWithAudioStatus = await Promise.all(
         recentMeetings.map(async (meeting) => {
+          // Listed for its audio in the first place.
+          if (meeting.audioOnly) return meeting;
           if (meeting.folderPath) {
             try {
               const hasAudio = await invoke<boolean>('has_audio_checkpoints', {
@@ -96,10 +115,8 @@ export function useTranscriptRecovery(): UseTranscriptRecoveryReturn {
    */
   const loadMeetingTranscripts = useCallback(async (meetingId: string): Promise<StoredTranscript[]> => {
     try {
-      const transcripts = await indexedDBService.getTranscripts(meetingId);
-      // Sort by sequence ID
-      transcripts.sort((a, b) => (a.sequenceId || 0) - (b.sequenceId || 0));
-      return transcripts;
+      const recording = unsaved.current.get(meetingId);
+      return recording ? toStoredTranscripts(recording) : [];
     } catch (error) {
       console.error('Failed to load meeting transcripts:', error);
       return [];
@@ -107,15 +124,34 @@ export function useTranscriptRecovery(): UseTranscriptRecoveryReturn {
   }, []);
 
   /**
-   * Recover a meeting from IndexedDB
+   * Save an unsaved recording to the database
    */
-  const recoverMeeting = useCallback(async (meetingId: string): Promise<{ success: boolean; audioRecoveryStatus?: AudioRecoveryStatus | null; meetingId?: string }> => {
+  const recoverMeeting = useCallback(async (meetingId: string): Promise<RecoveryResult> => {
     setIsRecovering(true);
     try {
       // 1. Load meeting metadata
-      const metadata = await indexedDBService.getMeetingMetadata(meetingId);
-      if (!metadata) {
+      const recording = unsaved.current.get(meetingId);
+      const metadata = recording ? toMeetingMetadata(recording) : null;
+      if (!recording || !metadata) {
         throw new Error('Meeting metadata not found');
+      }
+
+      // Only audio survived: the backend makes an empty meeting of the folder
+      // and the caller has it recognised again.
+      if (recording.audioOnly) {
+        const restored = await invoke<RestoredRecording>('restore_recording_without_meeting', {
+          folderPath: recording.folderPath,
+          title: t('restoredRecordingTitle', {
+            date: new Date(metadata.startTime).toLocaleString(),
+          }),
+        });
+        unsaved.current.delete(meetingId);
+        setRecoverableMeetings(prev => prev.filter(m => m.meetingId !== meetingId));
+        return {
+          success: true,
+          meetingId: restored.meetingId,
+          transcribeFolder: restored.folderPath,
+        };
       }
 
       // 2. Load all transcripts
@@ -124,18 +160,8 @@ export function useTranscriptRecovery(): UseTranscriptRecoveryReturn {
         throw new Error('No transcripts found for this meeting');
       }
 
-      // 3. Check for folder path
-      let folderPath = metadata.folderPath;
-
-
-      if (!folderPath) {
-        // Try to get from backend (might exist if only app crashed, not system)
-        try {
-          folderPath = await invoke<string>('get_meeting_folder_path');
-        } catch (error) {
-          folderPath = undefined;
-        }
-      }
+      // 3. The journal lives in the recording folder, so the folder is known.
+      const folderPath: string | undefined = meetingId;
 
       // 4. Attempt audio recovery if folder path exists
       let audioRecoveryStatus: AudioRecoveryStatus | null = null;
@@ -169,14 +195,12 @@ export function useTranscriptRecovery(): UseTranscriptRecoveryReturn {
         text: t.text,
         timestamp: t.timestamp,
         sequence_id: t.sequenceId || index,
-        chunk_start_time: (t as any).chunk_start_time,
-        is_partial: (t as any).is_partial || false,
+        is_partial: false,
         confidence: t.confidence,
-        audio_start_time: (t as any).audio_start_time,
-        audio_end_time: (t as any).audio_end_time,
-        duration: (t as any).duration,
-        // IndexedDB stores the live event shape (`source`); map it to speaker.
-        speaker: (t as any).speaker ?? (t as any).source ?? undefined,
+        audio_start_time: t.audio_start_time,
+        audio_end_time: t.audio_end_time,
+        duration: t.duration,
+        speaker: t.speaker,
       }));
 
       // 6. Save to backend database using existing save utilities
@@ -198,9 +222,7 @@ export function useTranscriptRecovery(): UseTranscriptRecoveryReturn {
         });
       }
 
-      // 7. The recording is in the database now; the browser copy that carried
-      //    it through the crash has nothing left to do.
-      await indexedDBService.deleteMeeting(meetingId);
+      // 7. Saving removed the journal: the recording is in the database now.
 
 
       // 8. Clean up checkpoint files
@@ -227,19 +249,33 @@ export function useTranscriptRecovery(): UseTranscriptRecoveryReturn {
     } finally {
       setIsRecovering(false);
     }
-  }, [loadMeetingTranscripts]);
+  }, [loadMeetingTranscripts, t]);
 
   /**
    * Delete a recoverable meeting
    */
   const deleteRecoverableMeeting = useCallback(async (meetingId: string): Promise<void> => {
     try {
-      await indexedDBService.deleteMeeting(meetingId);
+      await invoke('discard_unsaved_transcript', { folderPath: meetingId });
+      unsaved.current.delete(meetingId);
       setRecoverableMeetings(prev => prev.filter(m => m.meetingId !== meetingId));
     } catch (error) {
       console.error('Failed to delete meeting:', error);
       throw error;
     }
+  }, []);
+
+  /**
+   * Re-encrypt a recording sealed with another installation's key under this
+   * one's, so that it can be restored. Throws the backend's reason on failure.
+   */
+  const openWithOtherKey = useCallback(async (meetingId: string, keystorePath: string, secret: string) => {
+    await invoke('open_recording_with_other_key', { folderPath: meetingId, keystorePath, secret });
+    const readable = <T extends { audioOnly?: UnsavedRecording['audioOnly'] }>(item: T): T =>
+      item.audioOnly ? { ...item, audioOnly: { ...item.audioOnly, readable: true } } : item;
+    const recording = unsaved.current.get(meetingId);
+    if (recording) unsaved.current.set(meetingId, readable(recording));
+    setRecoverableMeetings(prev => prev.map(m => (m.meetingId === meetingId ? readable(m) : m)));
   }, []);
 
   return {
@@ -249,6 +285,7 @@ export function useTranscriptRecovery(): UseTranscriptRecoveryReturn {
     checkForRecoverableTranscripts,
     recoverMeeting,
     loadMeetingTranscripts,
-    deleteRecoverableMeeting
+    deleteRecoverableMeeting,
+    openWithOtherKey,
   };
 }

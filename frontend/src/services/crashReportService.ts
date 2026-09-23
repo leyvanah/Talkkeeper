@@ -33,19 +33,7 @@ export async function dismissCrashReport(): Promise<void> {
   await invoke('dismiss_pending_crash_report')
 }
 
-export async function openCrashReportIssue(report: PendingCrashReport): Promise<void> {
-  const title = 'Talkkeeper crash report'
-  const body = [
-    '## Crash report',
-    '',
-    'Please attach the ZIP Talkkeeper just created, then describe what was happening before the crash.',
-  ].join('\n')
-  const query = new URLSearchParams({
-    title,
-    body,
-  })
-
-  await invoke('open_external_url', {
-    url: `https://github.com/leyvanah/Talkkeeper/issues/new?${query.toString()}`,
-  })
-}
+// There is deliberately no way to send a report from here. The repository is
+// public, so an issue would publish whatever was in it, and there is no private
+// channel that would not put a contact address in public code too. The report
+// is a file the owner saves and passes on, to whom and how they choose.

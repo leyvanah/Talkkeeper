@@ -11,7 +11,6 @@ import { useRecordingState, RecordingStatus } from '@/contexts/RecordingStateCon
 import { useTranscripts } from '@/contexts/TranscriptContext';
 import { useConfig } from '@/contexts/ConfigContext';
 import { StatusOverlays } from '@/app/_components/StatusOverlays';
-import Analytics from '@/lib/analytics';
 import { SettingsModals } from './_components/SettingsModal';
 import { TranscriptPanel } from './_components/TranscriptPanel';
 import { useModalState } from '@/hooks/useModalState';
@@ -20,7 +19,8 @@ import { useRecordingStart } from '@/hooks/useRecordingStart';
 import { useRecordingStop } from '@/hooks/useRecordingStop';
 import { useTranscriptRecovery } from '@/hooks/useTranscriptRecovery';
 import { TranscriptRecovery } from '@/components/TranscriptRecovery';
-import { indexedDBService } from '@/services/indexedDBService';
+import { usePostCall } from '@/contexts/PostCallContext';
+import { deleteLegacyRecoveryStore } from '@/lib/unsaved-recordings';
 import { toast } from 'sonner';
 import { useRouter } from 'next/navigation';
 
@@ -35,7 +35,9 @@ export default function Home() {
   const { meetingTitle } = useTranscripts();
 
   // What is on screen, for the window header and the taskbar.
-  useWindowTitle(meetingTitle || null);
+  // Before a recording has a name, the page is simply where a new one starts.
+  const ts = useTranslations('sidebar');
+  useWindowTitle(meetingTitle || ts('newRecording'));
   const { transcriptModelConfig, selectedDevices } = useConfig();
   const recordingState = useRecordingState();
 
@@ -45,6 +47,7 @@ export default function Home() {
   // Hooks
   const { hasMicrophone } = usePermissionCheck();
   const { setIsMeetingActive, refetchMeetings } = useSidebar();
+  const { begin: beginPostCall } = usePostCall();
   const { modals, messages, showModal, hideModal } = useModalState(transcriptModelConfig);
   const { isRecordingDisabled, setIsRecordingDisabled } = useRecordingStateSync(isRecording, setIsRecordingState, setIsMeetingActive);
   const { handleRecordingStart } = useRecordingStart(isRecording, setIsRecordingState, showModal);
@@ -63,14 +66,13 @@ export default function Home() {
     checkForRecoverableTranscripts,
     recoverMeeting,
     loadMeetingTranscripts,
-    deleteRecoverableMeeting
+    deleteRecoverableMeeting,
+    openWithOtherKey,
   } = useTranscriptRecovery();
 
   const router = useRouter();
 
   useEffect(() => {
-    // Track page view
-    Analytics.trackPageView('home');
   }, []);
 
   // Startup recovery check
@@ -87,21 +89,13 @@ export default function Home() {
           return;
         }
 
-        // 1. Clean up old meetings (7+ days)
-        try {
-          await indexedDBService.deleteOldMeetings(7);
-        } catch (error) {
-          console.warn('⚠️ Failed to clean up old meetings:', error);
-        }
+        // 1. The window used to keep every line of a recording in IndexedDB,
+        //    in the clear. Recovery reads the backend journal now; the old
+        //    store is deleted wherever it is still found.
+        await deleteLegacyRecoveryStore();
+        sessionStorage.removeItem('indexeddb_current_meeting_id');
 
-        // 2. Clean up saved meetings (24+ hours after save)
-        try {
-          await indexedDBService.deleteSavedMeetings(24);
-        } catch (error) {
-          console.warn('⚠️ Failed to clean up saved meetings:', error);
-        }
-
-        // 3. Always check for recoverable meetings on startup
+        // 2. Always check for recoverable meetings on startup
         // Don't skip based on sessionStorage - we need to check every time
         await checkForRecoverableTranscripts();
       } catch (error) {
@@ -128,6 +122,17 @@ export default function Home() {
   const handleRecovery = async (meetingId: string) => {
     try {
       const result = await recoverMeeting(meetingId);
+
+      if (result.success && result.meetingId && result.transcribeFolder) {
+        // Only the audio was left: recognise it the way a stopped recording is.
+        beginPostCall(result.meetingId, result.transcribeFolder);
+        toast.success(t('restoredFromAudioTitle'), {
+          description: t('restoredFromAudioDescription'),
+        });
+        await refetchMeetings();
+        router.push(`/meeting-details?id=${encodeURIComponent(result.meetingId)}`);
+        return;
+      }
 
       if (result.success) {
         toast.success(t('recoveredSuccessTitle'), {
@@ -216,6 +221,7 @@ export default function Home() {
         recoverableMeetings={recoverableMeetings}
         onRecover={handleRecovery}
         onDelete={deleteRecoverableMeeting}
+        onOpenWithOtherKey={openWithOtherKey}
         onLoadPreview={loadMeetingTranscripts}
       />
       <div className="flex flex-1 overflow-hidden">

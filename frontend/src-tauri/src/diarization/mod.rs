@@ -14,6 +14,7 @@
 //!
 //! Models live install-locally in `<install>/data/models/diarization`.
 
+pub mod by_device;
 pub mod clustering;
 pub mod download;
 pub mod dsp;
@@ -111,7 +112,7 @@ fn dir_has_models(dir: &Path) -> bool {
     REQUIRED_FILES.iter().all(|f| dir.join(f).exists())
 }
 
-/// Where the app's *writable* diarization model directory is â€” the target for
+/// Where the app's *writable* diarization model directory is — the target for
 /// manual installs and downloads.
 pub fn diarization_user_model_dir() -> PathBuf {
     crate::paths::models_dir().join("diarization")
@@ -175,6 +176,7 @@ pub fn diarize_file(
 /// Exposed for offline evaluation of embedding quality (see the diagnostic in
 /// this module's tests) — the clustering step is skipped entirely.
 pub fn embeddings_for_debug(wav_path: &Path, model_dir: &Path) -> Result<Vec<Vec<f32>>> {
+    wait_out_recording();
     let (samples, sr) = dsp::read_wav(wav_path)?;
     let samples = if sr != dsp::SAMPLE_RATE {
         crate::audio::audio_processing::resample_audio(&samples, sr, dsp::SAMPLE_RATE)
@@ -192,6 +194,22 @@ pub fn embeddings_for_debug(wav_path: &Path, model_dir: &Path) -> Result<Vec<Vec
         }
     }
     Ok(out)
+}
+
+/// A recording comes first: finding speakers in a saved one waits while a
+/// recording is on and carries on once it ends, so the two do not share the
+/// processor. Checked between the heavy steps; a step under way finishes.
+/// Only the offline pipeline calls this — live labelling runs during the
+/// recording and must never wait for it.
+fn wait_out_recording() {
+    if !crate::audio::recording_commands::is_recording_active() {
+        return;
+    }
+    log::info!("Speaker identification paused while a recording is on");
+    while crate::audio::recording_commands::is_recording_active() {
+        std::thread::sleep(std::time::Duration::from_secs(1));
+    }
+    log::info!("Speaker identification resumed after the recording");
 }
 
 /// Run the pipeline against an explicit model directory.
@@ -215,10 +233,12 @@ pub fn diarize_file_with_models(
         ));
     }
 
+    wait_out_recording();
+
     // 1. Load + resample to 16 kHz mono.
     let (samples, sr) = dsp::read_wav(wav_path)?;
     let samples = if sr != dsp::SAMPLE_RATE {
-        log::info!("ðŸŽšï¸ Diarization: resampling {} Hz â†’ {} Hz", sr, dsp::SAMPLE_RATE);
+        log::info!("🎚️ Diarization: resampling {} Hz → {} Hz", sr, dsp::SAMPLE_RATE);
         crate::audio::audio_processing::resample_audio(&samples, sr, dsp::SAMPLE_RATE)
     } else {
         samples
@@ -254,6 +274,7 @@ pub fn diarize_file_with_models(
     let mut embeddings: Vec<Vec<f32>> = Vec::with_capacity(turns.len());
     let mut kept: Vec<usize> = Vec::with_capacity(turns.len());
     for (i, turn) in turns.iter().enumerate() {
+        wait_out_recording();
         match models.embed(&turn.audio) {
             Ok(e) => {
                 embeddings.push(e);
@@ -440,6 +461,42 @@ pub fn diarize_file_with_models(
 // Tauri commands
 // ============================================================================
 
+/// The recording of a meeting, wherever it is found.
+async fn meeting_audio(pool: &sqlx::SqlitePool, meeting_id: &str) -> Result<Option<PathBuf>, String> {
+    let meeting: Option<(Option<String>, String)> =
+        sqlx::query_as("SELECT folder_path, title FROM meetings WHERE id = ?")
+            .bind(meeting_id)
+            .fetch_optional(pool)
+            .await
+            .map_err(|e| format!("Failed to read meeting: {}", e))?;
+
+    let (folder_path, title) = match meeting {
+        Some((f, t)) => (
+            f,
+            Some(
+                fields::open(fields::MEETING_TITLE, &t)
+                    .map_err(|e| format!("Failed to read meeting: {}", e))?,
+            ),
+        ),
+        None => (None, None),
+    };
+    Ok(find_meeting_audio(folder_path, title.as_deref()))
+}
+
+/// Was the meeting recorded with a track per side? Then its speakers are
+/// labelled by device, and there is no count of voices to ask for.
+#[tauri::command]
+pub async fn diarization_has_device_tracks(
+    state: tauri::State<'_, crate::state::AppState>,
+    meeting_id: String,
+) -> Result<bool, String> {
+    let source = meeting_audio(state.db_manager.pool(), &meeting_id).await?;
+    Ok(source
+        .as_deref()
+        .and_then(|path| path.parent())
+        .is_some_and(|folder| by_device::device_tracks(folder).is_some()))
+}
+
 /// Are the diarization models installed?
 #[tauri::command]
 pub async fn diarization_models_available() -> Result<bool, String> {
@@ -541,7 +598,7 @@ pub struct MeetingDiarizationResult {
     pub num_speakers: usize,
     /// Number of transcript segments that received a speaker label.
     pub labeled: usize,
-    /// (transcript_id, speaker_label) pairs, e.g. ("transcript-â€¦", "Speaker 1").
+    /// (transcript_id, speaker_label) pairs, e.g. ("transcript-…", "Speaker 1").
     pub assignments: Vec<(String, String)>,
 }
 
@@ -656,6 +713,7 @@ fn apply_source_track_hint(
 /// ffmpeg's header are placeholders — [`dsp::read_wav`] clamps the data chunk
 /// to what is actually in the file, so that costs nothing.
 fn ensure_wav(path: &Path) -> Result<(PathBuf, bool)> {
+    wait_out_recording();
     let already_wav = path
         .extension()
         .and_then(|e| e.to_str())
@@ -763,6 +821,29 @@ fn ensure_wav(path: &Path) -> Result<(PathBuf, bool)> {
 ///
 /// Written back through the same sink the decode used, so it stays encrypted
 /// when the archive is, and by rename so a failure leaves the decode as it was.
+/// The speakers' echo, measured from the tracks themselves.
+///
+/// For every recording nobody judged while it ran: the microphone is the
+/// system track again, quieter and a little later, and that is measurable
+/// afterwards. Returns nothing when the two do not line up — a recording with
+/// headphones, or one where nothing was played — and then this changes
+/// nothing at all.
+fn measure_the_echo(mic_wav: &Path, system_wav: &Path) -> Vec<(f64, f64)> {
+    use crate::audio::echo_offline::{describe, measure, Envelope, WINDOW_MS};
+
+    let envelope_of = |path: &Path| -> Option<Envelope> {
+        let (samples, rate) = dsp::read_wav(path).ok()?;
+        Some(Envelope::measure(&samples, rate, WINDOW_MS))
+    };
+    let (Some(mic), Some(system)) = (envelope_of(mic_wav), envelope_of(system_wav)) else {
+        return Vec::new();
+    };
+
+    let measured = measure(&mic, &system);
+    log::info!("🔇 Echo measured from the tracks: {}", describe(&measured));
+    measured.spans
+}
+
 fn silence_the_speakers_in_wav(wav: &Path, spans_ms: &[(f64, f64)]) -> Result<f64> {
     use std::io::Write;
 
@@ -799,32 +880,17 @@ pub async fn diarize_meeting(
     audio_path: Option<String>,
     num_speakers: Option<usize>,
     threshold: Option<f32>,
+    // "device" or "model". Left out, a recording with separate tracks is
+    // labelled by device and any other by the model.
+    method: Option<String>,
 ) -> Result<MeetingDiarizationResult, String> {
+    let _busy = crate::security::session::busy();
     let _operation_guard = operation_guard().await;
     let pool = state.db_manager.pool();
 
-    // Resolve the recording.
-    let meeting: Option<(Option<String>, String)> =
-        sqlx::query_as("SELECT folder_path, title FROM meetings WHERE id = ?")
-            .bind(&meeting_id)
-            .fetch_optional(pool)
-            .await
-            .map_err(|e| format!("Failed to read meeting: {}", e))?;
-
-    let (folder_path, title) = match meeting {
-        Some((f, t)) => (
-            f,
-            Some(
-                fields::open(fields::MEETING_TITLE, &t)
-                    .map_err(|e| format!("Failed to read meeting: {}", e))?,
-            ),
-        ),
-        None => (None, None),
-    };
-
     let source = match audio_path {
         Some(p) => PathBuf::from(p),
-        None => find_meeting_audio(folder_path, title.as_deref()).ok_or_else(|| {
+        None => meeting_audio(pool, &meeting_id).await?.ok_or_else(|| {
             format!(
                 "No recording found for this meeting. Looked in the meeting folder, \
                  {} and the app data folder.",
@@ -832,6 +898,19 @@ pub async fn diarize_meeting(
             )
         })?,
     };
+    // A recording with a track per side already says who spoke: the
+    // microphone is the owner and the speakers are the other side. Nothing to
+    // cluster, nothing to guess, and it takes a second rather than minutes.
+    let wants_model = method.as_deref() == Some("model");
+    if !wants_model {
+        if let Some(folder) = source.parent() {
+            if by_device::device_tracks(folder).is_some() {
+                log::info!("🎙️ Labelling meeting {} by device", meeting_id);
+                return by_device::assign(pool, &meeting_id, folder).await;
+            }
+        }
+    }
+
     log::info!("🧑‍🤝‍🧑 Diarizing meeting {} using {}", meeting_id, source.display());
 
     // Run the CPU-heavy pipeline off the async core threads. New recordings
@@ -884,6 +963,15 @@ pub async fn diarize_meeting(
                         }
                         return Err(error);
                     }
+                };
+
+                // Recordings made with Windows cancelling the echo leave no
+                // record, and what Windows left behind still reads as him.
+                // Measured from the two tracks, which came off one clock.
+                let echo_spans = if echo_spans.is_empty() {
+                    measure_the_echo(&mic_wav, &system_wav)
+                } else {
+                    echo_spans
                 };
 
                 // Before anything reads it as him — the labels or the voiceprint.
@@ -1200,11 +1288,12 @@ pub async fn diarize_meeting(
         .await
         .map_err(|e| format!("Failed to begin speaker update: {e}"))?;
     for (id, label) in updates {
-        sqlx::query("UPDATE transcripts SET speaker = ? WHERE id = ?")
+        // A label a person chose is theirs, not the model's to redo.
+        sqlx::query("UPDATE transcripts SET speaker = ? WHERE id = ? AND speaker_set_at IS NULL")
             .bind(fields::seal_joinable_opt(
                 fields::TRANSCRIPT_SPEAKER,
                 label.as_deref(),
-            ))
+            ).map_err(|e| format!("Failed to seal speaker label: {e}"))?)
             .bind(id)
             .execute(&mut *tx)
             .await
@@ -1213,6 +1302,7 @@ pub async fn diarize_meeting(
     tx.commit()
         .await
         .map_err(|e| format!("Failed to commit speaker labels: {e}"))?;
+    crate::database::repositories::transcript_history::forget(&meeting_id);
     if preserved > 0 {
         log::info!(
             "🧑‍🤝‍🧑 Preserved {} live speaker label(s); offline only filled gaps",
@@ -1221,7 +1311,7 @@ pub async fn diarize_meeting(
     }
 
     log::info!(
-        "âœ… Meeting {} diarized: {} speakers, {} segments labeled",
+        "✅ Meeting {} diarized: {} speakers, {} segments labeled",
         meeting_id,
         result.num_speakers,
         assignments.len()

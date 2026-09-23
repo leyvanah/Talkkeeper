@@ -203,12 +203,65 @@ fn convert_one(path: &Path, key: &[u8], direction: Direction) -> anyhow::Result<
         let _ = std::fs::remove_file(&replacement);
         anyhow::bail!("the converted file does not hold the same audio");
     }
+    put_in_place(path, &replacement)
+}
 
+/// Re-encrypt one file sealed with `from` so that it is sealed with `to`
+/// instead, under the same rule as [`convert_one`]: the original stays until
+/// the replacement has been read back with `to` and holds the same audio.
+fn rekey_one(path: &Path, from: &[u8], to: &[u8]) -> anyhow::Result<()> {
+    let replacement = with_suffix(path, IN_PROGRESS_SUFFIX);
+    let _ = std::fs::remove_file(&replacement);
+
+    let source_digest = {
+        let mut source = AudioSource::open_with_key(path, from)?;
+        let mut sink = AudioSink::create_with_key(&replacement, to)?;
+        let digest = copy_hashing(&mut source, &mut sink)?;
+        sink.finish()?;
+        digest
+    };
+    let written_digest = digest_of(&replacement, to)?;
+    if source_digest != written_digest {
+        let _ = std::fs::remove_file(&replacement);
+        anyhow::bail!("the re-encrypted file does not hold the same audio");
+    }
+    put_in_place(path, &replacement)
+}
+
+/// Brings one recording folder that was sealed with another archive's key
+/// under this archive's: re-encrypted with `to`, or decrypted when this
+/// archive has no password (`to` is `None`). Files that are not encrypted are
+/// left as they are.
+pub fn rekey_folder(folder: &Path, from: &[u8], to: Option<&[u8]>) -> ConversionReport {
+    let mut files = Vec::new();
+    collect_audio_in(folder, &mut files);
+    collect_audio_in(&folder.join(".work"), &mut files);
+
+    let mut report = ConversionReport::default();
+    for path in files {
+        if !file_looks_encrypted(&path) {
+            report.untouched += 1;
+            continue;
+        }
+        let result = match to {
+            Some(to) => rekey_one(&path, from, to),
+            None => convert_one(&path, from, Direction::Decrypt),
+        };
+        match result {
+            Ok(()) => report.converted += 1,
+            Err(error) => report.failed.push((path, error.to_string())),
+        }
+    }
+    report
+}
+
+/// Swap a verified replacement in for the original.
+fn put_in_place(path: &Path, replacement: &Path) -> anyhow::Result<()> {
     // From here on the original is expendable, but not before.
     let superseded = with_suffix(path, SUPERSEDED_SUFFIX);
     let _ = std::fs::remove_file(&superseded);
     std::fs::rename(path, &superseded)?;
-    if let Err(error) = std::fs::rename(&replacement, path) {
+    if let Err(error) = std::fs::rename(replacement, path) {
         // Put the original back rather than leaving a gap where a session was.
         let _ = std::fs::rename(&superseded, path);
         return Err(error.into());
@@ -401,6 +454,66 @@ mod tests {
         std::fs::write(meeting.join("metadata.json"), b"{}").unwrap();
         std::fs::write(meeting.join("audio.mp4.part"), b"half a track").unwrap();
         (meeting, files)
+    }
+
+    fn read_all(path: &Path, key: &[u8]) -> Vec<u8> {
+        let mut back = Vec::new();
+        std::io::Read::read_to_end(&mut AudioSource::open_with_key(path, key).unwrap(), &mut back)
+            .unwrap();
+        back
+    }
+
+    #[test]
+    fn a_recording_from_another_archive_is_brought_under_this_key() {
+        let dir = tempfile::tempdir().unwrap();
+        let theirs = generate_dek();
+        let ours = generate_dek();
+        let audio = session_audio(2 * FRAME_LEN + 11);
+        let (meeting, files) = archive(dir.path(), &audio);
+        convert_all(&[dir.path().to_path_buf()], theirs.as_ref(), Direction::Encrypt, |_, _| {});
+
+        let report = rekey_folder(&meeting, theirs.as_ref(), Some(ours.as_ref()));
+        assert!(report.is_complete(), "{:?}", report.failed);
+        assert_eq!(report.converted, 4);
+        for path in &files {
+            assert!(file_looks_encrypted(path));
+            assert_eq!(read_all(path, ours.as_ref()), audio, "{}", path.display());
+            assert!(AudioSource::open_with_key(path, theirs.as_ref()).is_err());
+        }
+        assert!(!meeting.join("audio.mp4.tkconv").exists());
+        assert!(!meeting.join("audio.mp4.tkold").exists());
+    }
+
+    #[test]
+    fn without_a_password_here_a_foreign_recording_is_decrypted() {
+        let dir = tempfile::tempdir().unwrap();
+        let theirs = generate_dek();
+        let audio = session_audio(FRAME_LEN + 3);
+        let (meeting, files) = archive(dir.path(), &audio);
+        convert_all(&[dir.path().to_path_buf()], theirs.as_ref(), Direction::Encrypt, |_, _| {});
+
+        let report = rekey_folder(&meeting, theirs.as_ref(), None);
+        assert!(report.is_complete(), "{:?}", report.failed);
+        for path in &files {
+            assert!(!file_looks_encrypted(path));
+            assert_eq!(std::fs::read(path).unwrap(), audio);
+        }
+    }
+
+    #[test]
+    fn the_wrong_key_changes_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let theirs = generate_dek();
+        let audio = session_audio(FRAME_LEN + 3);
+        let (meeting, files) = archive(dir.path(), &audio);
+        convert_all(&[dir.path().to_path_buf()], theirs.as_ref(), Direction::Encrypt, |_, _| {});
+        let before: Vec<_> = files.iter().map(|path| std::fs::read(path).unwrap()).collect();
+
+        let report = rekey_folder(&meeting, generate_dek().as_ref(), Some(generate_dek().as_ref()));
+        assert_eq!(report.failed.len(), 4);
+        let after: Vec<_> = files.iter().map(|path| std::fs::read(path).unwrap()).collect();
+        assert_eq!(before, after);
+        assert!(!meeting.join("audio.mp4.tkconv").exists());
     }
 
     #[test]

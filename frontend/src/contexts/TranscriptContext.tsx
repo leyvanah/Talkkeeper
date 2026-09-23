@@ -7,7 +7,6 @@ import { toast } from 'sonner';
 import { useRecordingState } from './RecordingStateContext';
 import { transcriptService } from '@/services/transcriptService';
 import { recordingService } from '@/services/recordingService';
-import { indexedDBService } from '@/services/indexedDBService';
 
 interface TranscriptContextType {
   transcripts: Transcript[];
@@ -19,8 +18,6 @@ interface TranscriptContextType {
   meetingTitle: string;
   setMeetingTitle: (title: string) => void;
   clearTranscripts: () => void;
-  currentMeetingId: string | null;
-  markMeetingAsSaved: () => Promise<void>;
 }
 
 const TranscriptContext = createContext<TranscriptContextType | undefined>(undefined);
@@ -28,8 +25,7 @@ const TranscriptContext = createContext<TranscriptContextType | undefined>(undef
 export function TranscriptProvider({ children }: { children: ReactNode }) {
   const t = useTranslations('app');
   const [transcripts, setTranscripts] = useState<Transcript[]>([]);
-  const [meetingTitle, setMeetingTitle] = useState('+ New Call');
-  const [currentMeetingId, setCurrentMeetingId] = useState<string | null>(null);
+  const [meetingTitle, setMeetingTitle] = useState('');
 
   // Recording state context - provides backend-synced state
   const recordingState = useRecordingState();
@@ -83,81 +79,22 @@ export function TranscriptProvider({ children }: { children: ReactNode }) {
     }
   }, [transcripts]);
 
-  // Initialize IndexedDB and listen for recording-started/stopped events
+  // Take the title of a recording as it starts. The transcript itself is kept
+  // by the backend (a sealed journal per recording), not in the window.
   useEffect(() => {
     let unlistenRecordingStarted: (() => void) | undefined;
-    let unlistenRecordingStopped: (() => void) | undefined;
 
     const setupRecordingListeners = async () => {
       try {
-        // Initialize IndexedDB
-        await indexedDBService.init();
-
-        // Listen for recording-started event
         unlistenRecordingStarted = await recordingService.onRecordingStarted(async () => {
           try {
-            // Generate unique meeting ID
-            const meetingId = `meeting-${Date.now()}`;
-            setCurrentMeetingId(meetingId);
-
-            // Store in sessionStorage as fallback for markMeetingAsSaved
-            sessionStorage.setItem('indexeddb_current_meeting_id', meetingId);
-            console.log('[Recording Started] 💾 IndexedDB meeting ID stored:', meetingId);
-
-            // Get meeting name
             const meetingName = await recordingService.getRecordingMeetingName();
-
             // Use a better fallback that matches the backend's naming pattern
             const effectiveTitle = meetingName || `Meeting ${new Date().toISOString().slice(0, 19).replace('T', '_').replace(/:/g, '-')}`;
-
-            // Initialize meeting metadata in IndexedDB
-            await indexedDBService.saveMeetingMetadata({
-              meetingId,
-              title: effectiveTitle,
-              startTime: Date.now(),
-              lastUpdated: Date.now(),
-              transcriptCount: 0,
-              savedToSQLite: false,
-              folderPath: undefined // Will update shortly
-            });
-
             // Synchronize meeting title to state (fixes tray stop title issue)
             setMeetingTitle(effectiveTitle);
-
-            // Fetch folder path from backend and update metadata
-            // This ensures folder path is persisted even if app crashes
-            try {
-              const { invoke } = await import('@tauri-apps/api/core');
-              const folderPath = await invoke<string>('get_meeting_folder_path');
-              if (folderPath) {
-                const metadata = await indexedDBService.getMeetingMetadata(meetingId);
-                if (metadata) {
-                  metadata.folderPath = folderPath;
-                  await indexedDBService.saveMeetingMetadata(metadata);
-                }
-              }
-            } catch (error) {
-              // Non-fatal - will be set on stop if recording completes normally
-            }
           } catch (error) {
-            console.error('Failed to initialize meeting in IndexedDB:', error);
-          }
-        });
-
-        // Listen for recording-stopped event
-        unlistenRecordingStopped = await recordingService.onRecordingStopped(async (payload) => {
-          try {
-            if (currentMeetingId) {
-              // Update folder path in IndexedDB
-              const metadata = await indexedDBService.getMeetingMetadata(currentMeetingId);
-
-              if (metadata && payload.folder_path) {
-                metadata.folderPath = payload.folder_path;
-                await indexedDBService.saveMeetingMetadata(metadata);
-              }
-            }
-          } catch (error) {
-            console.error('Failed to update meeting metadata on stop:', error);
+            console.error('Failed to read the recording title:', error);
           }
         });
       } catch (error) {
@@ -168,16 +105,9 @@ export function TranscriptProvider({ children }: { children: ReactNode }) {
     setupRecordingListeners();
 
     return () => {
-      if (unlistenRecordingStarted) {
-        unlistenRecordingStarted();
-        console.log('🧹 Recording started listener cleaned up');
-      }
-      if (unlistenRecordingStopped) {
-        unlistenRecordingStopped();
-        console.log('🧹 Recording stopped listener cleaned up');
-      }
+      unlistenRecordingStarted?.();
     };
-  }, [currentMeetingId]);
+  }, []);
 
   // Main transcript buffering logic with sequence_id ordering
   useEffect(() => {
@@ -324,12 +254,6 @@ export function TranscriptProvider({ children }: { children: ReactNode }) {
           transcriptBuffer.set(update.sequence_id, newTranscript);
           console.log(`✅ MAIN LISTENER: Buffered transcript with sequence_id ${update.sequence_id}. Buffer size: ${transcriptBuffer.size}, Last processed: ${lastProcessedSequence}`);
 
-          // Save to IndexedDB (non-blocking)
-          if (currentMeetingId) {
-            indexedDBService.saveTranscript(currentMeetingId, update)
-              .catch(err => console.warn('IndexedDB save failed:', err));
-          }
-
           // Clear any existing timer and set a new one
           if (processingTimer) {
             clearTimeout(processingTimer);
@@ -359,7 +283,7 @@ export function TranscriptProvider({ children }: { children: ReactNode }) {
         console.log('🧹 CLEANUP: MAIN transcript listener cleaned up');
       }
     };
-  }, [currentMeetingId]); // Add currentMeetingId dependency
+  }, []);
 
   // Sync transcript history and meeting name from backend on reload
   // This fixes the issue where reloading during active recording causes state desync
@@ -488,35 +412,7 @@ export function TranscriptProvider({ children }: { children: ReactNode }) {
   // Clear transcripts (used when starting new recording)
   const clearTranscripts = useCallback(() => {
     setTranscripts([]);
-    // Don't clear currentMeetingId here - it will be set by recording-started event
   }, []);
-
-  // Mark current meeting as saved in IndexedDB
-  const markMeetingAsSaved = useCallback(async () => {
-    // Try context state first, fallback to sessionStorage
-    const meetingId = currentMeetingId || sessionStorage.getItem('indexeddb_current_meeting_id');
-
-    if (!meetingId) {
-      console.error('[IndexedDB] ❌ Cannot mark meeting as saved: No meeting ID available!');
-      console.error('[IndexedDB] currentMeetingId:', currentMeetingId);
-      console.error('[IndexedDB] sessionStorage:', sessionStorage.getItem('indexeddb_current_meeting_id'));
-      return;
-    }
-
-    try {
-      // The browser copy exists so a recording survives a crash before it is
-      // saved. It has just been saved, and recovery only ever looks at
-      // unsaved recordings — so from here it is a third copy of the session
-      // sitting in the webview profile, and it goes.
-      await indexedDBService.deleteMeeting(meetingId);
-
-      // Clear both sources
-      setCurrentMeetingId(null);
-      sessionStorage.removeItem('indexeddb_current_meeting_id');
-    } catch (error) {
-      console.error('[IndexedDB] ❌ Failed to mark meeting as saved:', error);
-    }
-  }, [currentMeetingId]);
 
   const value: TranscriptContextType = {
     transcripts,
@@ -528,8 +424,6 @@ export function TranscriptProvider({ children }: { children: ReactNode }) {
     meetingTitle,
     setMeetingTitle,
     clearTranscripts,
-    currentMeetingId,
-    markMeetingAsSaved,
   };
 
   return (

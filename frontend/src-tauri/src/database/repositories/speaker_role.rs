@@ -196,7 +196,7 @@ impl SpeakerRolesRepository {
         role: Option<Role>,
     ) -> Result<(), SqlxError> {
         let speaker = speaker.trim();
-        let label = fields::seal_joinable(fields::SPEAKER_LABEL, speaker);
+        let label = fields::seal_joinable(fields::SPEAKER_LABEL, speaker)?;
         match role {
             Some(role) => {
                 sqlx::query(
@@ -237,8 +237,8 @@ impl SpeakerRolesRepository {
         from: &str,
         to: &str,
     ) -> Result<(), SqlxError> {
-        let from_label = fields::seal_joinable(fields::SPEAKER_LABEL, from);
-        let to_label = fields::seal_joinable(fields::SPEAKER_LABEL, to);
+        let from_label = fields::seal_joinable(fields::SPEAKER_LABEL, from)?;
+        let to_label = fields::seal_joinable(fields::SPEAKER_LABEL, to)?;
         if from_label == to_label {
             return Ok(());
         }

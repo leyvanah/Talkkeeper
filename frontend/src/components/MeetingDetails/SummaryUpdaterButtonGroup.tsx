@@ -1,17 +1,19 @@
 "use client";
 
-import { Button } from '@/components/ui/button';
-import { ButtonGroup } from '@/components/ui/button-group';
-import { Copy, Save, Loader2, Search, FolderOpen, Download } from 'lucide-react';
+/**
+ * What is done with a summary once it exists: save the corrections to it and
+ * copy it. Exporting the meeting is in the window's header, with the rest of
+ * what is done with the meeting.
+ */
+
+import { Copy, Loader2, Save } from 'lucide-react';
 import { useTranslations } from 'next-intl';
-import Analytics from '@/lib/analytics';
 
 interface SummaryUpdaterButtonGroupProps {
   isSaving: boolean;
   isDirty: boolean;
   onSave: () => Promise<void>;
   onCopy: () => Promise<void>;
-  onExport?: () => void;
   onFind?: () => void;
   onOpenFolder: () => Promise<void>;
   hasSummary: boolean;
@@ -22,91 +24,43 @@ export function SummaryUpdaterButtonGroup({
   isDirty,
   onSave,
   onCopy,
-  onExport,
-  onFind,
-  onOpenFolder,
   hasSummary
 }: SummaryUpdaterButtonGroupProps) {
   const t = useTranslations('meetingDetails');
   const tc = useTranslations('common');
 
+  const quiet =
+    'flex h-8 shrink-0 items-center justify-center gap-1.5 rounded-lg px-2 text-sm text-[var(--af-text-2)] transition-colors hover:bg-[var(--af-hover)] hover:text-[var(--af-text)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--af-accent)] disabled:opacity-40 disabled:hover:bg-transparent';
+
   return (
-    <ButtonGroup>
-      {/* Save button */}
-      <Button
-        variant="outline"
-        size="sm"
-        className={`${isDirty ? 'bg-green-200' : ""}`}
+    <div className="flex items-center gap-0.5">
+      {/* Named only while there is something to save, so it is noticed then. */}
+      <button
+        type="button"
+        className={`${quiet} ${isDirty ? 'text-[var(--af-accent)]' : 'w-8 px-0'}`}
         title={isSaving ? t('summarySavingTooltip') : t('summarySaveTooltip')}
+        aria-label={tc('save')}
         onClick={() => {
-          Analytics.trackButtonClick('save_changes', 'meeting_details');
           onSave();
         }}
         disabled={isSaving}
       >
-        {isSaving ? (
-          <>
-            <Loader2 className="animate-spin" />
-            <span className="hidden lg:inline">{t('summarySavingLabel')}</span>
-          </>
-        ) : (
-          <>
-            <Save />
-            <span className="hidden lg:inline">{tc('save')}</span>
-          </>
-        )}
-      </Button>
+        {isSaving ? <Loader2 size={16} className="animate-spin" /> : <Save size={16} />}
+        {isDirty && <span>{isSaving ? t('summarySavingLabel') : tc('save')}</span>}
+      </button>
 
-      {/* Copy button */}
-      <Button
-        variant="outline"
-        size="sm"
+      <button
+        type="button"
+        className={`${quiet} w-8 px-0`}
         title={t('copySummary')}
+        aria-label={t('copySummary')}
         onClick={() => {
-          Analytics.trackButtonClick('copy_summary', 'meeting_details');
           onCopy();
         }}
         disabled={!hasSummary}
-        className="cursor-pointer"
       >
-        <Copy />
-        <span className="hidden lg:inline">{t('copy')}</span>
-      </Button>
-
-      {/* Meeting export flow */}
-      {onExport && (
-        <Button
-          variant="outline"
-          size="sm"
-          title={t('exportMeeting')}
-          onClick={() => {
-            Analytics.trackButtonClick('open_meeting_export', 'meeting_details');
-            onExport();
-          }}
-          className="cursor-pointer"
-        >
-          <Download />
-          <span className="hidden lg:inline">{t('export')}</span>
-        </Button>
-      )}
-
-      {/* Find button */}
-      {/* {onFind && (
-        <Button
-          variant="outline"
-          size="sm"
-          title="Find in Summary"
-          onClick={() => {
-            Analytics.trackButtonClick('find_in_summary', 'meeting_details');
-            onFind();
-          }}
-          disabled={!hasSummary}
-          className="cursor-pointer"
-        >
-          <Search />
-          <span className="hidden lg:inline">Find</span>
-        </Button>
-      )} */}
-    </ButtonGroup>
+        <Copy size={16} />
+      </button>
+    </div>
   );
 }

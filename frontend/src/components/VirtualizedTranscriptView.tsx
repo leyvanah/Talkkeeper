@@ -34,8 +34,9 @@ import { motion } from "framer-motion";
 import { TranscriptSegmentData } from "@/types";
 import { useTranslations } from "next-intl";
 import { Pencil } from "lucide-react";
-import type { LineEdits } from "@/services/transcriptEditService";
+import type { LineEdits, LineRef } from "@/services/transcriptEditService";
 import { TranscriptLineEditor } from "./MeetingDetails/TranscriptLineEditor";
+import { SpeakerLabelMenu } from "./MeetingDetails/SpeakerLabelMenu";
 
 export interface VirtualizedTranscriptViewProps {
     /** Transcript segments to display */
@@ -180,6 +181,10 @@ function speakerPaletteIndex(speaker: string): number {
 /**
  * Collapse back-to-back lines from the same speaker into one bubble when the
  * gap is small. Live VAD often emits many short fragments for one turn.
+ *
+ * A line a person corrected stays a bubble of its own: it is already the turn
+ * they meant, and after they cut one in two the halves must not run together
+ * again on screen.
  */
 export function mergeAdjacentSameSpeaker(
     segments: TranscriptSegmentData[],
@@ -193,6 +198,8 @@ export function mergeAdjacentSameSpeaker(
         const gap = seg.timestamp - lastEnd;
         if (
             last &&
+            !last.edited &&
+            !seg.edited &&
             speakerKey(last.speaker) === speakerKey(seg.speaker) &&
             gap >= 0 &&
             gap <= maxGapSecs
@@ -248,6 +255,7 @@ const TranscriptSegment = memo(function TranscriptSegment({
     lineIds,
     edited = false,
     lineEdits,
+    nextLine,
 }: {
     id: string;
     timestamp: number;
@@ -268,6 +276,8 @@ const TranscriptSegment = memo(function TranscriptSegment({
     /** A person corrected the line. */
     edited?: boolean;
     lineEdits?: LineEdits;
+    /** The line shown after this one, which it can be joined with. */
+    nextLine?: LineRef;
 }) {
     const t = useTranslations('recording');
     const tm = useTranslations('meetingDetails');
@@ -293,20 +303,22 @@ const TranscriptSegment = memo(function TranscriptSegment({
                         className={`h-2 w-2 rounded-full shrink-0 ${speakerDot(speaker)}`}
                     />
                     {speaker && (
-                        onRenameSpeaker ? (
-                            <button
-                                type="button"
-                                onClick={() => onRenameSpeaker(speaker)}
-                                title={t('renameSpeakerTitle', { speaker })}
-                                className={`text-xs font-semibold ${speakerColor(speaker)} rounded hover:underline`}
-                            >
-                                {label}
-                            </button>
-                        ) : (
-                            <span className={`text-xs font-semibold ${speakerColor(speaker)}`}>
-                                {label}
-                            </span>
-                        )
+                        <SpeakerLabelMenu
+                            speaker={speaker}
+                            label={label}
+                            displayOf={(option) => displaySpeaker(option, userName)}
+                            className={`text-xs font-semibold ${speakerColor(speaker)}`}
+                            onRename={onRenameSpeaker}
+                            choice={
+                                lineEdits
+                                    ? {
+                                          existing: lineEdits.speakers,
+                                          fresh: lineEdits.freshSpeaker,
+                                          choose: (next) => lineEdits.onSetSpeaker(lineRef, next),
+                                      }
+                                    : undefined
+                            }
+                        />
                     )}
                     <Tooltip>
                         <TooltipTrigger>
@@ -344,6 +356,10 @@ const TranscriptSegment = memo(function TranscriptSegment({
                             initialText={text}
                             onSave={(next) => lineEdits.onEditLine(lineRef, next)}
                             onRemove={() => lineEdits.onRemoveLine(lineRef)}
+                            onSplit={(first, second) => lineEdits.onSplitLine(lineRef, first, second)}
+                            onMergeNext={
+                                nextLine ? () => lineEdits.onMergeLines(lineRef, nextLine) : undefined
+                            }
                             onClose={() => setEditing(false)}
                         />
                     </div>
@@ -428,6 +444,12 @@ export const VirtualizedTranscriptView: React.FC<VirtualizedTranscriptViewProps>
         () => mergeAdjacentSameSpeaker(segments),
         [segments],
     );
+
+    /** The line after the one at `index`, as a join needs it. */
+    const nextLineOf = (index: number): LineRef | undefined => {
+        const next = displaySegments[index + 1];
+        return next ? { id: next.id, ids: next.ids } : undefined;
+    };
 
     // Create scroll ref first - shared between virtualizer and auto-scroll hook
     const scrollRef = useRef<HTMLDivElement>(null);
@@ -604,6 +626,7 @@ export const VirtualizedTranscriptView: React.FC<VirtualizedTranscriptViewProps>
                     >
                         {virtualizer.getVirtualItems().map((virtualRow) => {
                             const segment = displaySegments[virtualRow.index];
+                            const index = virtualRow.index;
                             const isStreaming = streamingSegmentId === segment.id;
 
                             return (
@@ -634,6 +657,7 @@ export const VirtualizedTranscriptView: React.FC<VirtualizedTranscriptViewProps>
                                         lineIds={segment.ids}
                                         edited={segment.edited}
                                         lineEdits={isRecording ? undefined : lineEdits}
+                                        nextLine={nextLineOf(index)}
                                     />
                                 </div>
                             );
@@ -676,7 +700,7 @@ export const VirtualizedTranscriptView: React.FC<VirtualizedTranscriptViewProps>
                 // Simple rendering for small lists (better animations)
                 <>
                     <div className="space-y-1">
-                        {displaySegments.map((segment) => {
+                        {displaySegments.map((segment, index) => {
                             const isStreaming = streamingSegmentId === segment.id;
 
                             return (
@@ -701,6 +725,7 @@ export const VirtualizedTranscriptView: React.FC<VirtualizedTranscriptViewProps>
                                         lineIds={segment.ids}
                                         edited={segment.edited}
                                         lineEdits={isRecording ? undefined : lineEdits}
+                                        nextLine={nextLineOf(index)}
                                     />
                                 </motion.div>
                             );

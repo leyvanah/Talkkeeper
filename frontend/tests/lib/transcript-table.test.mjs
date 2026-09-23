@@ -257,3 +257,46 @@ console.log('transcript-table fit: ok');
 }
 
 console.log('transcript-table words: ok');
+
+// Long pauses are shortened; short ones and speech keep their time.
+{
+  const { buildWarp, toShown, toReal } = loadTsModule(modulePath);
+  const quiet = { keep: 1, rate: 0.1, most: 3 };
+  const lines = [
+    line('a', 20, 22, 'Speaker 1'),
+    line('b', 22.5, 24, 'You'),
+    line('c', 30, 31, 'Speaker 1'),
+    line('d', 200, 201, 'You'),
+  ];
+  const warp = buildWarp(lines, quiet);
+  // 20 s of silence at the start: 1 + 19 * 0.1 = 2.9 s.
+  near(toShown(warp, 20), 2.9, 'the opening pause');
+  near(toShown(warp, 22.5) - toShown(warp, 22), 0.5, 'a short pause stays');
+  near(toShown(warp, 30) - toShown(warp, 24), 1.5, 'a 6 s pause becomes 1.5 s');
+  near(toShown(warp, 200) - toShown(warp, 31), 3, 'no pause is longer than most');
+  near(toShown(warp, 200.5) - toShown(warp, 200), 0.5, 'speech runs at its own pace');
+  for (const t of [0, 7, 20, 23, 27, 100, 200.7]) near(toReal(warp, toShown(warp, t)), t, `round trip ${t}`);
+
+  // Word times are what counts as speech, not the span of the line.
+  const worded = { ...line('w', 0, 30, 'Speaker 1'), words: [{ w: 'x', s: 0, e: 1 }, { w: 'y', s: 25, e: 26 }] };
+  const byWords = buildWarp([worded], quiet);
+  near(toShown(byWords, 25), 1 + 3, 'a pause inside a line is shortened');
+
+  const result = layoutTimeline(lines, sideOf, heightOf, { ...options, quiet });
+  assert.equal(result.quiet.length, 3);
+  near(topOf(result, 'a'), 10 + 2.9 * 20, 'the first line after the opening pause');
+  for (const placed of result.placed) {
+    near(placed.top, yAt(result, placed.line.start), `${placed.line.id} is on its own tick`);
+  }
+  for (const y of [10, 50, 200, 400]) near(yAt(result, timeAt(result, y)), y, `screen round trip ${y}`);
+  const ticks = ticksBetween(result, 0, result.height);
+  assert.ok(!ticks.some((tick) => tick.t > 31 && tick.t < 200), 'no marks inside a shortened pause');
+  for (let i = 1; i < ticks.length; i++) assert.ok(ticks[i].y - ticks[i - 1].y >= 3, 'marks do not crowd');
+
+  // Without the option nothing changes.
+  const plain = layout(lines);
+  near(topOf(plain, 'd'), yAt(plain, 200), 'plain layout');
+  assert.equal(plain.quiet.length, 0);
+}
+
+console.log('transcript-table quiet: ok');

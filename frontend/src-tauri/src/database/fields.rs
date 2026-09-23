@@ -23,11 +23,10 @@
 //! * **no password on this machine** — there is no key, values pass through in
 //!   the clear, and the archive behaves exactly as it did before phase B;
 //! * **unlocked** — values are sealed on write and opened on read;
-//! * **locked** — the key is gone. Writing still works (and writes plaintext,
-//!   which is why the lock screen stops recordings from starting), but reading
-//!   a sealed value fails rather than handing back `tkf1:…` to be drawn as a
-//!   meeting title. Nothing should be reading in that state; if something does,
-//!   the error says so.
+//! * **locked** — the key is gone. Writing fails with [`ArchiveLocked`]
+//!   rather than storing plaintext, and reading a sealed value fails rather
+//!   than handing back `tkf1:…` to be drawn as a meeting title. Nothing should
+//!   be reading or writing in that state; if something does, the error says so.
 
 use crate::security::field::{self, Field};
 use crate::security::session;
@@ -66,6 +65,8 @@ pub const CHUNK_MEETING_NAME: Field = Field::new("transcript_chunks", "meeting_n
 pub const CLIENT_DISPLAY_NAME: Field = Field::new("clients", "display_name");
 pub const CLIENT_NOTES: Field = Field::new("clients", "notes");
 /// A durable speaker profile: the same material as a client.
+pub const PRIVACY_HIDDEN_TERMS: Field = Field::new("privacy_settings", "hidden_terms");
+
 pub const PERSON_NAME: Field = Field::new("people", "display_name");
 pub const PERSON_NOTES: Field = Field::new("people", "notes");
 /// The label a person answers to inside one meeting — and deliberately the
@@ -86,31 +87,80 @@ pub const SPEAKER_LABEL: Field = TRANSCRIPT_SPEAKER;
 pub const CLIENT_LOOKUP: Field = Field::new("clients", "normalized_name");
 pub const PERSON_LOOKUP: Field = Field::new("people", "normalized_name");
 
+/// A write refused because the archive has a password and is locked.
+///
+/// Before this existed a locked archive wrote plaintext, and the idle lock
+/// fires on a timer while long jobs — a summary, a retranscription — are still
+/// running, so their results landed in the database in the clear. Failing the
+/// write loses one job's output, which can be run again; writing it in the
+/// clear loses the promise the password makes, which cannot.
+#[derive(Debug, thiserror::Error)]
+#[error("the archive is locked; {table}.{column} was not written")]
+pub struct ArchiveLocked {
+    pub table: &'static str,
+    pub column: &'static str,
+}
+
+/// Whether an error is [`ArchiveLocked`], for callers that report it apart.
+pub fn is_archive_locked(error: &sqlx::Error) -> bool {
+    matches!(error, sqlx::Error::Encode(inner) if inner.is::<ArchiveLocked>())
+}
+
+/// What a writer gets when there is no key: the plaintext when the archive
+/// has no password, a refusal when it has one and is locked.
+fn keyed<T>(
+    column: Field,
+    sealed: Option<T>,
+    protected: bool,
+) -> Result<Option<T>, sqlx::Error> {
+    match sealed {
+        Some(value) => Ok(Some(value)),
+        None if protected => Err(sqlx::Error::Encode(Box::new(ArchiveLocked {
+            table: column.table,
+            column: column.column,
+        }))),
+        None => Ok(None),
+    }
+}
+
+/// Runs `use_key` with the archive key; `Ok(None)` means "no password, store
+/// the plaintext".
+fn with_key<T>(column: Field, use_key: impl FnOnce(&[u8]) -> T) -> Result<Option<T>, sqlx::Error> {
+    let sealed = session::with_current_key(use_key);
+    // Asked after the key, so a lock landing between the two is still refused.
+    keyed(column, sealed, session::archive_is_protected())
+}
+
 /// Seals a value for storage, or returns it unchanged when the archive has no
-/// password.
-pub fn seal(column: Field, plaintext: &str) -> String {
-    session::with_current_key(|key| field::seal(key, column, plaintext))
-        .unwrap_or_else(|| plaintext.to_string())
+/// password. Refuses while the archive is locked.
+pub fn seal(column: Field, plaintext: &str) -> Result<String, sqlx::Error> {
+    Ok(with_key(column, |key| field::seal(key, column, plaintext))?
+        .unwrap_or_else(|| plaintext.to_string()))
 }
 
 /// Seals a value that SQL still has to compare and join on, so the same text
 /// always gives the same stored value. Only the two speaker columns use it —
 /// see [`crate::security::field::seal_deterministic`] for what that costs.
-pub fn seal_joinable(column: Field, plaintext: &str) -> String {
-    session::with_current_key(|key| field::seal_deterministic(key, column, plaintext))
-        .unwrap_or_else(|| plaintext.to_string())
+pub fn seal_joinable(column: Field, plaintext: &str) -> Result<String, sqlx::Error> {
+    Ok(
+        with_key(column, |key| field::seal_deterministic(key, column, plaintext))?
+            .unwrap_or_else(|| plaintext.to_string()),
+    )
 }
 
 /// The joinable form of an optional value.
-pub fn seal_joinable_opt(column: Field, plaintext: Option<&str>) -> Option<String> {
-    plaintext.map(|value| seal_joinable(column, value))
+pub fn seal_joinable_opt(
+    column: Field,
+    plaintext: Option<&str>,
+) -> Result<Option<String>, sqlx::Error> {
+    plaintext.map(|value| seal_joinable(column, value)).transpose()
 }
 
 /// Seals an optional value. `NULL` stays `NULL`: the schema and half the
 /// queries treat "no note" and "an empty note" as different things, and a
 /// sealed empty string is not `NULL`.
-pub fn seal_opt(column: Field, plaintext: Option<&str>) -> Option<String> {
-    plaintext.map(|value| seal(column, value))
+pub fn seal_opt(column: Field, plaintext: Option<&str>) -> Result<Option<String>, sqlx::Error> {
+    plaintext.map(|value| seal(column, value)).transpose()
 }
 
 /// Reads a stored value back.
@@ -136,9 +186,11 @@ pub fn open_opt(column: Field, stored: Option<String>) -> Result<Option<String>,
 
 /// Turns an already-normalized name into what the lookup column stores: a blind
 /// index when there is a key, the normalized name itself when there is not.
-pub fn lookup(column: Field, normalized: &str) -> String {
-    session::with_current_key(|key| field::blind_index(key, column, normalized))
-        .unwrap_or_else(|| normalized.to_string())
+/// Refuses while the archive is locked: the plain name is no match for a blind
+/// index, and as a written value it would be a name in the clear.
+pub fn lookup(column: Field, normalized: &str) -> Result<String, sqlx::Error> {
+    Ok(with_key(column, |key| field::blind_index(key, column, normalized))?
+        .unwrap_or_else(|| normalized.to_string()))
 }
 
 /// Whether the archive currently has a key to seal with. Used by the conversion
@@ -156,10 +208,26 @@ mod tests {
     fn without_a_key_values_pass_through_untouched() {
         // The state a machine with no password is in, and the one every test in
         // this crate runs in: nothing about the archive changes.
-        assert_eq!(seal(MEETING_TITLE, "Встреча"), "Встреча");
+        assert_eq!(seal(MEETING_TITLE, "Встреча").unwrap(), "Встреча");
         assert_eq!(open(MEETING_TITLE, "Встреча").unwrap(), "Встреча");
-        assert_eq!(seal_opt(CLIENT_NOTES, None), None);
-        assert_eq!(lookup(CLIENT_LOOKUP, "анна"), "анна");
+        assert_eq!(seal_opt(CLIENT_NOTES, None).unwrap(), None);
+        assert_eq!(lookup(CLIENT_LOOKUP, "анна").unwrap(), "анна");
+    }
+
+    #[test]
+    fn a_locked_archive_refuses_instead_of_writing_plaintext() {
+        let error = keyed::<String>(MEETING_TITLE, None, true).unwrap_err();
+        assert!(is_archive_locked(&error));
+        assert!(error.to_string().contains("meetings.title"));
+    }
+
+    #[test]
+    fn no_password_means_plaintext_and_a_key_means_the_sealed_value() {
+        assert!(keyed::<String>(MEETING_TITLE, None, false).unwrap().is_none());
+        assert_eq!(
+            keyed(MEETING_TITLE, Some("tkf1:x".to_string()), true).unwrap(),
+            Some("tkf1:x".to_string())
+        );
     }
 
     #[test]

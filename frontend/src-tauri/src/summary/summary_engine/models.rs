@@ -162,6 +162,13 @@ pub struct ModelDef {
     pub description: String,
 }
 
+/// The commit-pinned URL of a built-in model file; see `crate::model_integrity`.
+fn pinned_url(remote_file: &str) -> String {
+    crate::model_integrity::summary_model(remote_file)
+        .map(|(url, _)| url.to_string())
+        .unwrap_or_else(|| panic!("{remote_file} has no pinned URL"))
+}
+
 /// Get all available built-in AI models
 /// Add new models here - the system will automatically detect and manage them
 pub fn get_available_models() -> Vec<ModelDef> {
@@ -172,7 +179,7 @@ pub fn get_available_models() -> Vec<ModelDef> {
             display_name: "Qwen 3.5 2B (Balanced)".to_string(),
             gguf_file: "Qwen3.5-2B-Q4_K_M.gguf".to_string(),
             template: "qwen3.5_nonthinking".to_string(),
-            download_url: "https://huggingface.co/unsloth/Qwen3.5-2B-GGUF/resolve/main/Qwen3.5-2B-Q4_K_M.gguf".to_string(),
+            download_url: pinned_url("Qwen3.5-2B-Q4_K_M.gguf"),
             size_mb: 1221,
             size_bytes: 1_280_835_840,
             context_size: 32768,
@@ -186,7 +193,7 @@ pub fn get_available_models() -> Vec<ModelDef> {
             display_name: "Qwen 3.5 4B (High Quality)".to_string(),
             gguf_file: "Qwen3.5-4B-Q4_K_M.gguf".to_string(),
             template: "qwen3.5_nonthinking".to_string(),
-            download_url: "https://huggingface.co/unsloth/Qwen3.5-4B-GGUF/resolve/main/Qwen3.5-4B-Q4_K_M.gguf".to_string(),
+            download_url: pinned_url("Qwen3.5-4B-Q4_K_M.gguf"),
             size_mb: 2614,
             size_bytes: 2_740_937_888,
             context_size: 32768,
@@ -200,7 +207,7 @@ pub fn get_available_models() -> Vec<ModelDef> {
             display_name: "Gemma 3 4B (Balanced)".to_string(),
             gguf_file: "gemma-3-4b-it-Q4_K_M.gguf".to_string(),
             template: "gemma3".to_string(),
-            download_url: "https://huggingface.co/bartowski/google_gemma-3-4b-it-GGUF/resolve/main/google_gemma-3-4b-it-Q4_K_M.gguf".to_string(),
+            download_url: pinned_url("google_gemma-3-4b-it-Q4_K_M.gguf"),
             size_mb: 2374,
             size_bytes: 2_489_758_112,
             context_size: 32768,
@@ -214,7 +221,7 @@ pub fn get_available_models() -> Vec<ModelDef> {
             display_name: "Gemma 3 1B (Fast)".to_string(),
             gguf_file: "gemma-3-1b-it-Q8_0.gguf".to_string(),
             template: "gemma3".to_string(),
-            download_url: "https://huggingface.co/bartowski/google_gemma-3-1b-it-GGUF/resolve/main/google_gemma-3-1b-it-Q8_0.gguf".to_string(),
+            download_url: pinned_url("google_gemma-3-1b-it-Q8_0.gguf"),
             size_mb: 1019,
             size_bytes: 1_069_306_624,
             context_size: 32768,
@@ -347,7 +354,7 @@ mod tests {
         assert_eq!(qwen_2b.template, "qwen3.5_nonthinking");
         assert_eq!(
             qwen_2b.download_url,
-            "https://huggingface.co/unsloth/Qwen3.5-2B-GGUF/resolve/main/Qwen3.5-2B-Q4_K_M.gguf"
+            pinned_url("Qwen3.5-2B-Q4_K_M.gguf")
         );
         assert_eq!(qwen_2b.size_mb, 1221);
         assert_eq!(qwen_2b.context_size, 32768);
@@ -360,7 +367,7 @@ mod tests {
         assert_eq!(qwen_4b.template, "qwen3.5_nonthinking");
         assert_eq!(
             qwen_4b.download_url,
-            "https://huggingface.co/unsloth/Qwen3.5-4B-GGUF/resolve/main/Qwen3.5-4B-Q4_K_M.gguf"
+            pinned_url("Qwen3.5-4B-Q4_K_M.gguf")
         );
         assert_eq!(qwen_4b.size_mb, 2614);
         assert_eq!(qwen_4b.context_size, 32768);
@@ -374,7 +381,7 @@ mod tests {
         assert_eq!(gemma_1b.gguf_file, "gemma-3-1b-it-Q8_0.gguf");
         assert_eq!(
             gemma_1b.download_url,
-            "https://huggingface.co/bartowski/google_gemma-3-1b-it-GGUF/resolve/main/google_gemma-3-1b-it-Q8_0.gguf"
+            pinned_url("google_gemma-3-1b-it-Q8_0.gguf")
         );
         assert_eq!(gemma_1b.sampling, SamplingParams::gemma3_instruct(vec!["<end_of_turn>".to_string()]));
         assert_eq!(gemma_1b.sampling.temperature, 1.0);
@@ -388,7 +395,7 @@ mod tests {
         let gemma_4b = get_model_by_name("gemma3:4b").expect("gemma 4b model should exist");
         assert_eq!(
             gemma_4b.download_url,
-            "https://huggingface.co/bartowski/google_gemma-3-4b-it-GGUF/resolve/main/google_gemma-3-4b-it-Q4_K_M.gguf"
+            pinned_url("google_gemma-3-4b-it-Q4_K_M.gguf")
         );
         assert_eq!(gemma_4b.sampling, SamplingParams::gemma3_instruct(vec!["<end_of_turn>".to_string()]));
         assert_eq!(gemma_4b.sampling.temperature, 1.0);

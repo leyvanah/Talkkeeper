@@ -414,7 +414,7 @@ impl PeopleRepository {
         });
         let result =
             sqlx::query("UPDATE people SET notes = ?, updated_at = datetime('now') WHERE id = ?")
-                .bind(fields::seal_opt(fields::PERSON_NOTES, notes.as_deref()))
+                .bind(fields::seal_opt(fields::PERSON_NOTES, notes.as_deref())?)
                 .bind(person_id)
                 .execute(pool)
                 .await?;
@@ -446,9 +446,9 @@ impl PeopleRepository {
                 .bind(fields::seal_joinable(
                     fields::TRANSCRIPT_SPEAKER,
                     &resolved_to,
-                ))
+                )?)
                 .bind(meeting_id)
-                .bind(fields::seal_joinable(fields::TRANSCRIPT_SPEAKER, from))
+                .bind(fields::seal_joinable(fields::TRANSCRIPT_SPEAKER, from)?)
                 .execute(&mut *tx)
                 .await?;
         let count = result.rows_affected();
@@ -456,7 +456,7 @@ impl PeopleRepository {
         if removed_name {
             sqlx::query("DELETE FROM person_speakers WHERE meeting_id = ? AND speaker_label = ?")
                 .bind(meeting_id)
-                .bind(fields::seal_joinable(fields::SPEAKER_LABEL, from))
+                .bind(fields::seal_joinable(fields::SPEAKER_LABEL, from)?)
                 .execute(&mut *tx)
                 .await?;
             delete_orphan_people(&mut tx).await?;
@@ -473,6 +473,8 @@ impl PeopleRepository {
             .await?;
         }
         tx.commit().await?;
+        // Every line of that speaker changed at once; the history no longer fits.
+        super::transcript_history::forget(meeting_id);
         Ok(SpeakerRenameOutcome {
             count,
             speaker: resolved_to,
@@ -490,13 +492,13 @@ impl PeopleRepository {
             "SELECT person_id FROM person_speakers WHERE meeting_id = ? AND speaker_label = ?",
         )
         .bind(meeting_id)
-        .bind(fields::seal_joinable(fields::SPEAKER_LABEL, from))
+        .bind(fields::seal_joinable(fields::SPEAKER_LABEL, from)?)
         .fetch_optional(&mut **tx)
         .await?;
 
         sqlx::query("DELETE FROM person_speakers WHERE meeting_id = ? AND speaker_label = ?")
             .bind(meeting_id)
-            .bind(fields::seal_joinable(fields::SPEAKER_LABEL, from))
+            .bind(fields::seal_joinable(fields::SPEAKER_LABEL, from)?)
             .execute(&mut **tx)
             .await?;
 
@@ -533,8 +535,8 @@ impl PeopleRepository {
                     "UPDATE people SET display_name = ?, normalized_name = ?, \
                      updated_at = datetime('now') WHERE id = ?",
                 )
-                .bind(fields::seal(fields::PERSON_NAME, to))
-                .bind(fields::lookup(fields::PERSON_LOOKUP, &normalized))
+                .bind(fields::seal(fields::PERSON_NAME, to)?)
+                .bind(fields::lookup(fields::PERSON_LOOKUP, &normalized)?)
                 .bind(current)
                 .execute(&mut **tx)
                 .await?;
@@ -550,8 +552,8 @@ impl PeopleRepository {
                      VALUES (?, ?, ?, NULL, datetime('now'), datetime('now'))",
                 )
                 .bind(&id)
-                .bind(fields::seal(fields::PERSON_NAME, to))
-                .bind(fields::lookup(fields::PERSON_LOOKUP, &normalized))
+                .bind(fields::seal(fields::PERSON_NAME, to)?)
+                .bind(fields::lookup(fields::PERSON_LOOKUP, &normalized)?)
                 .execute(&mut **tx)
                 .await?;
                 id
@@ -565,7 +567,7 @@ impl PeopleRepository {
         )
         .bind(person_id)
         .bind(meeting_id)
-        .bind(fields::seal_joinable(fields::SPEAKER_LABEL, to))
+        .bind(fields::seal_joinable(fields::SPEAKER_LABEL, to)?)
         .execute(&mut **tx)
         .await?;
         delete_orphan_people(tx).await?;
@@ -999,7 +1001,7 @@ async fn find_person_by_normalized_name(
     normalized: &str,
 ) -> Result<Option<String>, sqlx::Error> {
     if let Some(id) = sqlx::query_scalar("SELECT id FROM people WHERE normalized_name = ?")
-        .bind(fields::lookup(fields::PERSON_LOOKUP, normalized))
+        .bind(fields::lookup(fields::PERSON_LOOKUP, normalized)?)
         .fetch_optional(&mut **tx)
         .await?
     {
