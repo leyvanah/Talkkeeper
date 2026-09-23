@@ -228,7 +228,11 @@ pub async fn assign(
             continue;
         };
         let label = label_for(speaker.as_deref(), source, local_name.as_deref(), remote_name.as_deref());
-        sqlx::query("UPDATE transcripts SET speaker = ?, source_track = ? WHERE id = ?")
+        // A label a person chose stays; where the line was heard is still recorded.
+        sqlx::query(
+            "UPDATE transcripts SET speaker = CASE WHEN speaker_set_at IS NULL THEN ? ELSE speaker END, \
+             source_track = ? WHERE id = ?",
+        )
             .bind(
                 fields::seal_joinable(fields::TRANSCRIPT_SPEAKER, &label)
                     .map_err(|error| format!("Failed to seal a speaker label: {error}"))?,
