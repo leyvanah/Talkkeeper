@@ -218,9 +218,10 @@ export function TranscriptPanel({
       ) {
         return;
       }
-      const key = event.key.toLowerCase();
-      const redo = key === 'y' || (key === 'z' && event.shiftKey);
-      const undo = key === 'z' && !event.shiftKey;
+      // By the key's place, not its letter, so a Russian layout works too.
+      const key = event.code;
+      const redo = key === 'KeyY' || (key === 'KeyZ' && event.shiftKey);
+      const undo = key === 'KeyZ' && !event.shiftKey;
       if (undo && history.canUndo) {
         event.preventDefault();
         void walkHistory('undo');

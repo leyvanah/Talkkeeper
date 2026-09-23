@@ -79,7 +79,8 @@ export default function GlobalSearchDialog() {
   useEffect(() => {
     const openSearch = () => setOpen(true);
     const onKeyDown = (event: KeyboardEvent) => {
-      if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'k') {
+      // By the key's place, not its letter: on a Russian layout it is «л».
+      if ((event.metaKey || event.ctrlKey) && event.code === 'KeyK') {
         event.preventDefault();
         setOpen((current) => !current);
       }
