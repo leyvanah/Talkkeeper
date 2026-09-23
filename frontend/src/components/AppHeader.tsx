@@ -17,6 +17,7 @@ import React, { createContext, useContext, useEffect, useMemo, useRef, useState 
 import { createPortal } from 'react-dom';
 import { ArrowLeft } from 'lucide-react';
 import { WindowControls } from './WindowControls';
+import { RetranscriptionIndicator } from './shared/RetranscriptionIndicator';
 
 type Back = { label: string; onBack: () => void } | null;
 
@@ -115,7 +116,7 @@ export function AppHeader() {
   return (
     <div
       data-tauri-drag-region="deep"
-      className="flex h-10 shrink-0 items-center gap-2 border-b border-[var(--af-border)] bg-[var(--af-panel)] pl-2 pr-2"
+      className="relative flex h-10 shrink-0 items-center gap-2 border-b border-[var(--af-border)] bg-[var(--af-panel)] pl-2 pr-2"
     >
       {back ? (
         <button
@@ -136,6 +137,8 @@ export function AppHeader() {
       </span>
       {/* Also the free space the window is dragged by, when a page puts nothing here. */}
       <div ref={setSlot} className="flex min-w-0 flex-1 items-center gap-1 self-stretch" />
+      {/* Background work, from any page. */}
+      <RetranscriptionIndicator />
       <WindowControls />
     </div>
   );
