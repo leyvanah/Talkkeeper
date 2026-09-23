@@ -25,7 +25,7 @@ const TranscriptContext = createContext<TranscriptContextType | undefined>(undef
 export function TranscriptProvider({ children }: { children: ReactNode }) {
   const t = useTranslations('app');
   const [transcripts, setTranscripts] = useState<Transcript[]>([]);
-  const [meetingTitle, setMeetingTitle] = useState('+ New Call');
+  const [meetingTitle, setMeetingTitle] = useState('');
 
   // Recording state context - provides backend-synced state
   const recordingState = useRecordingState();
