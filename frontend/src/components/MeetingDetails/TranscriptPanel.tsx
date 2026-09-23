@@ -28,9 +28,12 @@ import { RecordingPlayer, RecordingPlayerHandle } from './RecordingPlayer';
 import { MeetingClientBadge } from '@/components/MeetingClientBadge';
 import { TranscriptTableView } from './TranscriptTableView';
 import { createPlayhead } from '@/lib/playhead';
+import { speakerChoices } from '@/lib/transcript-speakers';
 import { toast } from 'sonner';
 import {
   editTranscriptLine,
+  setTranscriptLineSpeaker,
+  splitTranscriptLine,
   LineEdits,
   removeTranscriptLine,
 } from '@/services/transcriptEditService';
@@ -111,9 +114,16 @@ export function TranscriptPanel({
   const seekTo = useCallback((seconds: number) => playerRef.current?.seek(seconds), []);
   // Corrections, on a saved meeting only. The transcript is read again after
   // each, so both layouts show what was stored rather than a local guess.
+  // Who a line can be given to: the speakers the loaded transcript has.
+  const choices = useMemo(
+    () => speakerChoices((usePagination && segments ? segments : transcripts).map((line) => line.speaker)),
+    [usePagination, segments, transcripts],
+  );
   const lineEdits = useMemo<LineEdits | undefined>(() => {
     if (!meetingId || isRecording) return undefined;
-    const report = (key: 'transcriptEditFailed' | 'transcriptRemoveFailed') => (error: unknown) => {
+    const report = (
+      key: 'transcriptEditFailed' | 'transcriptRemoveFailed' | 'transcriptSpeakerFailed' | 'transcriptSplitFailed',
+    ) => (error: unknown) => {
       toast.error(t(key), { description: error instanceof Error ? error.message : String(error) });
       throw error;
     };
@@ -126,8 +136,18 @@ export function TranscriptPanel({
         await removeTranscriptLine(meetingId, line).catch(report('transcriptRemoveFailed'));
         await onRefetchTranscripts?.();
       },
+      onSetSpeaker: async (line, speaker) => {
+        await setTranscriptLineSpeaker(meetingId, line, speaker).catch(report('transcriptSpeakerFailed'));
+        await onRefetchTranscripts?.();
+      },
+      onSplitLine: async (line, first, second) => {
+        await splitTranscriptLine(meetingId, line, first, second).catch(report('transcriptSplitFailed'));
+        await onRefetchTranscripts?.();
+      },
+      speakers: choices.existing,
+      freshSpeaker: choices.fresh,
     };
-  }, [meetingId, isRecording, onRefetchTranscripts, t]);
+  }, [meetingId, isRecording, onRefetchTranscripts, t, choices]);
 
   // One per meeting: a new recording starts from the top.
   const playhead = useMemo(() => createPlayhead(), [meetingId]);
