@@ -1363,7 +1363,8 @@
     "pickerRecentlyUsed": "Недавние",
     "pickerOtherLanguages": "Другие языки",
     "pickerAllLanguages": "Все языки",
-    "localStackReadFailed": "Не удалось прочитать состояние локального стека"
+    "localStackReadFailed": "Не удалось прочитать состояние локального стека",
+    "minibarHideTitle": "Скрыть панель. Запись продолжится — вернуться можно через значок Talkkeeper в трее"
   },
   "security": {
     "cloudPrivacyTitle": "Обезличивание для облачных моделей",

@@ -20,8 +20,8 @@ use std::time::Duration;
 use tauri::{AppHandle, Manager, Runtime, WebviewUrl, WebviewWindowBuilder};
 
 const MINIBAR_LABEL: &str = "minibar";
-const MINIBAR_WIDTH: f64 = 580.0;
-const MINIBAR_HEIGHT: f64 = 76.0;
+const MINIBAR_WIDTH: f64 = 420.0;
+const MINIBAR_HEIGHT: f64 = 48.0;
 const IPC_CLOSE_DELAY: Duration = Duration::from_millis(500);
 
 // Serialize window lifecycle changes so a queued minimize request cannot race a
@@ -229,6 +229,19 @@ pub async fn exit_compact_mode<R: Runtime>(app: AppHandle<R>) -> Result<(), Stri
     }
     schedule_close_after_ipc(app.clone());
     log::info!("Left compact recording mode");
+    Ok(())
+}
+
+/// Put the compact bar out of sight too. The recording goes on; the main
+/// window stays hidden and comes back from the tray icon, and minimizing it
+/// again brings the bar back.
+#[tauri::command]
+pub async fn hide_compact_bar<R: Runtime>(app: AppHandle<R>) -> Result<(), String> {
+    let _lifecycle = MINIBAR_LIFECYCLE
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    hide_minibar_locked(&app)?;
+    log::info!("Compact recording bar hidden; the recording continues");
     Ok(())
 }
 

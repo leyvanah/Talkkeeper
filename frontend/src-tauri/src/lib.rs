@@ -736,6 +736,7 @@ pub fn run() {
             diarization::rename_meeting_speaker,
             minibar::enter_compact_mode,
             minibar::exit_compact_mode,
+            minibar::hide_compact_bar,
             minibar::stop_recording_from_minibar,
             api::api_get_model_config,
             api::api_save_model_config,

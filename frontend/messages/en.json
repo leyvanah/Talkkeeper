@@ -1363,7 +1363,8 @@
     "pickerRecentlyUsed": "Recently Used",
     "pickerOtherLanguages": "Other Languages",
     "pickerAllLanguages": "All Languages",
-    "localStackReadFailed": "Could not read local stack status"
+    "localStackReadFailed": "Could not read local stack status",
+    "minibarHideTitle": "Hide the bar. The recording goes on — the Talkkeeper tray icon brings the window back"
   },
   "security": {
     "cloudPrivacyTitle": "Hide names from cloud models",
