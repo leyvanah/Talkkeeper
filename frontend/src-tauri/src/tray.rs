@@ -252,10 +252,10 @@ fn show_state_in_icon<R: Runtime>(app: &AppHandle<R>, state: &RecordingState) {
     let (icon, tooltip) = match state {
         RecordingState::Stopped => (base.clone().to_owned(), "Talkkeeper"),
         RecordingState::Paused | RecordingState::Pausing => {
-            (icon_with_dot(base, [245, 158, 11]), "Talkkeeper — recording paused")
+            (icon_with_dot(base, [245, 158, 11]), "Talkkeeper — запись на паузе")
         }
-        RecordingState::Stopping => (icon_with_dot(base, [239, 68, 68]), "Talkkeeper — finishing the recording"),
-        _ => (icon_with_dot(base, [239, 68, 68]), "Talkkeeper — recording"),
+        RecordingState::Stopping => (icon_with_dot(base, [239, 68, 68]), "Talkkeeper — запись завершается"),
+        _ => (icon_with_dot(base, [239, 68, 68]), "Talkkeeper — идёт запись"),
     };
     if let Err(error) = tray.set_icon(Some(icon)) {
         log::warn!("Tray: could not show the recording state in the icon: {}", error);
@@ -379,7 +379,7 @@ fn build_menu<R: Runtime>(
     // If recording is not allowed (during onboarding, no transcription model), show disabled message
     if !can_record {
         builder = builder.item(
-            &MenuItemBuilder::new("⏳ Downloading transcription model...")
+            &MenuItemBuilder::new("⏳ Загружается модель распознавания…")
                 .enabled(false)
                 .build(app)?,
         );
@@ -387,49 +387,49 @@ fn build_menu<R: Runtime>(
         match state {
             RecordingState::Stopped => {
                 builder = builder
-                    .item(&MenuItemBuilder::with_id("toggle_recording", "Start Recording").build(app)?);
+                    .item(&MenuItemBuilder::with_id("toggle_recording", "Начать запись").build(app)?);
             }
             RecordingState::Starting => {
                 builder = builder.item(
-                    &MenuItemBuilder::new("🔄 Starting Recording...")
+                    &MenuItemBuilder::new("🔄 Запись запускается…")
                         .enabled(false)
                         .build(app)?,
                 );
             }
             RecordingState::Recording => {
                 builder = builder
-                    .item(&MenuItemBuilder::with_id("pause_recording", "⏸ Pause Recording").build(app)?)
-                    .item(&MenuItemBuilder::with_id("stop_recording", "⏹ Stop Recording").build(app)?);
+                    .item(&MenuItemBuilder::with_id("pause_recording", "⏸ Пауза").build(app)?)
+                    .item(&MenuItemBuilder::with_id("stop_recording", "⏹ Остановить запись").build(app)?);
             }
             RecordingState::Pausing => {
                 builder = builder
                     .item(
-                        &MenuItemBuilder::new("⏸ Pausing...")
+                        &MenuItemBuilder::new("⏸ Ставим на паузу…")
                             .enabled(false)
                             .build(app)?,
                     )
-                    .item(&MenuItemBuilder::with_id("stop_recording", "⏹ Stop Recording").build(app)?);
+                    .item(&MenuItemBuilder::with_id("stop_recording", "⏹ Остановить запись").build(app)?);
             }
             RecordingState::Paused => {
                 builder = builder
                     .item(
-                        &MenuItemBuilder::with_id("resume_recording", "▶ Resume Recording")
+                        &MenuItemBuilder::with_id("resume_recording", "▶ Продолжить запись")
                             .build(app)?,
                     )
-                    .item(&MenuItemBuilder::with_id("stop_recording", "⏹ Stop Recording").build(app)?);
+                    .item(&MenuItemBuilder::with_id("stop_recording", "⏹ Остановить запись").build(app)?);
             }
             RecordingState::Resuming => {
                 builder = builder
                     .item(
-                        &MenuItemBuilder::new("▶ Resuming...")
+                        &MenuItemBuilder::new("▶ Продолжаем…")
                             .enabled(false)
                             .build(app)?,
                     )
-                    .item(&MenuItemBuilder::with_id("stop_recording", "⏹ Stop Recording").build(app)?);
+                    .item(&MenuItemBuilder::with_id("stop_recording", "⏹ Остановить запись").build(app)?);
             }
             RecordingState::Stopping => {
                 builder = builder.item(
-                    &MenuItemBuilder::new("⏹ Stopping...")
+                    &MenuItemBuilder::new("⏹ Останавливаем…")
                         .enabled(false)
                         .build(app)?,
                 );
@@ -439,8 +439,8 @@ fn build_menu<R: Runtime>(
 
     builder = builder
         .item(&PredefinedMenuItem::separator(app)?)
-        .item(&MenuItemBuilder::with_id("open_window", "Open Main Window").build(app)?)
-        .item(&MenuItemBuilder::with_id("settings", "Settings").build(app)?);
+        .item(&MenuItemBuilder::with_id("open_window", "Открыть окно").build(app)?)
+        .item(&MenuItemBuilder::with_id("settings", "Настройки").build(app)?);
 
     // No "Check for Updates" entry: the app has no update source of its own
     // yet, and the inherited one would offer the original project's builds.
@@ -448,7 +448,7 @@ fn build_menu<R: Runtime>(
 
     builder
         .item(&PredefinedMenuItem::separator(app)?)
-        .item(&MenuItemBuilder::with_id("quit", "Quit").build(app)?)
+        .item(&MenuItemBuilder::with_id("quit", "Выйти").build(app)?)
         .build()
 }
 

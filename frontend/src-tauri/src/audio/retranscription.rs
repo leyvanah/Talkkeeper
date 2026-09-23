@@ -131,7 +131,8 @@ async fn start_retranscription<R: Runtime>(
     // The external service holds its own model - there is nothing local to unload
     let use_external = provider.as_deref() == Some("externalStt");
     let use_gigaam = provider.as_deref() == Some("gigaam");
-    let batch_lease = super::common::acquire_stt_batch_lease().await;
+    // Held for the whole job, except while it steps aside for a recording.
+    let mut batch_lease = Some(super::common::acquire_stt_batch_lease().await);
     let result = run_retranscription(
         app.clone(),
         meeting_id.clone(),
@@ -140,6 +141,7 @@ async fn start_retranscription<R: Runtime>(
         model,
         provider,
         initial_prompt,
+        &mut batch_lease,
     )
     .await;
     drop(batch_lease);
@@ -358,6 +360,7 @@ fn create_source_labeled_segments(
 }
 
 /// Internal function to run retranscription
+#[allow(clippy::too_many_arguments)]
 async fn run_retranscription<R: Runtime>(
     app: AppHandle<R>,
     meeting_id: String,
@@ -366,6 +369,7 @@ async fn run_retranscription<R: Runtime>(
     model: Option<String>,
     provider: Option<String>,
     initial_prompt: Option<String>,
+    lease: &mut Option<super::common::SttBatchLease>,
 ) -> Result<RetranscriptionResult> {
     let folder_path = PathBuf::from(&meeting_folder_path);
     let audio_path = find_audio_file(&folder_path)?;
@@ -407,6 +411,8 @@ async fn run_retranscription<R: Runtime>(
         if RETRANSCRIPTION_CANCELLED.load(Ordering::SeqCst) {
             return Err(anyhow!("Retranscription cancelled"));
         }
+        // Finding speech is heavy too; it waits for a recording like the rest.
+        step_aside_for_recording(&app, &meeting_id, lease, 5).await?;
 
         emit_progress(
             &app,
@@ -568,12 +574,12 @@ async fn run_retranscription<R: Runtime>(
     emit_progress(&app, &meeting_id, "transcribing", 25, "Loading transcription engine...");
 
     // Initialize the appropriate engine once (not per-segment)
-    let whisper_engine = if !use_parakeet && !use_external && !use_gigaam {
+    let mut whisper_engine = if !use_parakeet && !use_external && !use_gigaam {
         Some(get_or_init_whisper(&app, model.as_deref()).await?)
     } else {
         None
     };
-    let parakeet_engine = if use_parakeet {
+    let mut parakeet_engine = if use_parakeet {
         Some(get_or_init_parakeet(&app, model.as_deref()).await?)
     } else {
         None
@@ -583,7 +589,7 @@ async fn run_retranscription<R: Runtime>(
     } else {
         None
     };
-    let gigaam_engine = if use_gigaam {
+    let mut gigaam_engine = if use_gigaam {
         Some(super::import::get_or_init_gigaam().await?)
     } else {
         None
@@ -633,6 +639,20 @@ async fn run_retranscription<R: Runtime>(
 
         // Calculate progress (25% to 80% range for transcription)
         let progress = 25 + ((i as f32 / processable_count as f32) * 55.0) as u32;
+
+        // A recording started meanwhile has the machine first. The model may
+        // have been let go while the job waited, so it is asked for again.
+        if step_aside_for_recording(&app, &meeting_id, lease, progress).await? {
+            if let Some(engine) = whisper_engine.as_mut() {
+                *engine = get_or_init_whisper(&app, model.as_deref()).await?;
+            }
+            if let Some(engine) = parakeet_engine.as_mut() {
+                *engine = get_or_init_parakeet(&app, model.as_deref()).await?;
+            }
+            if let Some(engine) = gigaam_engine.as_mut() {
+                *engine = super::import::get_or_init_gigaam().await?;
+            }
+        }
         let segment_duration_sec = (segment.end_timestamp_ms - segment.start_timestamp_ms) / 1000.0;
         emit_progress(
             &app,
@@ -910,6 +930,42 @@ async fn run_retranscription<R: Runtime>(
         duration_seconds,
         language,
     })
+}
+
+/// A recording comes first. While one is on, the job waits between segments
+/// and lets go of the engine, so the recording is neither slowed down by it
+/// nor made to wait for it when it stops; it picks up where it was once the
+/// recording ends. Returns whether it waited.
+async fn step_aside_for_recording<R: Runtime>(
+    app: &AppHandle<R>,
+    meeting_id: &str,
+    lease: &mut Option<super::common::SttBatchLease>,
+    progress: u32,
+) -> Result<bool> {
+    if !crate::audio::recording_commands::is_recording_active() {
+        return Ok(false);
+    }
+    info!("Retranscription paused while a recording is on");
+    *lease = None;
+    let mut waited_secs: u64 = 0;
+    while crate::audio::recording_commands::is_recording_active() {
+        if RETRANSCRIPTION_CANCELLED.load(Ordering::SeqCst) {
+            return Err(anyhow!("Retranscription cancelled"));
+        }
+        // Said again now and then: the window takes a job it has not heard
+        // from for minutes for a stalled one, and a recording lasts longer.
+        if waited_secs % 30 == 0 {
+            emit_progress(app, meeting_id, "paused", progress, "Paused while recording");
+        }
+        // Waiting is not idleness: the idle unloader must leave the model be.
+        super::common::mark_stt_activity();
+        tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+        waited_secs += 1;
+    }
+    *lease = Some(super::common::acquire_stt_batch_lease().await);
+    info!("Retranscription resumed after the recording");
+    emit_progress(app, meeting_id, "transcribing", progress, "Resuming...");
+    Ok(true)
 }
 
 /// Emit progress event

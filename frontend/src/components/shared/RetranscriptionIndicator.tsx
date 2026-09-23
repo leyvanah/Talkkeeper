@@ -15,7 +15,7 @@
 
 import { useState } from 'react';
 import { useTranslations } from 'next-intl';
-import { Loader2, X } from 'lucide-react';
+import { Loader2, Pause, X } from 'lucide-react';
 import { toast } from 'sonner';
 import { useRetranscription } from '@/contexts/RetranscriptionContext';
 
@@ -33,7 +33,9 @@ export function RetranscriptionIndicator() {
   // Never a bare zero: a bar with nothing in it reads as "stuck", not "starting"
   const visibleProgress = Math.max(2, Math.min(100, ambientStatus.progress));
 
-  const detail = ambientStatus.message || t('postCallPreparing');
+  // The job steps aside while a recording is on, and says so.
+  const paused = job?.stage === 'paused';
+  const detail = paused ? t('postCallPausedDetail') : ambientStatus.message || t('postCallPreparing');
 
   return (
     <>
@@ -43,8 +45,12 @@ export function RetranscriptionIndicator() {
         title={detail}
         className="flex shrink-0 items-center gap-1.5 rounded-md px-1.5 text-xs text-[var(--af-text-2)]"
       >
-        <Loader2 size={13} className="shrink-0 animate-spin text-[var(--af-text-3)]" />
-        <span className="hidden max-w-[12rem] truncate lg:inline">{t('postCallImprovingTranscript')}</span>
+        {paused
+          ? <Pause size={13} className="shrink-0 text-[var(--af-text-3)]" />
+          : <Loader2 size={13} className="shrink-0 animate-spin text-[var(--af-text-3)]" />}
+        <span className="hidden max-w-[14rem] truncate lg:inline">
+          {paused ? t('postCallPaused') : t('postCallImprovingTranscript')}
+        </span>
         <span className="tabular-nums text-[var(--af-text-3)]">{Math.round(ambientStatus.progress)}%</span>
         <span className="sr-only">{detail}</span>
         {/* The work runs with no window of its own, so this is the only place

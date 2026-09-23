@@ -39,6 +39,71 @@ pub use super::transcription::TranscriptUpdate;
 // Simple recording state tracking
 static IS_RECORDING: AtomicBool = AtomicBool::new(false);
 static IS_STOPPING: AtomicBool = AtomicBool::new(false);
+/// Whether the recording on now has its speech recognised as it goes. Off, it
+/// is only sound, like a dictaphone, and its text is made afterwards.
+static LIVE_TRANSCRIPTION: AtomicBool = AtomicBool::new(false);
+
+/// Starting and stopping a recording, one at a time. Apart from the engine's
+/// own lock, which a transcription job holds for as long as it runs: a
+/// recording must neither wait for that job to start nor to stop.
+static RECORDING_LIFECYCLE_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+/// How long a recording waits for the engine before it starts without it.
+const ENGINE_WAIT: std::time::Duration = std::time::Duration::from_secs(3);
+
+/// Whether the recording on now shows its text as it goes.
+#[tauri::command]
+pub fn recording_live_transcription() -> bool {
+    IS_RECORDING.load(Ordering::SeqCst) && LIVE_TRANSCRIPTION.load(Ordering::SeqCst)
+}
+
+/// Whether a recording started now would have live text: asked before the
+/// model is readied for it, so a recording that will be only sound neither
+/// loads a model nor touches the one a transcription job is using.
+#[tauri::command]
+pub async fn recording_would_be_live<R: Runtime>(app: AppHandle<R>) -> bool {
+    let wanted = match super::recording_preferences::load_recording_preferences(&app).await {
+        Ok(prefs) => prefs.live_transcription,
+        Err(_) => true,
+    };
+    wanted && !super::retranscription::is_retranscription_in_progress()
+}
+
+/// The engine for a recording's live text, if it can have it now. Not when
+/// the owner turned live text off, and not when a transcription job has the
+/// engine: the recording then starts at once, without live text, rather than
+/// wait for the job.
+async fn engine_for_live_text<R: Runtime>(
+    app: &AppHandle<R>,
+) -> Option<tokio::sync::OwnedMutexGuard<()>> {
+    let wanted = match super::recording_preferences::load_recording_preferences(app).await {
+        Ok(prefs) => prefs.live_transcription,
+        Err(_) => true,
+    };
+    if !wanted {
+        info!("Live transcription is off: recording sound only");
+        return None;
+    }
+    if super::retranscription::is_retranscription_in_progress() {
+        info!("A transcription job has the engine: recording sound only");
+        return None;
+    }
+    match tokio::time::timeout(ENGINE_WAIT, super::common::acquire_engine_lifecycle_lock()).await {
+        Ok(guard) => Some(guard),
+        Err(_) => {
+            info!("The engine is busy: recording sound only");
+            None
+        }
+    }
+}
+
+/// A recording without live text still hands its audio to a channel; it is
+/// emptied here and nothing is recognised.
+fn start_sound_only_task(
+    mut receiver: tokio::sync::mpsc::UnboundedReceiver<super::AudioChunk>,
+) -> JoinHandle<()> {
+    tokio::spawn(async move { while receiver.recv().await.is_some() {} })
+}
 
 struct StopGuard;
 
@@ -112,8 +177,8 @@ fn install_fatal_error_callback<R: Runtime>(
             // A stream can fail while startup is still installing global state.
             // Serialize teardown behind startup so final-save never races a
             // missing manager/listener or a late recording-started event.
-            let _engine_lifecycle_guard =
-                super::common::acquire_engine_lifecycle_lock().await;
+            let _recording_lifecycle = RECORDING_LIFECYCLE_LOCK.lock().await;
+            let _engine_lifecycle_guard = engine_for_stopping().await;
             if IS_RECORDING.load(Ordering::SeqCst) {
                 let _ = stop_recording_inner(
                     app_for_stop,
@@ -170,7 +235,7 @@ pub async fn start_recording_with_meeting_name<R: Runtime>(
         meeting_name
     );
 
-    let engine_lifecycle_guard = super::common::acquire_engine_lifecycle_lock().await;
+    let _recording_lifecycle = RECORDING_LIFECYCLE_LOCK.lock().await;
 
     // Check if already recording
     let current_recording_state = IS_RECORDING.load(Ordering::SeqCst);
@@ -179,9 +244,14 @@ pub async fn start_recording_with_meeting_name<R: Runtime>(
         return Err("Recording already in progress".to_string());
     }
 
+    let engine_lifecycle_guard = engine_for_live_text(&app).await;
+    let live = engine_lifecycle_guard.is_some();
+
     // Validate that transcription models are available before starting recording
     info!("🔍 Validating transcription model availability before starting recording...");
-    if let Err(validation_error) = transcription::validate_transcription_model_ready(&app).await {
+    if !live {
+        info!("Recording without live transcription; the model is not needed now");
+    } else if let Err(validation_error) = transcription::validate_transcription_model_ready(&app).await {
         error!("Model validation failed: {}", validation_error);
 
         // Emit error event for frontend - actionable: false to show toast instead of modal
@@ -391,16 +461,25 @@ pub async fn start_recording_with_meeting_name<R: Runtime>(
     info!("🔍 Setting IS_RECORDING to true and resetting SPEECH_DETECTED_EMITTED");
     IS_RECORDING.store(true, Ordering::SeqCst);
 
+    LIVE_TRANSCRIPTION.store(live, Ordering::SeqCst);
+
     // Live speaker identification: label transcript segments with individual
     // voices as they arrive. Best-effort — if the models aren't installed we
-    // simply fall back to capture-source labels.
-    if let Err(e) = crate::diarization::online::start() {
-        info!("Live speaker identification unavailable: {}", e);
+    // simply fall back to capture-source labels. Without live text there are
+    // no segments to label.
+    if live {
+        if let Err(e) = crate::diarization::online::start() {
+            info!("Live speaker identification unavailable: {}", e);
+        }
     }
     reset_speech_detected_flag(); // Reset for new recording session
 
     // Start optimized parallel transcription task and store handle
-    let task_handle = transcription::start_transcription_task(app.clone(), transcription_receiver);
+    let task_handle = if live {
+        transcription::start_transcription_task(app.clone(), transcription_receiver)
+    } else {
+        start_sound_only_task(transcription_receiver)
+    };
     {
         let mut global_task = lock_or_recover(&TRANSCRIPTION_TASK);
         *global_task = Some(task_handle);
@@ -456,7 +535,8 @@ pub async fn start_recording_with_meeting_name<R: Runtime>(
     if let Err(error) = app.emit("recording-started", serde_json::json!({
         "message": "Recording started successfully with parallel processing",
         "devices": ["Default Microphone", "Default System Audio"],
-        "workers": 3
+        "workers": 3,
+        "liveTranscription": live
     })) {
         warn!("Recording started, but the recording-started event failed: {}", error);
     }
@@ -491,7 +571,7 @@ pub async fn start_recording_with_devices_and_meeting<R: Runtime>(
         mic_device_name, system_device_name, meeting_name
     );
 
-    let engine_lifecycle_guard = super::common::acquire_engine_lifecycle_lock().await;
+    let _recording_lifecycle = RECORDING_LIFECYCLE_LOCK.lock().await;
 
     // Check if already recording
     let current_recording_state = IS_RECORDING.load(Ordering::SeqCst);
@@ -500,9 +580,14 @@ pub async fn start_recording_with_devices_and_meeting<R: Runtime>(
         return Err("Recording already in progress".to_string());
     }
 
+    let engine_lifecycle_guard = engine_for_live_text(&app).await;
+    let live = engine_lifecycle_guard.is_some();
+
     // Validate that transcription models are available before starting recording
     info!("🔍 Validating transcription model availability before starting recording...");
-    if let Err(validation_error) = transcription::validate_transcription_model_ready(&app).await {
+    if !live {
+        info!("Recording without live transcription; the model is not needed now");
+    } else if let Err(validation_error) = transcription::validate_transcription_model_ready(&app).await {
         error!("Model validation failed: {}", validation_error);
 
         // Emit error event for frontend - actionable: false to show toast instead of modal
@@ -629,16 +714,25 @@ pub async fn start_recording_with_devices_and_meeting<R: Runtime>(
     info!("🔍 Setting IS_RECORDING to true and resetting SPEECH_DETECTED_EMITTED");
     IS_RECORDING.store(true, Ordering::SeqCst);
 
+    LIVE_TRANSCRIPTION.store(live, Ordering::SeqCst);
+
     // Live speaker identification: label transcript segments with individual
     // voices as they arrive. Best-effort — if the models aren't installed we
-    // simply fall back to capture-source labels.
-    if let Err(e) = crate::diarization::online::start() {
-        info!("Live speaker identification unavailable: {}", e);
+    // simply fall back to capture-source labels. Without live text there are
+    // no segments to label.
+    if live {
+        if let Err(e) = crate::diarization::online::start() {
+            info!("Live speaker identification unavailable: {}", e);
+        }
     }
     reset_speech_detected_flag(); // Reset for new recording session
 
     // Start optimized parallel transcription task and store handle
-    let task_handle = transcription::start_transcription_task(app.clone(), transcription_receiver);
+    let task_handle = if live {
+        transcription::start_transcription_task(app.clone(), transcription_receiver)
+    } else {
+        start_sound_only_task(transcription_receiver)
+    };
     {
         let mut global_task = lock_or_recover(&TRANSCRIPTION_TASK);
         *global_task = Some(task_handle);
@@ -695,7 +789,8 @@ pub async fn start_recording_with_devices_and_meeting<R: Runtime>(
             mic_device_name.unwrap_or_else(|| "Default Microphone".to_string()),
             system_device_name.unwrap_or_else(|| "Default System Audio".to_string())
         ],
-        "workers": 3
+        "workers": 3,
+        "liveTranscription": live
     })) {
         warn!("Recording started, but the recording-started event failed: {}", error);
     }
@@ -714,7 +809,8 @@ pub async fn stop_recording<R: Runtime>(
     app: AppHandle<R>,
     args: RecordingArgs,
 ) -> Result<StopOutcome, String> {
-    let _engine_lifecycle_guard = super::common::acquire_engine_lifecycle_lock().await;
+    let _recording_lifecycle = RECORDING_LIFECYCLE_LOCK.lock().await;
+    let _engine_lifecycle_guard = engine_for_stopping().await;
     stop_recording_inner(app, args, false).await
 }
 
@@ -724,8 +820,20 @@ pub async fn stop_recording_from_compact<R: Runtime>(
     app: AppHandle<R>,
     args: RecordingArgs,
 ) -> Result<StopOutcome, String> {
-    let _engine_lifecycle_guard = super::common::acquire_engine_lifecycle_lock().await;
+    let _recording_lifecycle = RECORDING_LIFECYCLE_LOCK.lock().await;
+    let _engine_lifecycle_guard = engine_for_stopping().await;
     stop_recording_inner(app, args, true).await
+}
+
+/// Stopping a recording with live text finishes its recognition and lets the
+/// model go, so it needs the engine. One that was only sound does not, and
+/// must not wait for a transcription job that has it.
+async fn engine_for_stopping() -> Option<tokio::sync::OwnedMutexGuard<()>> {
+    if LIVE_TRANSCRIPTION.load(Ordering::SeqCst) {
+        Some(super::common::acquire_engine_lifecycle_lock().await)
+    } else {
+        None
+    }
 }
 
 async fn stop_recording_inner<R: Runtime>(
@@ -888,81 +996,85 @@ async fn stop_recording_inner<R: Runtime>(
         }),
     );
 
-    info!("🧠 All transcript chunks processed. Now safely unloading transcription model...");
+    // A recording that was only sound never used the model, and a
+    // transcription job waiting for this one to end may be holding it.
+    if LIVE_TRANSCRIPTION.load(Ordering::SeqCst) {
+        info!("🧠 All transcript chunks processed. Now safely unloading transcription model...");
 
-    // Determine which provider was used and unload the appropriate model (with timeout)
-    let config = match tokio::time::timeout(
-        tokio::time::Duration::from_secs(30), // 30 seconds max for DB operation
-        crate::api::api::api_get_transcript_config(
-            app.clone(),
-            app.clone().state(),
-            None,
+        // Determine which provider was used and unload the appropriate model (with timeout)
+        let config = match tokio::time::timeout(
+            tokio::time::Duration::from_secs(30), // 30 seconds max for DB operation
+            crate::api::api::api_get_transcript_config(
+                app.clone(),
+                app.clone().state(),
+                None,
+            )
         )
-    )
-    .await
-    {
-        Ok(Ok(Some(config))) => Some(config.provider),
-        Ok(Ok(None)) => None,
-        Ok(Err(e)) => {
-            warn!("⚠️ Failed to get transcript config: {:?}", e);
-            None
-        }
-        Err(_) => {
-            warn!("⏱️ Transcript config timeout (30s), continuing shutdown");
-            None
-        }
-    };
-
-    match config.as_deref() {
-        Some("parakeet") => {
-            info!("🦜 Unloading Parakeet model...");
-            let engine_clone = {
-                let engine_guard = crate::parakeet_engine::commands::PARAKEET_ENGINE
-                    .lock()
-                    .unwrap();
-                engine_guard.as_ref().cloned()
-            };
-
-            if let Some(engine) = engine_clone {
-                let current_model = engine
-                    .get_current_model()
-                    .await
-                    .unwrap_or_else(|| "unknown".to_string());
-                info!("Current Parakeet model before unload: '{}'", current_model);
-
-                if engine.unload_model().await {
-                    info!("✅ Parakeet model '{}' unloaded successfully", current_model);
-                } else {
-                    warn!("⚠️ Failed to unload Parakeet model '{}'", current_model);
-                }
-            } else {
-                warn!("⚠️ No Parakeet engine found to unload model");
+        .await
+        {
+            Ok(Ok(Some(config))) => Some(config.provider),
+            Ok(Ok(None)) => None,
+            Ok(Err(e)) => {
+                warn!("⚠️ Failed to get transcript config: {:?}", e);
+                None
             }
-        }
-        _ => {
-            // Default to Whisper
-            info!("🎤 Unloading Whisper model...");
-            let engine_clone = {
-                let engine_guard = crate::whisper_engine::commands::WHISPER_ENGINE
-                    .lock()
-                    .unwrap();
-                engine_guard.as_ref().cloned()
-            };
+            Err(_) => {
+                warn!("⏱️ Transcript config timeout (30s), continuing shutdown");
+                None
+            }
+        };
 
-            if let Some(engine) = engine_clone {
-                let current_model = engine
-                    .get_current_model()
-                    .await
-                    .unwrap_or_else(|| "unknown".to_string());
-                info!("Current Whisper model before unload: '{}'", current_model);
+        match config.as_deref() {
+            Some("parakeet") => {
+                info!("🦜 Unloading Parakeet model...");
+                let engine_clone = {
+                    let engine_guard = crate::parakeet_engine::commands::PARAKEET_ENGINE
+                        .lock()
+                        .unwrap();
+                    engine_guard.as_ref().cloned()
+                };
 
-                if engine.unload_model().await {
-                    info!("✅ Whisper model '{}' unloaded successfully", current_model);
+                if let Some(engine) = engine_clone {
+                    let current_model = engine
+                        .get_current_model()
+                        .await
+                        .unwrap_or_else(|| "unknown".to_string());
+                    info!("Current Parakeet model before unload: '{}'", current_model);
+
+                    if engine.unload_model().await {
+                        info!("✅ Parakeet model '{}' unloaded successfully", current_model);
+                    } else {
+                        warn!("⚠️ Failed to unload Parakeet model '{}'", current_model);
+                    }
                 } else {
-                    warn!("⚠️ Failed to unload Whisper model '{}'", current_model);
+                    warn!("⚠️ No Parakeet engine found to unload model");
                 }
-            } else {
-                warn!("⚠️ No Whisper engine found to unload model");
+            }
+            _ => {
+                // Default to Whisper
+                info!("🎤 Unloading Whisper model...");
+                let engine_clone = {
+                    let engine_guard = crate::whisper_engine::commands::WHISPER_ENGINE
+                        .lock()
+                        .unwrap();
+                    engine_guard.as_ref().cloned()
+                };
+
+                if let Some(engine) = engine_clone {
+                    let current_model = engine
+                        .get_current_model()
+                        .await
+                        .unwrap_or_else(|| "unknown".to_string());
+                    info!("Current Whisper model before unload: '{}'", current_model);
+
+                    if engine.unload_model().await {
+                        info!("✅ Whisper model '{}' unloaded successfully", current_model);
+                    } else {
+                        warn!("⚠️ Failed to unload Whisper model '{}'", current_model);
+                    }
+                } else {
+                    warn!("⚠️ No Whisper engine found to unload model");
+                }
             }
         }
     }
