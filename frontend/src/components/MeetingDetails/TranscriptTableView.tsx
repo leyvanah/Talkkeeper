@@ -51,7 +51,8 @@ import {
 import { getSpeakerSides, sideOf, SpeakerSide } from '@/services/speakerRoleService';
 import { Playhead } from '@/lib/playhead';
 import { TranscriptLineEditor } from './TranscriptLineEditor';
-import type { LineEdits as TableLineEdits } from '@/services/transcriptEditService';
+import type { LineEdits as TableLineEdits, LineRef } from '@/services/transcriptEditService';
+import { SpeakerLabelMenu } from './SpeakerLabelMenu';
 
 interface TranscriptTableViewProps {
   segments: TranscriptSegmentData[];
@@ -199,6 +200,7 @@ const Bubble = memo(function Bubble({
   onRenameSpeaker,
   onMeasure,
   lineEdits,
+  nextLine,
 }: {
   placed: PlacedLine;
   pieces: Piece[];
@@ -210,6 +212,8 @@ const Bubble = memo(function Bubble({
   onRenameSpeaker?: (speaker: string) => void;
   onMeasure: (key: string, element: HTMLElement | null) => void;
   lineEdits?: TableLineEdits;
+  /** The line said after this one, which it can be joined with. */
+  nextLine?: LineRef;
 }) {
   const t = useTranslations('recording');
   const tm = useTranslations('meetingDetails');
@@ -228,21 +232,24 @@ const Bubble = memo(function Bubble({
     >
       <div className="flex items-center gap-1.5 text-[11px]" style={{ height: LABEL_ROW }}>
         <span aria-hidden className={`h-1.5 w-1.5 shrink-0 rounded-full ${speakerDot(line.speaker)}`} />
-        {line.speaker &&
-          (onRenameSpeaker ? (
-            <button
-              type="button"
-              onClick={() => onRenameSpeaker(line.speaker!)}
-              title={t('renameSpeakerTitle', { speaker: line.speaker })}
-              className={`truncate font-semibold ${speakerColor(line.speaker)} hover:underline`}
-            >
-              {displaySpeaker(line.speaker, userName)}
-            </button>
-          ) : (
-            <span className={`truncate font-semibold ${speakerColor(line.speaker)}`}>
-              {displaySpeaker(line.speaker, userName)}
-            </span>
-          ))}
+        {line.speaker && (
+          <SpeakerLabelMenu
+            speaker={line.speaker}
+            label={displaySpeaker(line.speaker, userName)}
+            displayOf={(option) => displaySpeaker(option, userName)}
+            className={`truncate font-semibold ${speakerColor(line.speaker)}`}
+            onRename={onRenameSpeaker}
+            choice={
+              lineEdits
+                ? {
+                    existing: lineEdits.speakers,
+                    fresh: lineEdits.freshSpeaker,
+                    choose: (next) => lineEdits.onSetSpeaker(line, next),
+                  }
+                : undefined
+            }
+          />
+        )}
         <span className="shrink-0 tabular-nums text-[var(--af-text-3)]">
           {clock(line.start, true)}
           {line.end != null && line.end > line.start && ` – ${clock(line.end, true)}`}
@@ -271,14 +278,8 @@ const Bubble = memo(function Bubble({
             initialText={line.text}
             onSave={(text) => lineEdits.onEditLine(line, text)}
             onRemove={() => lineEdits.onRemoveLine(line)}
-            onSetSpeaker={(speaker) => lineEdits.onSetSpeaker(line, speaker)}
             onSplit={(first, second) => lineEdits.onSplitLine(line, first, second)}
-            speakers={{
-              current: line.speaker,
-              existing: lineEdits.speakers,
-              fresh: lineEdits.freshSpeaker,
-              label: (option) => displaySpeaker(option, userName),
-            }}
+            onMergeNext={nextLine ? () => lineEdits.onMergeLines(line, nextLine) : undefined}
             onClose={() => setEditing(false)}
           />
         </div>
@@ -403,6 +404,16 @@ export function TranscriptTableView({
       })),
     [segments],
   );
+  // Joining goes with the line said next, whichever column it is in.
+  const nextOf = useMemo(() => {
+    const byTime = [...lines].sort((a, b) => a.start - b.start);
+    return new Map<string, LineRef>(
+      byTime.slice(0, -1).map((line, index) => {
+        const next = byTime[index + 1];
+        return [line.id, { id: next.id, ids: next.ids }];
+      }),
+    );
+  }, [lines]);
   const piecesOf = useMemo(
     () => new Map(lines.map((line) => [line.id, piecesForLine(line)])),
     [lines],
@@ -810,6 +821,7 @@ export function TranscriptTableView({
               onRenameSpeaker={onRenameSpeaker}
               onMeasure={onMeasure}
               lineEdits={lineEdits}
+              nextLine={nextOf.get(placed.line.id)}
             />
           ))}
         </div>
