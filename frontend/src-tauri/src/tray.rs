@@ -1,4 +1,5 @@
 use tauri::{
+    image::Image,
     menu::{MenuBuilder, MenuItemBuilder, PredefinedMenuItem},
     tray::TrayIconBuilder,
     AppHandle, Manager, Runtime,
@@ -214,6 +215,54 @@ fn check_updates_handler<R: Runtime>(app: &AppHandle<R>) {
     }
 }
 
+/// A dot in the icon's lower right corner, over a dark ring so it reads on a
+/// light taskbar and a dark one alike.
+fn icon_with_dot(base: &Image<'_>, colour: [u8; 3]) -> Image<'static> {
+    let (width, height) = (base.width(), base.height());
+    let mut rgba = base.rgba().to_vec();
+    let size = width.min(height) as f32;
+    let radius = size * 0.26;
+    let ring = radius + size * 0.06;
+    let (cx, cy) = (width as f32 - ring, height as f32 - ring);
+    for y in 0..height {
+        for x in 0..width {
+            let distance = ((x as f32 + 0.5 - cx).powi(2) + (y as f32 + 0.5 - cy).powi(2)).sqrt();
+            let pixel = [
+                if distance <= radius { colour[0] } else if distance <= ring { 16 } else { continue },
+                if distance <= radius { colour[1] } else { 16 },
+                if distance <= radius { colour[2] } else { 16 },
+                255,
+            ];
+            let at = ((y * width + x) * 4) as usize;
+            rgba[at..at + 4].copy_from_slice(&pixel);
+        }
+    }
+    Image::new_owned(rgba, width, height)
+}
+
+/// The icon and its tooltip say whether a recording is going on, so it is not
+/// lost from sight when both the window and the compact bar are put away.
+fn show_state_in_icon<R: Runtime>(app: &AppHandle<R>, state: &RecordingState) {
+    let Some(tray) = app.tray_by_id("main-tray") else {
+        return;
+    };
+    let Some(base) = app.default_window_icon() else {
+        return;
+    };
+    let (icon, tooltip) = match state {
+        RecordingState::Stopped => (base.clone().to_owned(), "Talkkeeper"),
+        RecordingState::Paused | RecordingState::Pausing => {
+            (icon_with_dot(base, [245, 158, 11]), "Talkkeeper — recording paused")
+        }
+        RecordingState::Stopping => (icon_with_dot(base, [239, 68, 68]), "Talkkeeper — finishing the recording"),
+        _ => (icon_with_dot(base, [239, 68, 68]), "Talkkeeper — recording"),
+    };
+    if let Err(error) = tray.set_icon(Some(icon)) {
+        log::warn!("Tray: could not show the recording state in the icon: {}", error);
+    }
+    let _ = tray.set_tooltip(Some(tooltip));
+}
+
 pub fn update_tray_menu<R: Runtime>(app: &AppHandle<R>) {
     // For sync update, spawn async task to get current state
     let app_clone = app.clone();
@@ -226,6 +275,7 @@ pub fn update_tray_menu<R: Runtime>(app: &AppHandle<R>) {
 
 pub fn set_tray_state<R: Runtime>(app: &AppHandle<R>, state: RecordingState) {
     log::info!("Tray: Setting intermediate state: {:?}", state);
+    show_state_in_icon(app, &state);
     // During recording state transitions, we assume recording is allowed (we're already recording)
     if let Ok(menu) = build_menu(app, state, true) {
         if let Some(tray) = app.tray_by_id("main-tray") {
@@ -305,6 +355,7 @@ pub async fn update_tray_menu_async<R: Runtime>(app: &AppHandle<R>) {
     // Only block recording during incomplete onboarding when no transcription model is ready
     let can_record = check_can_record(app).await;
     log::info!("Tray: can_record: {}", can_record);
+    show_state_in_icon(app, &recording_state);
 
     if let Ok(menu) = build_menu(app, recording_state, can_record) {
         if let Some(tray) = app.tray_by_id("main-tray") {
