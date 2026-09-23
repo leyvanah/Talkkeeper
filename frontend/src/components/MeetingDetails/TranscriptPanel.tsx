@@ -305,6 +305,9 @@ export function TranscriptPanel({
     };
   }, [createdAt, convertedSegments, locale]);
 
+  const toolButton =
+    'flex h-7 w-7 shrink-0 items-center justify-center rounded-md transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--af-accent)]';
+
   return (
     <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden bg-[var(--af-bg)]">
       {/* What this recording is and what can be done with it, in the window's
@@ -331,43 +334,40 @@ export function TranscriptPanel({
         />
       </WindowHeaderSlot>
 
-      <div className="flex min-w-0 items-center gap-2 border-b border-[var(--af-border)] px-4 sm:gap-3 sm:px-6 lg:px-8">
-        <span className="relative -mb-px shrink-0 py-2 text-sm font-medium text-[var(--af-accent)]">
-          {t('transcriptTab')}
-          <span className="absolute inset-x-0 -bottom-px h-0.5 rounded-full bg-[var(--af-accent)]" />
-        </span>
-        {canShowTable && (
-          <div
-            role="radiogroup"
-            aria-label={t('transcriptViewLabel')}
-            className="flex shrink-0 items-center rounded-md border border-[var(--af-border)] p-0.5"
-          >
-            {([
-              ['chat', MessagesSquare, t('transcriptViewChat')],
-              ['table', Table2, t('transcriptViewTable')],
-            ] as const).map(([value, Icon, label]) => (
-              <button
-                key={value}
-                type="button"
-                role="radio"
-                aria-checked={layout === value}
-                aria-label={label}
-                title={label}
-                onClick={() => chooseLayout(value)}
-                className={`rounded px-1.5 py-1 transition-colors ${
-                  layout === value
-                    ? 'bg-[var(--af-panel-2)] text-[var(--af-accent)]'
-                    : 'text-[var(--af-text-3)] hover:text-[var(--af-text)]'
-                }`}
-              >
-                <Icon size={15} />
-              </button>
-            ))}
-          </div>
-        )}
-        {lineEdits && (
-          <div className="flex shrink-0 items-center gap-0.5">
-            {([
+      {/* Only how the transcript reads and taking corrections back: the rest of
+          what can be done with the meeting is in the window's header. */}
+      {(canShowTable || lineEdits) && (
+        <div className="flex min-w-0 items-center gap-0.5 px-3 py-1.5 sm:px-5 lg:px-7">
+          {canShowTable && (
+            <div role="radiogroup" aria-label={t('transcriptViewLabel')} className="flex shrink-0 items-center gap-0.5">
+              {([
+                ['chat', MessagesSquare, t('transcriptViewChat')],
+                ['table', Table2, t('transcriptViewTable')],
+              ] as const).map(([value, Icon, label]) => (
+                <button
+                  key={value}
+                  type="button"
+                  role="radio"
+                  aria-checked={layout === value}
+                  aria-label={label}
+                  title={label}
+                  onClick={() => chooseLayout(value)}
+                  className={`${toolButton} ${
+                    layout === value
+                      ? 'bg-[var(--af-active)] text-[var(--af-text)]'
+                      : 'text-[var(--af-text-3)] hover:bg-[var(--af-hover)] hover:text-[var(--af-text)]'
+                  }`}
+                >
+                  <Icon size={16} />
+                </button>
+              ))}
+            </div>
+          )}
+          {canShowTable && lineEdits && (
+            <span aria-hidden className="mx-1.5 h-4 w-px shrink-0 bg-[var(--af-border)]" />
+          )}
+          {lineEdits &&
+            ([
               ['undo', Undo2, t('transcriptUndo'), history.canUndo],
               ['redo', Redo2, t('transcriptRedo'), history.canRedo],
             ] as const).map(([direction, Icon, label, enabled]) => (
@@ -378,14 +378,13 @@ export function TranscriptPanel({
                 title={label}
                 disabled={!enabled || walking}
                 onClick={() => void walkHistory(direction)}
-                className="rounded p-1.5 text-[var(--af-text-2)] transition-colors hover:bg-[var(--af-panel-2)] hover:text-[var(--af-text)] disabled:opacity-30 disabled:hover:bg-transparent"
+                className={`${toolButton} text-[var(--af-text-2)] hover:bg-[var(--af-hover)] hover:text-[var(--af-text)] disabled:opacity-30 disabled:hover:bg-transparent`}
               >
-                <Icon size={15} />
+                <Icon size={16} />
               </button>
             ))}
-          </div>
-        )}
-      </div>
+        </div>
+      )}
 
       <SpeakerRenameDialog
         open={renameTarget !== null}
