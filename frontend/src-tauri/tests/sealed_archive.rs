@@ -49,7 +49,8 @@ async fn archive() -> SqlitePool {
          CREATE TABLE transcripts (id TEXT PRIMARY KEY, meeting_id TEXT NOT NULL, \
              transcript TEXT NOT NULL, timestamp TEXT NOT NULL, summary TEXT, \
              action_items TEXT, key_points TEXT, audio_start_time REAL, \
-             audio_end_time REAL, duration REAL, speaker TEXT, words TEXT, edited_at TEXT); \
+             audio_end_time REAL, duration REAL, speaker TEXT, words TEXT, edited_at TEXT, \
+             source_track TEXT, speaker_set_at TEXT); \
          CREATE TABLE transcript_removals (id TEXT PRIMARY KEY, meeting_id TEXT NOT NULL, \
              audio_start_time REAL NOT NULL, audio_end_time REAL NOT NULL, track TEXT NOT NULL, \
              removed_at TEXT NOT NULL); \
@@ -71,6 +72,11 @@ async fn archive() -> SqlitePool {
     .execute(&pool)
     .await
     .unwrap();
+    // Taken from the migration itself, so this table cannot fall behind.
+    sqlx::raw_sql(include_str!("../migrations/20260920000000_add_privacy_settings.sql"))
+        .execute(&pool)
+        .await
+        .unwrap();
     pool
 }
 
