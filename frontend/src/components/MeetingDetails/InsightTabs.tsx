@@ -1,9 +1,9 @@
 "use client";
 
 /**
- * Meeting-details right panel. A single scrolling column — AI Summary, Action
- * Items, Key Topics — with an Ask-AI box pinned at the bottom, grounded in the
- * meeting transcript.
+ * The summary tab of the meeting page's right column: one scrolling column of
+ * the AI summary, action items and key topics. Questions about the meeting
+ * have a tab of their own (MeetingChat).
  *
  * The stored summary can arrive as markdown, BlockNote JSON, or a legacy section
  * map; all three are flattened into the same buckets so the panel renders
@@ -11,18 +11,15 @@
  * items are recovered heuristically from the item text.
  */
 
-import { useMemo, useRef, useState } from 'react';
+import { useMemo, useState } from 'react';
 import { useTranslations } from 'next-intl';
-import { invoke } from '@tauri-apps/api/core';
 import { toast } from 'sonner';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import {
-  Sparkles,
   Plus,
   Circle,
   CheckCircle2,
-  Send,
   User,
   Calendar,
   Clock,
@@ -259,15 +256,6 @@ function topicLabel(raw: string): string {
   return t.length > 40 ? t.slice(0, 38).trim() + '…' : t;
 }
 
-const MAX_CONTEXT_CHARS = 6000;
-
-interface QA {
-  id: number;
-  question: string;
-  answer: string;
-  status: 'pending' | 'done' | 'error';
-}
-
 interface InsightTabsProps {
   aiSummary: Summary | null;
   transcripts: Transcript[];
@@ -294,64 +282,20 @@ export function InsightTabs({
       return n;
     });
 
-  // Ask-AI, grounded in this meeting's transcript.
-  const [question, setQuestion] = useState('');
-  const [busy, setBusy] = useState(false);
-  const [history, setHistory] = useState<QA[]>([]);
-  const nextId = useRef(1);
-
-  const transcriptContext = useMemo(() => {
-    const joined = transcripts
-      .map((t) => (t.speaker ? `${t.speaker}: ` : '') + (t.text ?? ''))
-      .filter(Boolean)
-      .join('\n');
-    return joined.length > MAX_CONTEXT_CHARS ? joined.slice(-MAX_CONTEXT_CHARS) : joined;
-  }, [transcripts]);
-
-  const ask = async () => {
-    const q = question.trim();
-    if (!q || busy) return;
-    const id = nextId.current++;
-    setQuestion('');
-    setHistory((prev) => [...prev, { id, question: q, answer: '', status: 'pending' }]);
-    setBusy(true);
-    try {
-      const answer = await invoke<string>('ask_live_assistant', { question: q, transcriptContext, persona: null });
-      setHistory((prev) => prev.map((x) => (x.id === id ? { ...x, answer, status: 'done' } : x)));
-    } catch (err) {
-      const msg = typeof err === 'string' ? err : (err as any)?.message || t('askRequestFailed');
-      setHistory((prev) => prev.map((x) => (x.id === id ? { ...x, answer: `⚠️ ${msg}`, status: 'error' } : x)));
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  const onKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
-    if (e.key === 'Enter' && !e.shiftKey) {
-      e.preventDefault();
-      void ask();
-    }
-  };
-
   return (
-    <div className="flex h-full min-h-0 flex-col bg-[var(--af-bg)]">
-      {/* Scrolling content */}
-      <div className="min-h-0 flex-1 space-y-8 overflow-y-auto px-6 py-6">
+    <div className="flex h-full min-h-0 flex-col">
+      <div className="min-h-0 flex-1 space-y-8 overflow-y-auto px-6 pb-6 pt-3">
         {/* AI Summary */}
         <section>
-          <div className="mb-3 flex items-center gap-2">
-            <Sparkles size={18} className="text-cyan-400" />
-            <h3 className="text-base font-semibold text-[var(--af-text)]">{t('aiSummaryHeading')}</h3>
-          </div>
+          <h3 className="mb-3 text-base font-semibold text-[var(--af-text)]">{t('aiSummaryHeading')}</h3>
           {generating ? (
             <div className="flex items-center gap-3 py-2 text-sm text-[var(--af-text-2)]">
               <span className="h-4 w-4 animate-spin rounded-full border-2 border-[var(--af-accent)] border-t-transparent" />
               {t('generatingSummary')}
             </div>
           ) : !hasSummary ? (
-            <div className="rounded-xl border border-dashed border-[var(--af-border-strong)] p-8 text-center">
-              <Sparkles size={26} className="mx-auto mb-3 text-cyan-400" />
-              <p className="mb-4 text-sm text-[var(--af-text-2)]">{t('noSummaryYet')}</p>
+            <div className="py-2">
+              <p className="mb-1 text-sm text-[var(--af-text-2)]">{t('noSummaryYet')}</p>
               <p className="text-xs text-[var(--af-text-3)]">
                 {transcripts.length > 0
                   ? t('summaryHintWithTranscript')
@@ -374,11 +318,18 @@ export function InsightTabs({
         {/* Action Items */}
         <section>
           <div className="mb-1 flex items-center gap-2">
-            <Sparkles size={18} className="text-cyan-400" />
             <h3 className="text-base font-semibold text-[var(--af-text)]">{t('actionItemsHeading')}</h3>
             {!generating && actions.length > 0 && <span className="text-sm font-medium text-[var(--af-text-3)]">{actions.length}</span>}
             <div className="ml-auto">
-              <ToolbarButton icon={<Plus size={14} />} onClick={() => toast.info(t('addActionItemSoon'))}>{t('addActionItem')}</ToolbarButton>
+              <button
+                type="button"
+                onClick={() => toast.info(t('addActionItemSoon'))}
+                title={t('addActionItem')}
+                aria-label={t('addActionItem')}
+                className="flex h-7 w-7 items-center justify-center rounded-md text-[var(--af-text-3)] transition-colors hover:bg-[var(--af-hover)] hover:text-[var(--af-text)]"
+              >
+                <Plus size={15} />
+              </button>
             </div>
           </div>
           {generating ? (
@@ -387,7 +338,7 @@ export function InsightTabs({
               {hasSummary ? t('regeneratingActionItems') : t('generatingActionItems')}
             </div>
           ) : actions.length === 0 ? (
-            <div className="py-6 text-center text-sm text-[var(--af-text-3)]">{t('noActionItems')}</div>
+            <div className="py-2 text-sm text-[var(--af-text-3)]">{t('noActionItems')}</div>
           ) : (
             <div>
               {actions.map((a, i) => {
@@ -452,7 +403,7 @@ export function InsightTabs({
                 <span
                   key={i}
                   title={t}
-                  className="rounded-lg border border-[var(--af-border-strong)] bg-[var(--af-panel-2)] px-3 py-1.5 text-sm text-[var(--af-text-2)]"
+                  className="rounded-md bg-[var(--af-panel-2)] px-2.5 py-1 text-sm text-[var(--af-text-2)]"
                 >
                   {topicLabel(t)}
                 </span>
@@ -461,74 +412,7 @@ export function InsightTabs({
           )}
         </section>
       </div>
-
-      {/* Ask AI */}
-      <div className="border-t border-[var(--af-border)] px-6 py-4">
-        {history.length > 0 && (
-          <div className="mb-3 max-h-56 space-y-3 overflow-y-auto">
-            {history.map((qa) => (
-              <div key={qa.id} className="space-y-1">
-                <div className="ml-auto flex w-fit max-w-[85%] items-center gap-1 rounded-lg bg-[var(--af-accent)] px-3 py-1.5 text-sm text-[var(--af-accent-contrast)]">
-                  {qa.question}
-                </div>
-                <div className="w-fit max-w-[92%] rounded-lg bg-[var(--af-panel-2)] px-3 py-2 text-sm text-[var(--af-text)]">
-                  {qa.status === 'pending' ? (
-                    <span className="inline-flex items-center gap-1 text-[var(--af-text-3)]">
-                      <span className="h-2 w-2 animate-pulse rounded-full bg-[var(--af-text-3)]" /> {t('thinking')}
-                    </span>
-                  ) : (
-                    <div className="prose prose-sm max-w-none dark:prose-invert prose-p:my-1 prose-ul:my-1">
-                      <ReactMarkdown remarkPlugins={[remarkGfm]}>{qa.answer}</ReactMarkdown>
-                    </div>
-                  )}
-                </div>
-              </div>
-            ))}
-          </div>
-        )}
-        <div className="flex items-center gap-3 rounded-xl border border-[var(--af-border-strong)] bg-[var(--af-panel-2)] px-4 py-2 focus-within:border-[var(--af-accent)]/60">
-          <Sparkles size={17} className="shrink-0 text-cyan-400" />
-          <textarea
-            value={question}
-            onChange={(e) => setQuestion(e.target.value)}
-            onKeyDown={onKeyDown}
-            rows={1}
-            placeholder={t('askAiPlaceholder')}
-            className="af-bare flex-1 resize-none border-0 bg-transparent py-1 text-sm text-[var(--af-text)] placeholder:text-[var(--af-text-3)] focus:outline-none focus:ring-0"
-          />
-          <button
-            onClick={ask}
-            disabled={busy || !question.trim()}
-            className="flex h-9 w-9 items-center justify-center rounded-lg bg-[var(--af-accent)] text-[var(--af-accent-contrast)] transition-[filter] hover:brightness-110 disabled:opacity-40"
-            title={t('askAi')}
-          >
-            <Send size={16} />
-          </button>
-        </div>
-      </div>
     </div>
-  );
-}
-
-function ToolbarButton({
-  icon,
-  children,
-  onClick,
-  className = '',
-}: {
-  icon?: React.ReactNode;
-  children: React.ReactNode;
-  onClick?: () => void;
-  className?: string;
-}) {
-  return (
-    <button
-      onClick={onClick}
-      className={`inline-flex items-center gap-1.5 rounded-lg border border-[var(--af-border-strong)] px-3 py-1.5 text-sm text-[var(--af-text-2)] transition-colors hover:bg-[var(--af-hover)] hover:text-[var(--af-text)] ${className}`}
-    >
-      {icon}
-      {children}
-    </button>
   );
 }
 

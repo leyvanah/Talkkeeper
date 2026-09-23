@@ -466,9 +466,23 @@ html.dark {
   box-shadow: 0 0 0 2px var(--af-bg), 0 0 0 4px rgba(74, 139, 255, 0.55) !important;
   border-radius: var(--af-radius-sm);
 }
+/* A text field in use needs no ring: the caret already says where typing
+   goes. Its border only firms up a little, and the field gets no ring of its
+   own from the rule above either — inside a styled container that ring drew a
+   second box within the first. */
 .dark input:focus, .dark textarea:focus, .dark [data-slot="input-group"]:focus-within {
-  border-color: rgba(74, 139, 255, 0.55) !important;
-  box-shadow: 0 0 0 3px rgba(74, 139, 255, 0.12) !important;
+  border-color: var(--af-border-strong) !important;
+  box-shadow: none !important;
+}
+.dark input:focus-visible, .dark textarea:focus-visible {
+  box-shadow: none !important;
+}
+
+/* A command input lives inside its wrapper, which draws the surface: the
+   field itself stays transparent, or it paints a second box inside. */
+.dark [cmdk-input-wrapper] [cmdk-input] {
+  background-color: transparent !important;
+  border: 0 !important;
 }
 
 /* Command inputs draw focus on their wrapper. Suppressing the nested input's
@@ -478,27 +492,6 @@ html.dark {
   border-color: transparent !important;
   box-shadow: none !important;
   outline: none !important;
-}
-
-/* Transcript actions respond to the transcript column rather than the viewport.
-   A wide window can still have a narrow transcript beside the summary panel. */
-.transcript-actions-container {
-  container-type: inline-size;
-}
-
-.transcript-action-label {
-  display: none;
-}
-
-@container (min-width: 390px) {
-  .transcript-action-button {
-    width: auto;
-    padding-inline: 0.75rem;
-  }
-
-  .transcript-action-label {
-    display: inline;
-  }
 }
 
 /* Scrollbars. Default Windows scrollbars are bright and heavy, and this app is
@@ -582,8 +575,11 @@ html.dark.minibar-window body {
   border-radius: var(--af-radius-sm);
 }
 .amoled input:focus, .amoled textarea:focus, .amoled [data-slot="input-group"]:focus-within {
-  border-color: rgba(255, 255, 255, 0.55) !important;
-  box-shadow: 0 0 0 3px rgba(255, 255, 255, 0.12) !important;
+  border-color: var(--af-border-strong) !important;
+  box-shadow: none !important;
+}
+.amoled input:focus-visible, .amoled textarea:focus-visible {
+  box-shadow: none !important;
 }
 
 .amoled ::selection {

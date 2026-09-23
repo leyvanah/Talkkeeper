@@ -3,8 +3,14 @@
 import { useState, useCallback, useEffect } from 'react';
 import { useTranslations } from 'next-intl';
 import { Button } from '@/components/ui/button';
-import { ButtonGroup } from '@/components/ui/button-group';
-import { Copy, Download, FolderOpen, RefreshCw, Users, Loader2 } from 'lucide-react';
+import { Copy, Download, FolderOpen, Loader2, MoreHorizontal, RefreshCw, Users } from 'lucide-react';
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from '@/components/ui/dropdown-menu';
 import { RetranscribeDialog } from './RetranscribeDialog';
 import { useConfig } from '@/contexts/ConfigContext';
 import { invoke } from '@tauri-apps/api/core';
@@ -166,89 +172,71 @@ export function TranscriptButtonGroup({
     }
   }, [meetingId, isDiarizing, onRefetchTranscripts, t]);
 
+  const quiet =
+    'flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-[var(--af-text-2)] transition-colors hover:bg-[var(--af-hover)] hover:text-[var(--af-text)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--af-accent)] disabled:opacity-40 disabled:hover:bg-transparent';
+  const empty = transcriptCount === 0;
+  const canRetranscribe = betaFeatures.importAndRetranscribe && !!meetingId && !!meetingFolderPath;
+
+  // The two things done with most meetings stay in sight; the rest wait in
+  // the menu, so the header is not a row of buttons.
   return (
-    <div className="flex w-max min-w-full shrink-0 items-center justify-end">
-      <ButtonGroup className="shrink-0">
-        <Button
-          variant="outline"
-          size="sm"
-          className="transcript-action-button h-9 w-9 shrink-0 px-0"
+    <div className="flex shrink-0 items-center gap-0.5">
+      {canIdentifySpeakers && meetingId && (
+        <button
+          type="button"
+          className={quiet}
           onClick={() => {
-            onCopyTranscript();
+            setExpectedSpeakers('');
+            setByModel(false);
+            setShowSpeakerDialog(true);
           }}
-          disabled={transcriptCount === 0}
-          title={transcriptCount === 0 ? t('noTranscriptAvailable') : t('copyTranscript')}
+          disabled={isDiarizing || empty}
+          title={empty ? t('noTranscriptAvailable') : isDiarizing ? t('speakersWorking') : t('identifySpeakersTooltip')}
+          aria-label={t('speakers')}
         >
-          <Copy size={16} />
-          <span className="transcript-action-label">{t('copy')}</span>
-        </Button>
+          {isDiarizing ? <Loader2 className="animate-spin" size={16} /> : <Users size={16} />}
+        </button>
+      )}
 
-        {onOpenExport && (
-          <Button
-            variant="outline"
-            size="sm"
-            className="transcript-action-button h-9 w-9 shrink-0 px-0"
-            onClick={() => {
-              onOpenExport();
-            }}
-            disabled={transcriptCount === 0}
-            title={transcriptCount === 0 ? t('noMeetingContent') : t('exportMeeting')}
-          >
-            <Download size={16} />
-            <span className="transcript-action-label">{t('export')}</span>
-          </Button>
-        )}
-
-        <Button
-          size="sm"
-          variant="outline"
-          className="transcript-action-button h-9 w-9 shrink-0 px-0"
-          onClick={() => {
-            onOpenMeetingFolder();
-          }}
-          title={t('openRecordingFolder')}
+      {onOpenExport && (
+        <button
+          type="button"
+          className={quiet}
+          onClick={() => onOpenExport()}
+          disabled={empty}
+          title={empty ? t('noMeetingContent') : t('exportMeeting')}
+          aria-label={t('export')}
         >
-          <FolderOpen size={16} />
-          <span className="transcript-action-label">{t('recordingFolder')}</span>
-        </Button>
+          <Download size={16} />
+        </button>
+      )}
 
-        {canIdentifySpeakers && meetingId && (
-          <Button
-            size="sm"
-            variant="outline"
-            className="transcript-action-button h-9 w-9 shrink-0 px-0"
-            onClick={() => {
-              setExpectedSpeakers('');
-              setByModel(false);
-              setShowSpeakerDialog(true);
-            }}
-            disabled={isDiarizing || transcriptCount === 0}
-            title={transcriptCount === 0 ? t('noTranscriptAvailable') : t('identifySpeakersTooltip')}
-          >
-            {isDiarizing ? (
-              <Loader2 className="animate-spin" size={16} />
-            ) : (
-              <Users size={16} />
-            )}
-            <span className="transcript-action-label">{isDiarizing ? t('speakersWorking') : t('speakers')}</span>
-          </Button>
-        )}
-
-        {betaFeatures.importAndRetranscribe && meetingId && meetingFolderPath && (
-          <Button
-            size="sm"
-            variant="outline"
-            className="transcript-action-button h-9 w-9 shrink-0 border-blue-500/30 bg-blue-500/10 px-0 text-blue-300 hover:bg-blue-500/20"
-            onClick={() => {
-              setShowRetranscribeDialog(true);
-            }}
-            title={t('enhanceTooltip')}
-          >
-            <RefreshCw size={16} />
-            <span className="transcript-action-label">{t('enhance')}</span>
-          </Button>
-        )}
-      </ButtonGroup>
+      <DropdownMenu modal={false}>
+        <DropdownMenuTrigger asChild>
+          <button type="button" className={quiet} title={t('moreActions')} aria-label={t('moreActions')}>
+            <MoreHorizontal size={16} />
+          </button>
+        </DropdownMenuTrigger>
+        <DropdownMenuContent align="end" className="min-w-[13rem]">
+          <DropdownMenuItem disabled={empty} onSelect={() => onCopyTranscript()}>
+            <Copy className="mr-2 h-4 w-4" />
+            {t('copyTranscript')}
+          </DropdownMenuItem>
+          <DropdownMenuItem onSelect={() => void onOpenMeetingFolder()}>
+            <FolderOpen className="mr-2 h-4 w-4" />
+            {t('openRecordingFolder')}
+          </DropdownMenuItem>
+          {canRetranscribe && (
+            <>
+              <DropdownMenuSeparator />
+              <DropdownMenuItem onSelect={() => setShowRetranscribeDialog(true)} title={t('enhanceTooltip')}>
+                <RefreshCw className="mr-2 h-4 w-4" />
+                {t('retranscribeMenu')}
+              </DropdownMenuItem>
+            </>
+          )}
+        </DropdownMenuContent>
+      </DropdownMenu>
 
       {/* Ask how many speakers to expect before diarizing */}
       <Dialog open={showSpeakerDialog} onOpenChange={setShowSpeakerDialog}>

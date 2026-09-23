@@ -1,10 +1,13 @@
 ﻿"use client";
 
 /**
- * Right-hand panel on the meeting-details screen. Owns summary generation/
- * regeneration (SummaryGenerator/Updater button groups + language picker) and
- * renders the read view via <InsightTabs> (AI Summary / Action Items / Key
- * Topics / pinned Ask-AI).
+ * Right-hand panel on the meeting-details screen, in three tabs:
+ *   - Summary: generation/regeneration (SummaryGenerator/Updater button
+ *     groups + language picker) and the read view via <InsightTabs> (AI
+ *     Summary / Action Items / Key Topics);
+ *   - Notes: the owner's own notes — a placeholder until they exist;
+ *   - Chat: questions about the meeting, via <MeetingChat>.
+ * The chosen tab is remembered per machine.
  *
  * Width is intentionally wide (`w-[62%] max-w-[960px] min-w-[520px]`) so the
  * transcript column (middle) and this panel share the 3-column details layout.
@@ -18,15 +21,14 @@ import { EditableTitle } from '@/components/EditableTitle';
 import { BlockNoteSummaryView, BlockNoteSummaryViewRef } from '@/components/AISummary/BlockNoteSummaryView';
 import { EmptyStateSummary } from '@/components/EmptyStateSummary';
 import { ModelConfig } from '@/components/ModelSettingsModal';
-import { SummaryGeneratorButtonGroup } from './SummaryGeneratorButtonGroup';
+import { SummaryGeneratorButtonGroup, SummaryLanguageChoice } from './SummaryGeneratorButtonGroup';
 import { SummaryUpdaterButtonGroup } from './SummaryUpdaterButtonGroup';
 import { InsightTabs } from './InsightTabs';
-import { useEffect, useRef, useState, RefObject } from 'react';
+import { MeetingChat } from './MeetingChat';
+import { NotebookPen } from 'lucide-react';
+import { useCallback, useEffect, useRef, useState, RefObject } from 'react';
 import { useTranslations } from 'next-intl';
 import { toast } from 'sonner';
-import { Languages, ChevronDown } from 'lucide-react';
-import { Button } from '@/components/ui/button';
-import { Popover, PopoverTrigger, PopoverContent } from '@/components/ui/popover';
 import { LanguagePickerPopover } from '@/components/LanguagePickerPopover';
 import { useRecentLanguages } from '@/hooks/useRecentLanguages';
 import { labelForCode } from '@/lib/summary-languages';
@@ -35,6 +37,11 @@ import {
   saveMeetingSummaryLanguage,
   SummaryLanguageStorage,
 } from '@/lib/summary-language-preferences';
+
+type SideTab = 'summary' | 'notes' | 'chat';
+
+/** A reading preference, kept per machine rather than per meeting. */
+const TAB_STORAGE_KEY = 'meeting_side_tab';
 
 interface SummaryPanelProps {
   meeting: {
@@ -118,9 +125,25 @@ export function SummaryPanel({
   onOpenModelSettings
 }: SummaryPanelProps) {
   const t = useTranslations('meetingDetails');
+  const [tab, setTab] = useState<SideTab>('summary');
+  useEffect(() => {
+    try {
+      const stored = localStorage.getItem(TAB_STORAGE_KEY);
+      if (stored === 'notes' || stored === 'chat') setTab(stored);
+    } catch {
+      // Storage can be unavailable; the summary is the default anyway.
+    }
+  }, []);
+  const chooseTab = useCallback((next: SideTab) => {
+    setTab(next);
+    try {
+      localStorage.setItem(TAB_STORAGE_KEY, next);
+    } catch {
+      // Not remembered this time; nothing else depends on it.
+    }
+  }, []);
   const [summaryLang, setSummaryLang] = useState<string | null>(null);
   const [summaryLangStorage, setSummaryLangStorage] = useState<SummaryLanguageStorage>('metadata');
-  const [langPickerOpen, setLangPickerOpen] = useState(false);
   const languageLoadVersionRef = useRef(0);
   const activeMeetingIdRef = useRef(meeting.id);
   const languageSaveVersionRef = useRef(0);
@@ -239,47 +262,57 @@ export function SummaryPanel({
     };
     languageSaveVersionRef.current += 1;
     setSummaryLang(nextStored);
-    setLangPickerOpen(false);
     void persistLatestLanguageSelection();
   };
 
   const isSummaryLoading = summaryStatus === 'processing' || summaryStatus === 'summarizing' || summaryStatus === 'regenerating';
 
-  const languageSlot = (
-    <Popover open={langPickerOpen} onOpenChange={setLangPickerOpen}>
-      <PopoverTrigger asChild>
-        <Button
-          variant="outline"
-          size="sm"
-          title={
-            isLocalFallbackLanguage
-              ? t('summaryLangTooltipLocal', { label: effectiveLangLabel })
-              : t('summaryLangTooltip', { label: effectiveLangLabel })
-          }
-          aria-label={t('summaryLangAria')}
-        >
-          <Languages size={18} />
-          <span className="hidden lg:inline">{effectiveLangLabel}</span>
-          <ChevronDown size={14} className="text-gray-400" />
-        </Button>
-      </PopoverTrigger>
-      <PopoverContent
-        align="end"
-        className="w-auto p-0 border-0 shadow-none bg-transparent"
-      >
-        <LanguagePickerPopover
-          value={summaryLang}
-          onChange={handleLangChange}
-          onClose={() => setLangPickerOpen(false)}
-          autoSubtitle={autoSubtitle}
-        />
-      </PopoverContent>
-    </Popover>
-  );
+  const language: SummaryLanguageChoice = {
+    label: effectiveLangLabel,
+    picker: (close) => (
+      <LanguagePickerPopover
+        value={summaryLang}
+        onChange={(code) => {
+          handleLangChange(code);
+          close();
+        }}
+        onClose={close}
+        autoSubtitle={autoSubtitle}
+      />
+    ),
+  };
+
+  const tabs: Array<[SideTab, string]> = [
+    ['summary', t('tabSummary')],
+    ['notes', t('tabNotes')],
+    ['chat', t('tabChat')],
+  ];
 
   return (
     <div className="flex min-h-0 min-w-0 w-full flex-1 flex-col overflow-hidden border-t border-[var(--af-border)] bg-[var(--af-bg)] md:border-t-0">
-      <div className="flex min-h-12 items-center gap-2 overflow-x-auto border-b border-[var(--af-border)] bg-[var(--af-panel)] px-3 py-2">
+      <div role="tablist" className="flex shrink-0 items-end gap-5 border-b border-[var(--af-border)] px-5">
+        {tabs.map(([value, label]) => (
+          <button
+            key={value}
+            type="button"
+            role="tab"
+            aria-selected={tab === value}
+            onClick={() => chooseTab(value)}
+            className={`-mb-px border-b-2 py-2.5 text-sm transition-colors ${
+              tab === value
+                ? 'border-[var(--af-text)] font-medium text-[var(--af-text)]'
+                : 'border-transparent text-[var(--af-text-3)] hover:text-[var(--af-text)]'
+            }`}
+          >
+            {label}
+          </button>
+        ))}
+      </div>
+
+      {/* Every tab stays mounted: the chat keeps its conversation and the
+          summary its unsaved corrections while another tab is open. */}
+      <div className={`min-h-0 flex-1 flex-col ${tab === 'summary' ? 'flex' : 'hidden'}`}>
+      <div className="flex min-h-11 items-center gap-2 overflow-x-auto px-4 pb-1 pt-3">
         <div className="flex-shrink-0">
           <SummaryGeneratorButtonGroup
             modelConfig={modelConfig}
@@ -298,7 +331,7 @@ export function SummaryPanel({
             hasSummary={!!aiSummary}
             isModelConfigLoading={isModelConfigLoading}
             onOpenModelSettings={onOpenModelSettings}
-            languageSlot={languageSlot}
+            language={language}
           />
         </div>
 
@@ -309,7 +342,6 @@ export function SummaryPanel({
               isDirty={isTitleDirty || (summaryRef.current?.isDirty || false)}
               onSave={onSaveAll}
               onCopy={onCopySummary}
-              onExport={onOpenExport}
               onFind={() => {
                 // TODO: Implement find in summary functionality
                 console.log('Find in summary clicked');
@@ -321,14 +353,26 @@ export function SummaryPanel({
         )}
       </div>
 
-      {/* The insight surface is shown for every meeting and fills the area next
-          to the transcript column. Summary actions live in the toolbar above. */}
       <div className="flex-1 min-h-0">
         <InsightTabs
           aiSummary={aiSummary}
           transcripts={transcripts}
           generating={isSummaryLoading}
         />
+      </div>
+      </div>
+
+      <div className={`min-h-0 flex-1 flex-col ${tab === 'notes' ? 'flex' : 'hidden'}`}>
+        {/* A place kept for the owner's own notes, written during a recording. */}
+        <div className="flex flex-1 flex-col items-center justify-center gap-2 px-8 text-center">
+          <NotebookPen size={20} className="text-[var(--af-text-3)]" />
+          <p className="text-sm font-medium text-[var(--af-text-2)]">{t('notesSoonTitle')}</p>
+          <p className="max-w-xs text-sm text-[var(--af-text-3)]">{t('notesSoonBody')}</p>
+        </div>
+      </div>
+
+      <div className={`min-h-0 flex-1 flex-col ${tab === 'chat' ? 'flex' : 'hidden'}`}>
+        <MeetingChat transcripts={transcripts} />
       </div>
     </div>
   );

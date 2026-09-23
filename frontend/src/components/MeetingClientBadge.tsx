@@ -1,7 +1,7 @@
 'use client';
 
 /**
- * "Filed under N" chip for the meeting header. Clicking it opens the same
+ * "Filed under N" for the meeting header, as quiet text rather than a chip. Clicking it opens the same
  * picker the sidebar row uses.
  *
  * A recording with no client says so instead of showing nothing: an empty spot
@@ -30,9 +30,9 @@ export const MeetingClientBadge: React.FC<{ meetingId?: string }> = ({ meetingId
     <>
       <button
         onClick={() => setPickerOpen(true)}
-        className={`inline-flex min-w-0 items-center gap-1.5 rounded-full border px-2.5 py-0.5 transition-colors ${client
-          ? 'border-[var(--af-border-strong)] bg-[var(--af-panel-2)] text-[var(--af-text-2)] hover:border-[var(--af-accent)] hover:text-[var(--af-text)]'
-          : 'border-dashed border-[var(--af-border-strong)] text-[var(--af-text-3)] hover:border-[var(--af-accent)] hover:text-[var(--af-text-2)]'}`}
+        className={`inline-flex min-w-0 items-center gap-1.5 rounded-md px-1.5 py-1 transition-colors hover:bg-[var(--af-hover)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--af-accent)] ${client
+          ? 'text-[var(--af-text-2)] hover:text-[var(--af-text)]'
+          : 'text-[var(--af-text-3)] hover:text-[var(--af-text-2)]'}`}
         title={t('moveToClient')}
       >
         {client

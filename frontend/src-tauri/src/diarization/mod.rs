@@ -176,6 +176,7 @@ pub fn diarize_file(
 /// Exposed for offline evaluation of embedding quality (see the diagnostic in
 /// this module's tests) — the clustering step is skipped entirely.
 pub fn embeddings_for_debug(wav_path: &Path, model_dir: &Path) -> Result<Vec<Vec<f32>>> {
+    wait_out_recording();
     let (samples, sr) = dsp::read_wav(wav_path)?;
     let samples = if sr != dsp::SAMPLE_RATE {
         crate::audio::audio_processing::resample_audio(&samples, sr, dsp::SAMPLE_RATE)
@@ -193,6 +194,22 @@ pub fn embeddings_for_debug(wav_path: &Path, model_dir: &Path) -> Result<Vec<Vec
         }
     }
     Ok(out)
+}
+
+/// A recording comes first: finding speakers in a saved one waits while a
+/// recording is on and carries on once it ends, so the two do not share the
+/// processor. Checked between the heavy steps; a step under way finishes.
+/// Only the offline pipeline calls this — live labelling runs during the
+/// recording and must never wait for it.
+fn wait_out_recording() {
+    if !crate::audio::recording_commands::is_recording_active() {
+        return;
+    }
+    log::info!("Speaker identification paused while a recording is on");
+    while crate::audio::recording_commands::is_recording_active() {
+        std::thread::sleep(std::time::Duration::from_secs(1));
+    }
+    log::info!("Speaker identification resumed after the recording");
 }
 
 /// Run the pipeline against an explicit model directory.
@@ -215,6 +232,8 @@ pub fn diarize_file_with_models(
             model_dir.display()
         ));
     }
+
+    wait_out_recording();
 
     // 1. Load + resample to 16 kHz mono.
     let (samples, sr) = dsp::read_wav(wav_path)?;
@@ -255,6 +274,7 @@ pub fn diarize_file_with_models(
     let mut embeddings: Vec<Vec<f32>> = Vec::with_capacity(turns.len());
     let mut kept: Vec<usize> = Vec::with_capacity(turns.len());
     for (i, turn) in turns.iter().enumerate() {
+        wait_out_recording();
         match models.embed(&turn.audio) {
             Ok(e) => {
                 embeddings.push(e);
@@ -693,6 +713,7 @@ fn apply_source_track_hint(
 /// ffmpeg's header are placeholders — [`dsp::read_wav`] clamps the data chunk
 /// to what is actually in the file, so that costs nothing.
 fn ensure_wav(path: &Path) -> Result<(PathBuf, bool)> {
+    wait_out_recording();
     let already_wav = path
         .extension()
         .and_then(|e| e.to_str())

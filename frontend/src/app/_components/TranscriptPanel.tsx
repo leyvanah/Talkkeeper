@@ -16,15 +16,57 @@ import { PermissionWarning } from '@/components/PermissionWarning';
 import { RecordingClientSelector } from '@/components/RecordingClientSelector';
 import { Button } from '@/components/ui/button';
 import { ButtonGroup } from '@/components/ui/button-group';
-import { Copy, GlobeIcon } from 'lucide-react';
+import { AudioLines, Copy, GlobeIcon } from 'lucide-react';
 import { useTranscripts } from '@/contexts/TranscriptContext';
 import { useConfig } from '@/contexts/ConfigContext';
 import { useRecordingState } from '@/contexts/RecordingStateContext';
 import { usePermissionCheck } from '@/hooks/usePermissionCheck';
 import { ModalType } from '@/hooks/useModalState';
 import { useIsLinux } from '@/hooks/usePlatform';
-import { useMemo } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useTranslations } from 'next-intl';
+import { invoke } from '@tauri-apps/api/core';
+import { listen } from '@tauri-apps/api/event';
+
+/**
+ * Whether the recording on now is only sound: live text turned off, or the
+ * engine busy with a transcription job when it started. Asked of the backend
+ * when a recording is found running, and told by its start event.
+ */
+function useSoundOnlyRecording(isRecording: boolean): boolean {
+  const [soundOnly, setSoundOnly] = useState(false);
+
+  useEffect(() => {
+    let unlisten: (() => void) | undefined;
+    let disposed = false;
+    void listen<{ liveTranscription?: boolean }>('recording-started', (event) => {
+      setSoundOnly(event.payload?.liveTranscription === false);
+    }).then((stop) => {
+      if (disposed) stop();
+      else unlisten = stop;
+    });
+    return () => {
+      disposed = true;
+      unlisten?.();
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!isRecording) {
+      setSoundOnly(false);
+      return;
+    }
+    let cancelled = false;
+    void invoke<boolean>('recording_live_transcription')
+      .then((live) => !cancelled && setSoundOnly(!live))
+      .catch(() => undefined);
+    return () => {
+      cancelled = true;
+    };
+  }, [isRecording]);
+
+  return soundOnly;
+}
 
 /**
  * TranscriptPanel Component
@@ -53,6 +95,7 @@ export function TranscriptPanel({
   const { isRecording, isPaused } = useRecordingState();
   const { requestPermissions, isChecking, hasSystemAudio, hasMicrophone } = usePermissionCheck();
   const isLinux = useIsLinux();
+  const soundOnly = useSoundOnlyRecording(isRecording);
 
   // Convert transcripts to segments for virtualized view
   const segments = useMemo(() =>
@@ -128,7 +171,14 @@ export function TranscriptPanel({
         className={isRecording ? 'pb-40' : 'pb-20'}
         style={isRecording ? { scrollPaddingBottom: '10rem' } : undefined}
       >
-        <div className="flex justify-center">
+        {soundOnly && (
+          <div className="flex flex-col items-center gap-2 px-6 pt-16 text-center">
+            <AudioLines size={22} className="text-[var(--af-text-3)]" />
+            <p className="text-sm font-medium text-[var(--af-text-2)]">{t('soundOnlyTitle')}</p>
+            <p className="max-w-sm text-sm text-[var(--af-text-3)]">{t('soundOnlyBody')}</p>
+          </div>
+        )}
+        <div className={`justify-center ${soundOnly ? 'hidden' : 'flex'}`}>
           <div className="w-2/3 max-w-[750px]">
             <VirtualizedTranscriptView
               segments={segments}

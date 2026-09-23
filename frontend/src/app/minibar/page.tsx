@@ -1,10 +1,12 @@
 ﻿'use client';
 
 /**
- * Compact recording bar â€” the entire UI of the frameless `minibar` window.
+ * Compact recording bar — the entire UI of the frameless `minibar` window.
  *
  * Shown while recording so the user can keep an eye on the timer and input
  * levels, and pause/stop, without the full window taking over their screen.
+ * One narrow line in the app's own theme; it can also be put away entirely,
+ * and the recording goes on — the tray icon brings the window back.
  *
  * Deliberately does NOT duplicate the stop logic. Rust owns native finalization
  * and emits the completion event that makes the main window save and navigate.
@@ -13,9 +15,10 @@
 import { useCallback, useEffect, useState } from 'react';
 import { useTranslations } from 'next-intl';
 import { invoke } from '@tauri-apps/api/core';
-import { Mic, MicOff, Monitor, VolumeX, Pause, Play, Square, Maximize2 } from 'lucide-react';
+import { EyeOff, Maximize2, Mic, MicOff, Pause, Play, Square, Volume2, VolumeX } from 'lucide-react';
 import { LiveAudioVisualizer } from '@/components/LiveAudioVisualizer';
 import { recordingService } from '@/services/recordingService';
+import { applyAppTheme, getSavedAppTheme } from '@/lib/app-theme';
 
 function formatElapsed(totalSeconds: number): string {
   const h = Math.floor(totalSeconds / 3600);
@@ -26,6 +29,7 @@ function formatElapsed(totalSeconds: number): string {
 
 export default function MiniBarPage() {
   const t = useTranslations('app');
+  const tr = useTranslations('recording');
   const [elapsed, setElapsed] = useState(0);
   const [isPaused, setIsPaused] = useState(false);
   const [isMicMuted, setIsMicMuted] = useState(false);
@@ -37,8 +41,10 @@ export default function MiniBarPage() {
   const [isStopping, setIsStopping] = useState(false);
 
   // The window is transparent; the page must not paint a background over it.
+  // Same origin as the main window, so the saved theme is readable here.
   useEffect(() => {
     document.documentElement.classList.add('minibar-window');
+    applyAppTheme(getSavedAppTheme());
     return () => document.documentElement.classList.remove('minibar-window');
   }, []);
 
@@ -140,6 +146,10 @@ export default function MiniBarPage() {
     invoke('exit_compact_mode').catch((e) => console.error(e));
   }, []);
 
+  const hide = useCallback(() => {
+    invoke('hide_compact_bar').catch((e) => console.error('Compact bar: hide failed', e));
+  }, []);
+
   const stop = useCallback(async () => {
     // Rust closes this native window as soon as it claims shutdown. Do not wait
     // for a frontend event from another webview to remove the bar.
@@ -155,115 +165,101 @@ export default function MiniBarPage() {
     }
   }, []);
 
+  const busy = isStopping || isChangingMicMute || isChangingSystemMute;
+  const icon =
+    'flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-[var(--af-text-2)] transition-colors hover:bg-[var(--af-hover)] hover:text-[var(--af-text)] disabled:opacity-40';
+  const sources = [
+    ['mic', isMicMuted, toggleMicMute, tr('muteMicrophone'), tr('unmuteMicrophone'), Mic, MicOff],
+    ['system', isSystemMuted, toggleSystemMute, tr('muteSystemAudio'), tr('unmuteSystemAudio'), Volume2, VolumeX],
+  ] as const;
+
   return (
     <div
       data-tauri-drag-region
-      className="flex h-screen w-screen items-center gap-4 rounded-full border border-white/10 bg-[#0f1218]/60 px-6 text-white shadow-2xl backdrop-blur-xl select-none"
+      className="flex h-screen w-screen select-none items-center gap-2 rounded-full border border-[var(--af-border-strong)] bg-[var(--af-panel)] pl-3.5 pr-1.5 text-[var(--af-text)]"
     >
-      {/* Status + timer */}
-      <div data-tauri-drag-region className="flex items-center gap-3 pl-1">
-        <span className="relative flex h-6 w-6 items-center justify-center">
-          <span
-            className={`absolute inset-0 rounded-full ${
-              isStopping ? 'bg-gray-500/20' : isPaused ? 'bg-orange-500/20' : 'bg-red-500/20 animate-pulse'
-            }`}
-          />
-          <span
-            className={`h-3 w-3 rounded-full ${
-              isStopping ? 'bg-gray-400' : isPaused ? 'bg-orange-400' : 'bg-red-500'
-            }`}
-          />
+      {/* Status and timer; the words are in the tooltip, the colour says it. */}
+      <div
+        data-tauri-drag-region
+        className="flex shrink-0 items-center gap-2"
+        title={isStopping ? tr('stopping') : isPaused ? tr('paused') : tr('recordingLabel')}
+      >
+        <span
+          data-tauri-drag-region
+          className={`h-2.5 w-2.5 rounded-full ${
+            isStopping ? 'bg-[var(--af-text-3)]' : isPaused ? 'bg-orange-400' : 'animate-pulse bg-red-500'
+          }`}
+        />
+        <span data-tauri-drag-region className="text-sm font-medium tabular-nums">
+          {formatElapsed(elapsed)}
         </span>
-        <div className="leading-tight">
-          <div className="font-semibold tabular-nums tracking-tight">{formatElapsed(elapsed)}</div>
-          <div
-            className={`text-[11px] ${
-              isStopping ? 'text-gray-400' : isPaused ? 'text-orange-400' : 'text-red-400'
-            }`}
-          >
-            {isStopping ? 'Finishing…' : isPaused ? 'Paused' : 'Recording'}
-          </div>
-        </div>
       </div>
 
-      <div className="h-8 w-px bg-white/10" />
+      <span data-tauri-drag-region className="mx-0.5 h-5 w-px shrink-0 bg-[var(--af-border)]" />
 
-      {/* Live input levels â€” same Rust events the main window listens to. */}
-      <div className="flex flex-col gap-1.5">
-        <div className="flex items-center gap-2">
-          <span className={`w-12 text-[11px] ${isMicMuted ? 'text-orange-400' : 'text-gray-400'}`}>
-            Mic
-          </span>
-          <LiveAudioVisualizer active={!isPaused && !isStopping && !isMicMuted} source="mic" bars={14} />
+      {/* Each source: its mute, and a small level beside it. */}
+      {sources.map(([source, muted, toggle, muteLabel, unmuteLabel, On, Off]) => (
+        <div key={source} className="flex shrink-0 items-center gap-1">
           <button
             type="button"
-            onClick={toggleMicMute}
-            disabled={isStopping || isChangingMicMute || isChangingSystemMute}
-            title={isMicMuted ? 'Unmute microphone' : 'Mute microphone'}
-            aria-label={isMicMuted ? 'Unmute microphone' : 'Mute microphone'}
-            aria-pressed={isMicMuted}
-            className={`flex h-7 w-7 shrink-0 items-center justify-center rounded-lg border transition-colors disabled:opacity-40 ${
-              isMicMuted
-                ? 'border-orange-500/40 bg-orange-500/15 text-orange-300 hover:bg-orange-500/25'
-                : 'border-white/10 bg-white/5 text-gray-400 hover:bg-white/10 hover:text-gray-200'
-            }`}
+            onClick={toggle}
+            disabled={busy}
+            title={muted ? unmuteLabel : muteLabel}
+            aria-label={muted ? unmuteLabel : muteLabel}
+            aria-pressed={muted}
+            className={`${icon} ${muted ? 'bg-orange-500/15 !text-orange-400' : ''}`}
           >
-            {isMicMuted ? <MicOff size={13} /> : <Mic size={13} />}
+            {muted ? <Off size={14} /> : <On size={14} />}
           </button>
+          <LiveAudioVisualizer active={!isPaused && !isStopping && !muted} source={source} bars={6} />
         </div>
-        <div className="flex items-center gap-2">
-          <span className={`w-12 text-[11px] ${isSystemMuted ? 'text-orange-400' : 'text-gray-400'}`}>
-            System
-          </span>
-          <LiveAudioVisualizer active={!isPaused && !isStopping && !isSystemMuted} source="system" bars={14} />
-          <button
-            type="button"
-            onClick={toggleSystemMute}
-            disabled={isStopping || isChangingMicMute || isChangingSystemMute}
-            title={isSystemMuted ? 'Unmute system audio' : 'Mute system audio'}
-            aria-label={isSystemMuted ? 'Unmute system audio' : 'Mute system audio'}
-            aria-pressed={isSystemMuted}
-            className={`flex h-7 w-7 shrink-0 items-center justify-center rounded-lg border transition-colors disabled:opacity-40 ${
-              isSystemMuted
-                ? 'border-orange-500/40 bg-orange-500/15 text-orange-300 hover:bg-orange-500/25'
-                : 'border-white/10 bg-white/5 text-gray-400 hover:bg-white/10 hover:text-gray-200'
-            }`}
-          >
-            {isSystemMuted ? <VolumeX size={13} /> : <Monitor size={13} />}
-          </button>
-        </div>
-      </div>
+      ))}
 
-      <div className="ml-auto flex items-center gap-2">
-        <button
-          onClick={togglePause}
-          disabled={isStopping || isChangingMicMute || isChangingSystemMute}
-          title={isPaused ? 'Resume recording' : 'Pause recording'}
-          className="flex h-10 w-14 flex-col items-center justify-center rounded-full border border-white/10 bg-white/5 text-xs text-gray-300 transition-colors hover:bg-white/10 disabled:opacity-40"
-        >
-          {isPaused ? <Play size={15} /> : <Pause size={15} />}
-          <span className="mt-0.5 text-[10px]">{isPaused ? t('minibarResume') : t('minibarPause')}</span>
-        </button>
+      <div data-tauri-drag-region className="flex-1" />
 
-        <button
-          onClick={stop}
-          disabled={isStopping || isChangingMicMute || isChangingSystemMute}
-          title={t('minibarStopTitle')}
-          className="flex h-10 w-14 flex-col items-center justify-center rounded-full border border-red-500/30 bg-red-500/15 text-xs text-red-300 transition-colors hover:bg-red-500/25 disabled:opacity-40"
-        >
-          <Square size={13} fill="currentColor" />
-          <span className="mt-0.5 text-[10px]">{t('minibarStop')}</span>
-        </button>
+      <button
+        type="button"
+        onClick={togglePause}
+        disabled={busy}
+        title={isPaused ? t('minibarResume') : t('minibarPause')}
+        aria-label={isPaused ? t('minibarResume') : t('minibarPause')}
+        className={icon}
+      >
+        {isPaused ? <Play size={14} /> : <Pause size={14} />}
+      </button>
+      <button
+        type="button"
+        onClick={stop}
+        disabled={busy}
+        title={t('minibarStopTitle')}
+        aria-label={t('minibarStopTitle')}
+        className={`${icon} !text-red-500 hover:!bg-red-500/10`}
+      >
+        <Square size={12} fill="currentColor" />
+      </button>
 
-        <button
-          onClick={expand}
-          disabled={isStopping || isChangingMicMute || isChangingSystemMute}
-          title={t('minibarExpandTitle')}
-          className="flex h-10 w-10 items-center justify-center rounded-full border border-white/10 bg-white/5 text-gray-300 transition-colors hover:bg-white/10 disabled:opacity-40"
-        >
-          <Maximize2 size={14} />
-        </button>
-      </div>
+      <span data-tauri-drag-region className="mx-0.5 h-5 w-px shrink-0 bg-[var(--af-border)]" />
+
+      <button
+        type="button"
+        onClick={expand}
+        disabled={busy}
+        title={t('minibarExpandTitle')}
+        aria-label={t('minibarExpandTitle')}
+        className={icon}
+      >
+        <Maximize2 size={13} />
+      </button>
+      <button
+        type="button"
+        onClick={hide}
+        disabled={isStopping}
+        title={t('minibarHideTitle')}
+        aria-label={t('minibarHideTitle')}
+        className={icon}
+      >
+        <EyeOff size={14} />
+      </button>
     </div>
   );
 }

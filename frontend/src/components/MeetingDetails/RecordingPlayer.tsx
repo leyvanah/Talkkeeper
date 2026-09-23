@@ -157,19 +157,21 @@ export const RecordingPlayer = forwardRef<RecordingPlayerHandle, RecordingPlayer
     const progress = duration > 0 ? Math.min(100, (currentTime / duration) * 100) : 0;
 
     return (
-      <div className="border-t border-[var(--af-border)] bg-[var(--af-panel)] px-4 py-2.5 sm:px-6 lg:px-8">
-        <div className="flex items-center gap-3">
+      // One quiet line under the transcript: no panel of its own, and the
+      // accent left to the progress, not a filled button beside it.
+      <div className="border-t border-[var(--af-border)] px-3 py-1.5 sm:px-5 lg:px-7">
+        <div className="flex items-center gap-2.5">
           <button
             type="button"
             onClick={() => (isPlaying ? pause() : play())}
             aria-label={isPlaying ? t('playerPause') : t('playerPlay')}
             title={isPlaying ? t('playerPause') : t('playerPlay')}
-            className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-[var(--af-accent)] text-[var(--af-accent-contrast)] transition hover:opacity-90"
+            className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-[var(--af-text)] transition-colors hover:bg-[var(--af-hover)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--af-accent)]"
           >
-            {isPlaying ? <Pause size={16} /> : <Play size={16} className="ml-0.5" />}
+            {isPlaying ? <Pause size={17} /> : <Play size={17} className="ml-0.5" />}
           </button>
 
-          <span className="shrink-0 text-xs tabular-nums text-[var(--af-text-2)]">
+          <span className="shrink-0 text-xs tabular-nums text-[var(--af-text-3)]">
             {formatTime(currentTime)}
           </span>
 
@@ -177,11 +179,11 @@ export const RecordingPlayer = forwardRef<RecordingPlayerHandle, RecordingPlayer
             <span className="sr-only">{t('playerPosition')}</span>
             <span
               aria-hidden
-              className="pointer-events-none absolute inset-x-0 h-1 rounded-full bg-[var(--af-border)]"
+              className="pointer-events-none absolute inset-x-0 h-[3px] rounded-full bg-[var(--af-border)]"
             />
             <span
               aria-hidden
-              className="pointer-events-none absolute h-1 rounded-full bg-[var(--af-accent)]"
+              className="pointer-events-none absolute h-[3px] rounded-full bg-[var(--af-accent)]"
               style={{ width: `${progress}%` }}
             />
             <input
@@ -192,7 +194,7 @@ export const RecordingPlayer = forwardRef<RecordingPlayerHandle, RecordingPlayer
               value={Math.min(currentTime, duration || 0)}
               onChange={(event) => seek(Number(event.target.value))}
               className="relative h-4 w-full cursor-pointer appearance-none bg-transparent
-                         [&::-webkit-slider-thumb]:h-3 [&::-webkit-slider-thumb]:w-3
+                         [&::-webkit-slider-thumb]:h-2.5 [&::-webkit-slider-thumb]:w-2.5
                          [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:rounded-full
                          [&::-webkit-slider-thumb]:bg-[var(--af-accent)]"
             />
@@ -206,10 +208,11 @@ export const RecordingPlayer = forwardRef<RecordingPlayerHandle, RecordingPlayer
             <DropdownMenuTrigger
               aria-label={t('playerSpeed')}
               title={t('playerSpeed')}
-              className={`w-12 shrink-0 rounded-md border px-1.5 py-1 text-xs tabular-nums transition hover:bg-[var(--af-hover)] ${
+              // Marked only when it is not the usual speed.
+              className={`min-w-[2.25rem] shrink-0 rounded-md px-1.5 py-1 text-xs tabular-nums transition-colors hover:bg-[var(--af-hover)] ${
                 rate === 1
-                  ? 'border-[var(--af-border)] text-[var(--af-text-2)]'
-                  : 'border-[var(--af-accent)] text-[var(--af-text)]'
+                  ? 'text-[var(--af-text-3)] hover:text-[var(--af-text)]'
+                  : 'font-medium text-[var(--af-accent)]'
               }`}
             >
               {formatRate(rate, locale)}

@@ -309,7 +309,11 @@
     "summaryLanguageDetectFailedDescription": "The meeting was saved, but Auto could not detect the summary language.",
     "saveMeetingFailedTitle": "Failed to save meeting",
     "unknownErrorShort": "Unknown error",
-    "modelReadyClosingWindow": "Model ready! Closing window..."
+    "modelReadyClosingWindow": "Model ready! Closing window...",
+    "soundOnlyTitle": "Recording sound only",
+    "soundOnlyBody": "Live transcript is off, or recognition is busy with another recording. The text will appear after the recording.",
+    "startingPreparingModel": "Preparing the recognition model…",
+    "startingAudioCapture": "Starting audio capture…"
   },
   "meetingDetails": {
     "transcriptPane": "Transcript",
@@ -318,7 +322,6 @@
     "showSummaryPane": "Show summary",
     "resizePanes": "Column border: drag (over a column to hide it) or use the arrow keys, double-click to reset",
     "untitledMeeting": "Untitled meeting",
-    "transcriptTab": "Transcript",
     "transcriptViewLabel": "Transcript layout",
     "transcriptViewChat": "Conversation",
     "transcriptViewTable": "Table",
@@ -538,7 +541,7 @@
     "exportFormatClipboardDescription": "Copy formatted content",
     "exportBack": "Back",
     "exportChooseFormat": "Choose format",
-    "aiSummaryHeading": "AI Summary",
+    "aiSummaryHeading": "Overview",
     "generatingSummary": "Generating summary…",
     "noSummaryYet": "No summary yet. Generate an AI summary with key points, action items and topics.",
     "summaryHintWithTranscript": "Use the summary toolbar above to choose a template and generate.",
@@ -663,7 +666,17 @@
     "genBuiltinNotReadyDescription": "Please ensure the model is downloaded in settings",
     "genBuiltinValidationFailed": "Failed to validate built-in AI model",
     "summaryGenerationStopped": "Summary generation stopped",
-    "summaryGenerationStoppedDescription": "You can generate a new summary anytime"
+    "summaryGenerationStoppedDescription": "You can generate a new summary anytime",
+    "moreActions": "More",
+    "retranscribeMenu": "Transcribe again…",
+    "summaryLanguage": "Language",
+    "modelNotChosen": "not chosen",
+    "tabSummary": "Summary",
+    "tabNotes": "Notes",
+    "tabChat": "Chat",
+    "notesSoonTitle": "Notes are coming",
+    "notesSoonBody": "You will be able to write your own notes here during a recording. They will be kept with the meeting.",
+    "chatEmpty": "Ask anything about this meeting — the answer is drawn from its transcript."
   },
   "settings": {
     "language": "Language",
@@ -969,7 +982,9 @@
     "systemEchoCancellationTitle": "Let Windows cancel the echo",
     "systemEchoCancellationDescription": "Opens the microphone the way a browser opens it for a video call: Windows removes the speakers' echo before the sound reaches this app. That is why the other person on a call never hears themselves echoed back. It also turns on noise suppression and automatic levelling, so the recording is cleaner and more even but less faithful to the room. Turn it off to record the sound as it is.",
     "ownSpeechDetectorTitle": "Keep your voice when you both talk at once",
-    "ownSpeechDetectorDescription": "Windows stops cleaning the microphone itself and only tells us when you are the one speaking. The recording is the ordinary microphone, so your voice is never turned down — not even when you talk over the other person — and a second, unrecorded stream is used purely to tell your speech from the speakers' echo. A microphone passage is dropped only when the speakers were playing under it and you could not be heard at the time. The cost: the recording keeps the room as it sounds, including whatever trace of the speakers our own echo canceller leaves behind. Windows only."
+    "ownSpeechDetectorDescription": "Windows stops cleaning the microphone itself and only tells us when you are the one speaking. The recording is the ordinary microphone, so your voice is never turned down — not even when you talk over the other person — and a second, unrecorded stream is used purely to tell your speech from the speakers' echo. A microphone passage is dropped only when the speakers were playing under it and you could not be heard at the time. The cost: the recording keeps the room as it sounds, including whatever trace of the speakers our own echo canceller leaves behind. Windows only.",
+    "liveTextTitle": "Live transcript while recording",
+    "liveTextDescription": "Text appears on screen as you record. Turn it off to record only sound, like a dictaphone: the processor is left alone during the recording and the text is made afterwards. If recognition is busy with another recording, a new one starts this way on its own."
   },
   "person": {
     "overviewPrompt": "Create a concise profile overview of this person based only on their meeting records. Cover recurring topics, decisions, commitments, collaboration patterns, and recent changes. Cite the relevant meeting title and date for every substantive point, and clearly distinguish recorded facts from inference. Answer in English.",
@@ -1354,7 +1369,10 @@
     "pickerRecentlyUsed": "Recently Used",
     "pickerOtherLanguages": "Other Languages",
     "pickerAllLanguages": "All Languages",
-    "localStackReadFailed": "Could not read local stack status"
+    "localStackReadFailed": "Could not read local stack status",
+    "minibarHideTitle": "Hide the bar. The recording goes on — the Talkkeeper tray icon brings the window back",
+    "postCallPaused": "Improvement paused",
+    "postCallPausedDetail": "A recording is on — the transcript improvement resumes after it"
   },
   "security": {
     "cloudPrivacyTitle": "Hide names from cloud models",

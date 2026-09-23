@@ -35,7 +35,9 @@ export default function Home() {
   const { meetingTitle } = useTranscripts();
 
   // What is on screen, for the window header and the taskbar.
-  useWindowTitle(meetingTitle || null);
+  // Before a recording has a name, the page is simply where a new one starts.
+  const ts = useTranslations('sidebar');
+  useWindowTitle(meetingTitle || ts('newRecording'));
   const { transcriptModelConfig, selectedDevices } = useConfig();
   const recordingState = useRecordingState();
 

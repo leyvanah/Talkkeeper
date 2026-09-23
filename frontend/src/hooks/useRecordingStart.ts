@@ -145,10 +145,15 @@ export function useRecordingStart(
       // several seconds (it loads a multi-hundred-MB model into memory), and
       // without a status here the button looks unresponsive for that whole
       // period — the single longest part of starting a recording.
-      setStatus(RecordingStatus.STARTING, 'Preparing transcription model…');
+      setStatus(RecordingStatus.STARTING, t('startingPreparingModel'));
+
+      // A recording that will be only sound (live text off, or the engine busy
+      // with a transcription job) needs no model now, and must not load one
+      // over the model that job is using.
+      const live = await invoke<boolean>('recording_would_be_live').catch(() => true);
 
       // Prefetch STT (Parakeet by default for live). Unloads LLM first via Rust.
-      const sttReady = await prefetchSttModel();
+      const sttReady = live ? await prefetchSttModel() : true;
       if (!sttReady) {
         const isDownloading = await checkIfModelDownloading();
         if (isDownloading) {
@@ -173,7 +178,7 @@ export function useRecordingStart(
       setMeetingTitle(randomTitle);
 
       // Model is ready; the remaining wait is audio device setup.
-      setStatus(RecordingStatus.STARTING, 'Starting audio capture…');
+      setStatus(RecordingStatus.STARTING, t('startingAudioCapture'));
 
       // Start the actual backend recording
       console.log('Starting backend recording with meeting:', randomTitle);
@@ -217,7 +222,9 @@ export function useRecordingStart(
           setIsAutoStarting(true);
           sessionStorage.removeItem('autoStartRecording'); // Clear the flag
 
-          const sttReady = await prefetchSttModel();
+          const sttReady = (await invoke<boolean>('recording_would_be_live').catch(() => true))
+            ? await prefetchSttModel()
+            : true;
           if (!sttReady) {
             const isDownloading = await checkIfModelDownloading();
             if (isDownloading) {
@@ -243,7 +250,7 @@ export function useRecordingStart(
             const generatedMeetingTitle = generateMeetingTitle();
 
             // Set STARTING status before initiating backend recording
-            setStatus(RecordingStatus.STARTING, 'Initializing recording...');
+            setStatus(RecordingStatus.STARTING, t('startingAudioCapture'));
 
             console.log('Auto-starting backend recording with meeting:', generatedMeetingTitle);
             const recordingStartedAt = Date.now();
@@ -302,7 +309,9 @@ export function useRecordingStart(
       console.log('Direct start from sidebar - prefetching STT model');
       setIsAutoStarting(true);
 
-      const sttReady = await prefetchSttModel();
+      const sttReady = (await invoke<boolean>('recording_would_be_live').catch(() => true))
+        ? await prefetchSttModel()
+        : true;
       if (!sttReady) {
         const isDownloading = await checkIfModelDownloading();
         if (isDownloading) {
@@ -327,7 +336,7 @@ export function useRecordingStart(
         const generatedMeetingTitle = generateMeetingTitle();
 
         // Set STARTING status before initiating backend recording
-        setStatus(RecordingStatus.STARTING, 'Initializing recording...');
+        setStatus(RecordingStatus.STARTING, t('startingAudioCapture'));
 
         console.log('Starting backend recording with meeting:', generatedMeetingTitle);
         const recordingStartedAt = Date.now();

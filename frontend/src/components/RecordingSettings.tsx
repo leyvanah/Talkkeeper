@@ -26,6 +26,8 @@ export interface RecordingPreferences {
   /** Let Windows remove the speakers' echo before we receive the sound. */
   system_echo_cancellation?: boolean;
   own_speech_detector?: boolean;
+  /** Recognise speech while recording; off, a recording is only sound. */
+  live_transcription?: boolean;
 }
 
 interface RecordingSettingsProps {
@@ -48,6 +50,7 @@ export function RecordingSettings({ onSave }: RecordingSettingsProps) {
     single_remote_speaker: true,
     system_echo_cancellation: true,
     own_speech_detector: false,
+    live_transcription: true,
   });
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -112,6 +115,12 @@ export function RecordingSettings({ onSave }: RecordingSettingsProps) {
 
   const handleEchoCancellationToggle = async (enabled: boolean) => {
     const newPreferences = { ...preferences, echo_cancellation: enabled };
+    setPreferences(newPreferences);
+    await savePreferences(newPreferences);
+  };
+
+  const handleLiveTranscriptionToggle = async (enabled: boolean) => {
+    const newPreferences = { ...preferences, live_transcription: enabled };
     setPreferences(newPreferences);
     await savePreferences(newPreferences);
   };
@@ -252,6 +261,22 @@ export function RecordingSettings({ onSave }: RecordingSettingsProps) {
         <Switch
           checked={preferences.auto_save}
           onCheckedChange={handleAutoSaveToggle}
+          disabled={saving}
+          className="shrink-0"
+        />
+      </div>
+
+      {/* Live text, or only sound now and the text afterwards */}
+      <div className="flex min-w-0 items-start justify-between gap-3 rounded-lg border p-4 sm:items-center">
+        <div className="min-w-0 flex-1">
+          <div className="font-medium">{t('liveTextTitle')}</div>
+          <div className="text-sm text-gray-600">
+            {t('liveTextDescription')}
+          </div>
+        </div>
+        <Switch
+          checked={preferences.live_transcription !== false}
+          onCheckedChange={handleLiveTranscriptionToggle}
           disabled={saving}
           className="shrink-0"
         />

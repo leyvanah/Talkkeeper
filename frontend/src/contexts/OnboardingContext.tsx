@@ -219,6 +219,10 @@ export function OnboardingProvider({ children }: { children: React.ReactNode }) 
   };
 
   const isCompletingRef = useRef(false);
+  // Nothing is saved before the stored status has been read: a save on a
+  // slow start used to write the defaults (step 1, not completed) over a
+  // finished onboarding, and the next launch began with it again.
+  const statusLoadedRef = useRef(false);
 
   // Auto-save on state change (debounced)
   useEffect(() => {
@@ -226,7 +230,7 @@ export function OnboardingProvider({ children }: { children: React.ReactNode }) 
 
     // Don't auto-save if completed (to avoid overwriting completion status)
     // Also don't auto-save if we are currently in the process of completing
-    if (completed || isCompletingRef.current) return;
+    if (completed || isCompletingRef.current || !statusLoadedRef.current) return;
 
     saveTimeoutRef.current = setTimeout(() => {
       saveOnboardingStatus();
@@ -354,6 +358,7 @@ export function OnboardingProvider({ children }: { children: React.ReactNode }) 
             setSelectedSummaryModel(status.model_status.selected_summary_model);
           }
           console.log('[OnboardingContext] Restored completed onboarding status without model verification');
+          statusLoadedRef.current = true;
           return;
         }
 
@@ -375,6 +380,7 @@ export function OnboardingProvider({ children }: { children: React.ReactNode }) 
       } else {
         await initializeSummaryModelSelection();
       }
+      statusLoadedRef.current = true;
     } catch (error) {
       console.error('[OnboardingContext] Failed to load onboarding status:', error);
     }

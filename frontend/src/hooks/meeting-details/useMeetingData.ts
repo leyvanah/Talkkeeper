@@ -47,7 +47,7 @@ export function useMeetingData({ meeting, summaryData, onMeetingUpdated }: UseMe
   // When the meeting changes, reset to whatever the parent loaded for it.
   useEffect(() => {
     setAiSummary(summaryData);
-    setMeetingTitle(meeting.title || '+ New Call');
+    setMeetingTitle(meeting.title || '');
     setIsTitleDirty(false);
   }, [meeting.id]); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -55,7 +55,7 @@ export function useMeetingData({ meeting, summaryData, onMeetingUpdated }: UseMe
   // resetting summary state or destroying an unsaved local title edit.
   useEffect(() => {
     if (currentMeeting && currentMeeting.id === meeting.id && !isTitleDirty) {
-      setMeetingTitle(currentMeeting.title || '+ New Call');
+      setMeetingTitle(currentMeeting.title || '');
     }
   }, [currentMeeting?.id, currentMeeting?.title, meeting.id, isTitleDirty]);
 

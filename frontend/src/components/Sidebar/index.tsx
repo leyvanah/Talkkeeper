@@ -934,7 +934,7 @@ const Sidebar: React.FC = () => {
               >
                 <Search className="h-4 w-4 shrink-0" />
                 <span className="min-w-0 flex-1 truncate">{t('searchEverything')}</span>
-                <kbd className="shrink-0 rounded border border-[var(--af-border-strong)] bg-[var(--af-panel-2)] px-1.5 py-0.5 text-[10px] font-medium text-[var(--af-text-3)]">Ctrl K</kbd>
+                <kbd className="shrink-0 font-sans text-[11px] text-[var(--af-text-3)] opacity-70">Ctrl+K</kbd>
               </button>
 
               <button

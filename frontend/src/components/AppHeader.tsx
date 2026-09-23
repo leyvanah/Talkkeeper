@@ -7,11 +7,17 @@
  *
  * Because the buttons sit in the row rather than over the page, nothing below
  * has to leave a corner free for them.
+ *
+ * A page can put its own things in the row after the title — the meeting page
+ * puts what the meeting is and what can be done with it — through
+ * `WindowHeaderSlot`, so it needs no row of its own.
  */
 
 import React, { createContext, useContext, useEffect, useMemo, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { ArrowLeft } from 'lucide-react';
 import { WindowControls } from './WindowControls';
+import { RetranscriptionIndicator } from './shared/RetranscriptionIndicator';
 
 type Back = { label: string; onBack: () => void } | null;
 
@@ -22,11 +28,30 @@ const WindowTitleContext = createContext<{
   setBack: (back: Back) => void;
 } | null>(null);
 
+// Apart from the title, so that a page filling the slot does not re-render
+// whenever the title changes — nor the header whenever the page does.
+const HeaderSlotContext = createContext<{
+  slot: HTMLElement | null;
+  setSlot: (slot: HTMLElement | null) => void;
+} | null>(null);
+
 export function WindowTitleProvider({ children }: { children: React.ReactNode }) {
   const [title, setTitle] = useState<string | null>(null);
   const [back, setBack] = useState<Back>(null);
+  const [slot, setSlot] = useState<HTMLElement | null>(null);
   const value = useMemo(() => ({ title: title ?? 'Talkkeeper', setTitle, back, setBack }), [title, back]);
-  return <WindowTitleContext.Provider value={value}>{children}</WindowTitleContext.Provider>;
+  const slotValue = useMemo(() => ({ slot, setSlot }), [slot]);
+  return (
+    <WindowTitleContext.Provider value={value}>
+      <HeaderSlotContext.Provider value={slotValue}>{children}</HeaderSlotContext.Provider>
+    </WindowTitleContext.Provider>
+  );
+}
+
+/** Draws its children in the header row, after the title. */
+export function WindowHeaderSlot({ children }: { children: React.ReactNode }) {
+  const slot = useContext(HeaderSlotContext)?.slot;
+  return slot ? createPortal(children, slot) : null;
 }
 
 /**
@@ -86,11 +111,12 @@ export function AppHeader() {
   const context = useContext(WindowTitleContext);
   const title = context?.title ?? 'Talkkeeper';
   const back = context?.back ?? null;
+  const setSlot = useContext(HeaderSlotContext)?.setSlot;
 
   return (
     <div
       data-tauri-drag-region="deep"
-      className="flex h-10 shrink-0 items-center gap-2 border-b border-[var(--af-border)] bg-[var(--af-panel)] pl-2 pr-2"
+      className="relative flex h-10 shrink-0 items-center gap-2 border-b border-[var(--af-border)] bg-[var(--af-panel)] pl-2 pr-2"
     >
       {back ? (
         <button
@@ -106,9 +132,13 @@ export function AppHeader() {
       ) : (
         <span className="w-2" />
       )}
-      <span className="min-w-0 flex-1 truncate text-sm font-medium text-[var(--af-text)]">
+      <span className="min-w-0 max-w-[50%] shrink-0 truncate text-sm font-medium text-[var(--af-text)]">
         {title}
       </span>
+      {/* Also the free space the window is dragged by, when a page puts nothing here. */}
+      <div ref={setSlot} className="flex min-w-0 flex-1 items-center gap-1 self-stretch" />
+      {/* Background work, from any page. */}
+      <RetranscriptionIndicator />
       <WindowControls />
     </div>
   );
