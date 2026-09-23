@@ -473,6 +473,8 @@ impl PeopleRepository {
             .await?;
         }
         tx.commit().await?;
+        // Every line of that speaker changed at once; the history no longer fits.
+        super::transcript_history::forget(meeting_id);
         Ok(SpeakerRenameOutcome {
             count,
             speaker: resolved_to,

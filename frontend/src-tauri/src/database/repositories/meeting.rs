@@ -34,6 +34,7 @@ impl MeetingsRepository {
             Ok(success) => {
                 if success {
                     transaction.commit().await?;
+                    super::transcript_history::forget(meeting_id);
                     info!(
                         "Successfully deleted meeting {} and all associated data",
                         meeting_id

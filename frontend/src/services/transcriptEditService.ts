@@ -59,6 +59,35 @@ export function splitTranscriptLine(
   });
 }
 
+/** Join displayed lines into one, in the order they were said. */
+export function mergeTranscriptLines(
+  meetingId: string,
+  lines: Array<Pick<TranscriptSegmentData, 'id' | 'ids'>>,
+): Promise<unknown> {
+  return invoke('api_merge_transcript_lines', {
+    meetingId,
+    transcriptIds: lines.flatMap(storedIds),
+  });
+}
+
+/** Whether a meeting has corrections to undo or redo in this session. */
+export interface EditHistory {
+  canUndo: boolean;
+  canRedo: boolean;
+}
+
+export function transcriptEditHistory(meetingId: string): Promise<EditHistory> {
+  return invoke<EditHistory>('api_transcript_edit_history', { meetingId });
+}
+
+export function undoTranscriptEdit(meetingId: string): Promise<EditHistory> {
+  return invoke<EditHistory>('api_undo_transcript_edit', { meetingId });
+}
+
+export function redoTranscriptEdit(meetingId: string): Promise<EditHistory> {
+  return invoke<EditHistory>('api_redo_transcript_edit', { meetingId });
+}
+
 /** A displayed line, as far as corrections need to know it. */
 export type LineRef = Pick<TranscriptSegmentData, 'id' | 'ids'>;
 
@@ -70,6 +99,8 @@ export interface LineEdits {
   onSetSpeaker: (line: LineRef, speaker: string) => Promise<void>;
   /** Cut the line in two; each half keeps its stretch of the recording. */
   onSplitLine: (line: LineRef, first: string, second: string) => Promise<void>;
+  /** Join the line with the one shown after it. */
+  onMergeLines: (line: LineRef, next: LineRef) => Promise<void>;
   /** Every speaker a line can be given to (raw labels). */
   speakers: string[];
   /** A label for a speaker the meeting does not have yet. */

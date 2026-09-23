@@ -37,6 +37,11 @@ export interface TimelineLine {
   ids?: string[];
   /** A person corrected it. */
   edited?: boolean;
+  /**
+   * The text as stored, when `text` shows something else (the timed words).
+   * A correction starts from this, so nothing the timings left out is lost.
+   */
+  stored?: string;
 }
 
 export interface PlacedLine {

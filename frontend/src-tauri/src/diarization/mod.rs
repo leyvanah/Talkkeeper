@@ -1281,6 +1281,7 @@ pub async fn diarize_meeting(
     tx.commit()
         .await
         .map_err(|e| format!("Failed to commit speaker labels: {e}"))?;
+    crate::database::repositories::transcript_history::forget(&meeting_id);
     if preserved > 0 {
         log::info!(
             "🧑‍🤝‍🧑 Preserved {} live speaker label(s); offline only filled gaps",

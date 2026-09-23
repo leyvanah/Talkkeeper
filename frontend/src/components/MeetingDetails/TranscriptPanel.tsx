@@ -17,7 +17,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useLocale, useTranslations } from 'next-intl';
 import { Transcript, TranscriptSegmentData } from '@/types';
-import { Calendar, Clock, MessagesSquare, Table2 } from 'lucide-react';
+import { Calendar, Clock, MessagesSquare, Redo2, Table2, Undo2 } from 'lucide-react';
 import { SpeakerRenameDialog } from './SpeakerRenameDialog';
 import {
   VirtualizedTranscriptView,
@@ -27,15 +27,21 @@ import { TranscriptButtonGroup } from './TranscriptButtonGroup';
 import { RecordingPlayer, RecordingPlayerHandle } from './RecordingPlayer';
 import { MeetingClientBadge } from '@/components/MeetingClientBadge';
 import { TranscriptTableView } from './TranscriptTableView';
+import { TRANSCRIPT_REWOUND } from './TranscriptLineEditor';
 import { createPlayhead } from '@/lib/playhead';
 import { speakerChoices } from '@/lib/transcript-speakers';
 import { toast } from 'sonner';
 import {
   editTranscriptLine,
+  EditHistory,
+  mergeTranscriptLines,
+  redoTranscriptEdit,
   setTranscriptLineSpeaker,
   splitTranscriptLine,
   LineEdits,
   removeTranscriptLine,
+  transcriptEditHistory,
+  undoTranscriptEdit,
 } from '@/services/transcriptEditService';
 
 type TranscriptLayout = 'chat' | 'table';
@@ -119,10 +125,27 @@ export function TranscriptPanel({
     () => speakerChoices((usePagination && segments ? segments : transcripts).map((line) => line.speaker)),
     [usePagination, segments, transcripts],
   );
+  // What can be undone and redone, as the backend keeps it. Asked again after
+  // every correction and whenever the transcript is reloaded — a rerun of
+  // recognition or speakers clears it there.
+  const [history, setHistory] = useState<EditHistory>({ canUndo: false, canRedo: false });
+  const refreshHistory = useCallback(async () => {
+    if (!meetingId) return;
+    try {
+      setHistory(await transcriptEditHistory(meetingId));
+    } catch (error) {
+      console.warn('Could not read the correction history:', error);
+    }
+  }, [meetingId]);
   const lineEdits = useMemo<LineEdits | undefined>(() => {
     if (!meetingId || isRecording) return undefined;
     const report = (
-      key: 'transcriptEditFailed' | 'transcriptRemoveFailed' | 'transcriptSpeakerFailed' | 'transcriptSplitFailed',
+      key:
+        | 'transcriptEditFailed'
+        | 'transcriptRemoveFailed'
+        | 'transcriptSpeakerFailed'
+        | 'transcriptSplitFailed'
+        | 'transcriptMergeFailed',
     ) => (error: unknown) => {
       toast.error(t(key), { description: error instanceof Error ? error.message : String(error) });
       throw error;
@@ -144,10 +167,71 @@ export function TranscriptPanel({
         await splitTranscriptLine(meetingId, line, first, second).catch(report('transcriptSplitFailed'));
         await onRefetchTranscripts?.();
       },
+      onMergeLines: async (line, next) => {
+        await mergeTranscriptLines(meetingId, [line, next]).catch(report('transcriptMergeFailed'));
+        await onRefetchTranscripts?.();
+      },
       speakers: choices.existing,
       freshSpeaker: choices.fresh,
     };
   }, [meetingId, isRecording, onRefetchTranscripts, t, choices]);
+
+  // Every correction ends in a reload of the transcript, and so does a rerun:
+  // either way the history may have changed.
+  useEffect(() => {
+    void refreshHistory();
+  }, [refreshHistory, transcripts, segments]);
+
+  const [walking, setWalking] = useState(false);
+  const walkHistory = useCallback(
+    async (direction: 'undo' | 'redo') => {
+      if (!meetingId || walking) return;
+      setWalking(true);
+      // An editor open on the old text must not write it back.
+      window.dispatchEvent(new Event(TRANSCRIPT_REWOUND));
+      try {
+        setHistory(
+          await (direction === 'undo' ? undoTranscriptEdit(meetingId) : redoTranscriptEdit(meetingId)),
+        );
+        await onRefetchTranscripts?.();
+      } catch (error) {
+        toast.error(t(direction === 'undo' ? 'transcriptUndoFailed' : 'transcriptRedoFailed'), {
+          description: error instanceof Error ? error.message : String(error),
+        });
+      } finally {
+        setWalking(false);
+      }
+    },
+    [meetingId, walking, onRefetchTranscripts, t],
+  );
+
+  // Ctrl+Z / Ctrl+Y (and Ctrl+Shift+Z), as in any editor — but not while a
+  // text field has the keys, where they undo typing.
+  useEffect(() => {
+    if (!lineEdits) return;
+    const onKey = (event: KeyboardEvent) => {
+      if (!(event.ctrlKey || event.metaKey) || event.altKey) return;
+      const target = event.target as HTMLElement | null;
+      if (
+        target &&
+        (target.isContentEditable || ['INPUT', 'TEXTAREA', 'SELECT'].includes(target.tagName))
+      ) {
+        return;
+      }
+      const key = event.key.toLowerCase();
+      const redo = key === 'y' || (key === 'z' && event.shiftKey);
+      const undo = key === 'z' && !event.shiftKey;
+      if (undo && history.canUndo) {
+        event.preventDefault();
+        void walkHistory('undo');
+      } else if (redo && history.canRedo) {
+        event.preventDefault();
+        void walkHistory('redo');
+      }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [lineEdits, history, walkHistory]);
 
   // One per meeting: a new recording starts from the top.
   const playhead = useMemo(() => createPlayhead(), [meetingId]);
@@ -269,6 +353,26 @@ export function TranscriptPanel({
                     ? 'bg-[var(--af-panel-2)] text-[var(--af-accent)]'
                     : 'text-[var(--af-text-3)] hover:text-[var(--af-text)]'
                 }`}
+              >
+                <Icon size={15} />
+              </button>
+            ))}
+          </div>
+        )}
+        {lineEdits && (
+          <div className="flex shrink-0 items-center gap-0.5">
+            {([
+              ['undo', Undo2, t('transcriptUndo'), history.canUndo],
+              ['redo', Redo2, t('transcriptRedo'), history.canRedo],
+            ] as const).map(([direction, Icon, label, enabled]) => (
+              <button
+                key={direction}
+                type="button"
+                aria-label={label}
+                title={label}
+                disabled={!enabled || walking}
+                onClick={() => void walkHistory(direction)}
+                className="rounded p-1.5 text-[var(--af-text-2)] transition-colors hover:bg-[var(--af-panel-2)] hover:text-[var(--af-text)] disabled:opacity-30 disabled:hover:bg-transparent"
               >
                 <Icon size={15} />
               </button>
