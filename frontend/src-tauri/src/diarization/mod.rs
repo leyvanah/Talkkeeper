@@ -1267,7 +1267,8 @@ pub async fn diarize_meeting(
         .await
         .map_err(|e| format!("Failed to begin speaker update: {e}"))?;
     for (id, label) in updates {
-        sqlx::query("UPDATE transcripts SET speaker = ? WHERE id = ?")
+        // A label a person chose is theirs, not the model's to redo.
+        sqlx::query("UPDATE transcripts SET speaker = ? WHERE id = ? AND speaker_set_at IS NULL")
             .bind(fields::seal_joinable_opt(
                 fields::TRANSCRIPT_SPEAKER,
                 label.as_deref(),

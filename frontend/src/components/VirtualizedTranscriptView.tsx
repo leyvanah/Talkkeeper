@@ -180,6 +180,10 @@ function speakerPaletteIndex(speaker: string): number {
 /**
  * Collapse back-to-back lines from the same speaker into one bubble when the
  * gap is small. Live VAD often emits many short fragments for one turn.
+ *
+ * A line a person corrected stays a bubble of its own: it is already the turn
+ * they meant, and after they cut one in two the halves must not run together
+ * again on screen.
  */
 export function mergeAdjacentSameSpeaker(
     segments: TranscriptSegmentData[],
@@ -193,6 +197,8 @@ export function mergeAdjacentSameSpeaker(
         const gap = seg.timestamp - lastEnd;
         if (
             last &&
+            !last.edited &&
+            !seg.edited &&
             speakerKey(last.speaker) === speakerKey(seg.speaker) &&
             gap >= 0 &&
             gap <= maxGapSecs
@@ -344,6 +350,14 @@ const TranscriptSegment = memo(function TranscriptSegment({
                             initialText={text}
                             onSave={(next) => lineEdits.onEditLine(lineRef, next)}
                             onRemove={() => lineEdits.onRemoveLine(lineRef)}
+                            onSetSpeaker={(next) => lineEdits.onSetSpeaker(lineRef, next)}
+                            onSplit={(first, second) => lineEdits.onSplitLine(lineRef, first, second)}
+                            speakers={{
+                                current: speaker,
+                                existing: lineEdits.speakers,
+                                fresh: lineEdits.freshSpeaker,
+                                label: (option) => displaySpeaker(option, userName),
+                            }}
                             onClose={() => setEditing(false)}
                         />
                     </div>

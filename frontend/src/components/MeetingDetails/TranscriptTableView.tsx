@@ -271,6 +271,14 @@ const Bubble = memo(function Bubble({
             initialText={line.text}
             onSave={(text) => lineEdits.onEditLine(line, text)}
             onRemove={() => lineEdits.onRemoveLine(line)}
+            onSetSpeaker={(speaker) => lineEdits.onSetSpeaker(line, speaker)}
+            onSplit={(first, second) => lineEdits.onSplitLine(line, first, second)}
+            speakers={{
+              current: line.speaker,
+              existing: lineEdits.speakers,
+              fresh: lineEdits.freshSpeaker,
+              label: (option) => displaySpeaker(option, userName),
+            }}
             onClose={() => setEditing(false)}
           />
         </div>
