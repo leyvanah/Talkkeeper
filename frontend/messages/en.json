@@ -537,7 +537,7 @@
     "exportFormatClipboardDescription": "Copy formatted content",
     "exportBack": "Back",
     "exportChooseFormat": "Choose format",
-    "aiSummaryHeading": "AI Summary",
+    "aiSummaryHeading": "Overview",
     "generatingSummary": "Generating summary…",
     "noSummaryYet": "No summary yet. Generate an AI summary with key points, action items and topics.",
     "summaryHintWithTranscript": "Use the summary toolbar above to choose a template and generate.",
@@ -666,7 +666,13 @@
     "moreActions": "More",
     "retranscribeMenu": "Transcribe again…",
     "summaryLanguage": "Language",
-    "modelNotChosen": "not chosen"
+    "modelNotChosen": "not chosen",
+    "tabSummary": "Summary",
+    "tabNotes": "Notes",
+    "tabChat": "Chat",
+    "notesSoonTitle": "Notes are coming",
+    "notesSoonBody": "You will be able to write your own notes here during a recording. They will be kept with the meeting.",
+    "chatEmpty": "Ask anything about this meeting — the answer is drawn from its transcript."
   },
   "settings": {
     "language": "Language",

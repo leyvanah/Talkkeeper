@@ -537,7 +537,7 @@
     "exportFormatClipboardDescription": "Скопировать форматированный текст",
     "exportBack": "Назад",
     "exportChooseFormat": "Выбрать формат",
-    "aiSummaryHeading": "Саммари от ИИ",
+    "aiSummaryHeading": "Главное",
     "generatingSummary": "Генерируем саммари…",
     "noSummaryYet": "Саммари ещё нет. Создайте его — с ключевыми мыслями, задачами и темами.",
     "summaryHintWithTranscript": "Выберите шаблон на панели саммари выше и запустите генерацию.",
@@ -666,7 +666,13 @@
     "moreActions": "Ещё",
     "retranscribeMenu": "Распознать заново…",
     "summaryLanguage": "Язык",
-    "modelNotChosen": "не выбрана"
+    "modelNotChosen": "не выбрана",
+    "tabSummary": "Саммари",
+    "tabNotes": "Заметки",
+    "tabChat": "Чат",
+    "notesSoonTitle": "Заметки — скоро",
+    "notesSoonBody": "Здесь можно будет писать свои заметки по ходу записи. Они сохранятся вместе со встречей.",
+    "chatEmpty": "Спросите что-нибудь об этой встрече — ответ строится по её транскрипту."
   },
   "settings": {
     "language": "Язык",
