@@ -16,6 +16,12 @@
 import { useEffect, useRef, useState } from 'react';
 import { useTranslations } from 'next-intl';
 import { Check, Combine, Scissors, Trash2, X } from 'lucide-react';
+import { splitPoint } from '@/lib/transcript-split';
+
+/** Sent when an editor opens; any other editor closes. */
+const EDITOR_OPENED = 'transcript-line-editor-opened';
+/** Sent when a correction was undone or redone; every editor closes. */
+export const TRANSCRIPT_REWOUND = 'transcript-rewound';
 
 export interface LineEditActions {
   /** Save new text for the line. Rejects to keep the editor open. */
@@ -54,6 +60,26 @@ export function TranscriptLineEditor({
     element.setSelectionRange(element.value.length, element.value.length);
   }, []);
 
+  // One line at a time. An editor holds the text as it was when it opened;
+  // left open while another line is joined into it, or while a correction is
+  // undone, it would write that old text back over the new.
+  const closeRef = useRef(onClose);
+  closeRef.current = onClose;
+  useEffect(() => {
+    const token = {};
+    window.dispatchEvent(new CustomEvent(EDITOR_OPENED, { detail: token }));
+    const onOpened = (event: Event) => {
+      if ((event as CustomEvent).detail !== token) closeRef.current();
+    };
+    const onRewound = () => closeRef.current();
+    window.addEventListener(EDITOR_OPENED, onOpened);
+    window.addEventListener(TRANSCRIPT_REWOUND, onRewound);
+    return () => {
+      window.removeEventListener(EDITOR_OPENED, onOpened);
+      window.removeEventListener(TRANSCRIPT_REWOUND, onRewound);
+    };
+  }, []);
+
   const trackCursor = () => {
     const element = area.current;
     if (element) setCursor(element.selectionStart);
@@ -69,8 +95,9 @@ export function TranscriptLineEditor({
 
   const trimmed = text.trim();
   const unchanged = trimmed === initialText.trim();
-  const first = text.slice(0, cursor).trim();
-  const second = text.slice(cursor).trim();
+  const cut = splitPoint(text, cursor);
+  const first = text.slice(0, cut).trim();
+  const second = text.slice(cut).trim();
   const canSplit = !!onSplit && !!first && !!second;
 
   const run = async (action: () => Promise<void>) => {

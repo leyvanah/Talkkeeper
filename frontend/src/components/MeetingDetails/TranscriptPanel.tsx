@@ -27,6 +27,7 @@ import { TranscriptButtonGroup } from './TranscriptButtonGroup';
 import { RecordingPlayer, RecordingPlayerHandle } from './RecordingPlayer';
 import { MeetingClientBadge } from '@/components/MeetingClientBadge';
 import { TranscriptTableView } from './TranscriptTableView';
+import { TRANSCRIPT_REWOUND } from './TranscriptLineEditor';
 import { createPlayhead } from '@/lib/playhead';
 import { speakerChoices } from '@/lib/transcript-speakers';
 import { toast } from 'sonner';
@@ -186,6 +187,8 @@ export function TranscriptPanel({
     async (direction: 'undo' | 'redo') => {
       if (!meetingId || walking) return;
       setWalking(true);
+      // An editor open on the old text must not write it back.
+      window.dispatchEvent(new Event(TRANSCRIPT_REWOUND));
       try {
         setHistory(
           await (direction === 'undo' ? undoTranscriptEdit(meetingId) : redoTranscriptEdit(meetingId)),

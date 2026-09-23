@@ -340,7 +340,7 @@
     "transcriptEditFailed": "Не удалось сохранить правку",
     "transcriptRemoveFailed": "Не удалось удалить реплику",
     "transcriptNewSpeaker": "Новый спикер ({speaker})",
-    "transcriptSplit": "Разбить здесь",
+    "transcriptSplit": "Разбить",
     "transcriptSplitHint": "Разбить реплику на две в месте курсора. Каждая половина сохраняет свой отрезок записи.",
     "transcriptSpeakerFailed": "Не удалось сменить спикера",
     "transcriptSplitFailed": "Не удалось разбить реплику",

@@ -340,7 +340,7 @@
     "transcriptEditFailed": "Could not save the correction",
     "transcriptRemoveFailed": "Could not remove the line",
     "transcriptNewSpeaker": "New speaker ({speaker})",
-    "transcriptSplit": "Split here",
+    "transcriptSplit": "Split",
     "transcriptSplitHint": "Split the line in two at the cursor. Each half keeps its own stretch of the recording.",
     "transcriptSpeakerFailed": "Could not change the speaker",
     "transcriptSplitFailed": "Could not split the line",

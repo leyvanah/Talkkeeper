@@ -275,7 +275,7 @@ const Bubble = memo(function Bubble({
         // Above the box: its text comes later in the page and would show through.
         <div className="absolute left-0 right-0 z-10" style={{ top: LABEL_ROW + LABEL_GAP }}>
           <TranscriptLineEditor
-            initialText={line.text}
+            initialText={line.stored ?? line.text}
             onSave={(text) => lineEdits.onEditLine(line, text)}
             onRemove={() => lineEdits.onRemoveLine(line)}
             onSplit={(first, second) => lineEdits.onSplitLine(line, first, second)}
@@ -401,6 +401,7 @@ export function TranscriptTableView({
         words: segment.words,
         ids: segment.ids,
         edited: segment.edited,
+        stored: segment.text,
       })),
     [segments],
   );
