@@ -6,7 +6,9 @@
  */
 
 import React, { useState, useEffect } from 'react';
-import { AlertCircle, AudioLines, CheckCircle2, Clock, EyeOff, FileText, XCircle } from 'lucide-react';
+import { AlertCircle, AudioLines, CheckCircle2, Clock, EyeOff, FileText, KeyRound, XCircle } from 'lucide-react';
+import { open as openFileDialog } from '@tauri-apps/plugin-dialog';
+import { Input } from '@/components/ui/input';
 import {
   Dialog,
   DialogContent,
@@ -30,6 +32,99 @@ interface TranscriptRecoveryProps {
   onRecover: (meetingId: string) => Promise<any>;
   onDelete: (meetingId: string) => Promise<void>;
   onLoadPreview: (meetingId: string) => Promise<StoredTranscript[]>;
+  /** Re-encrypt a recording sealed with another installation's key. */
+  onOpenWithOtherKey: (meetingId: string, keystorePath: string, secret: string) => Promise<void>;
+}
+
+/**
+ * Opens a recording sealed with another installation's key: the owner points
+ * at that installation's key file and types its password or recovery code, and
+ * the recording is re-encrypted under this installation's key.
+ */
+function OtherKeyForm({
+  onOpen,
+}: {
+  onOpen: (keystorePath: string, secret: string) => Promise<void>;
+}) {
+  const t = useTranslations('recording');
+  const [keystorePath, setKeystorePath] = useState<string | null>(null);
+  const [secret, setSecret] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const chooseFile = async () => {
+    try {
+      const picked = await openFileDialog({
+        multiple: false,
+        directory: false,
+        filters: [{ name: t('otherKeyFileFilter'), extensions: ['json'] }],
+      });
+      if (typeof picked === 'string') {
+        setKeystorePath(picked);
+        setError(null);
+      }
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : String(cause));
+    }
+  };
+
+  /** The backend speaks English; the two answers the owner can act on are said in their words. */
+  const explain = (cause: unknown) => {
+    const message = cause instanceof Error ? cause.message : String(cause);
+    if (message.includes('does not open this key file')) return t('otherKeyWrongSecret');
+    if (message.includes('does not open this recording')) return t('otherKeyWrongKey');
+    if (message.includes('Could not read the key file')) return t('otherKeyNotAKeyFile');
+    return message;
+  };
+
+  const submit = async () => {
+    if (!keystorePath || !secret) return;
+    setBusy(true);
+    setError(null);
+    try {
+      await onOpen(keystorePath, secret);
+      setSecret('');
+    } catch (cause) {
+      setError(explain(cause));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const fileName = keystorePath?.split(/[\\/]/).pop();
+
+  return (
+    <div className="mt-4 rounded-lg border p-4 space-y-3">
+      <div className="flex items-center gap-2 font-medium text-sm">
+        <KeyRound className="w-4 h-4" />
+        {t('otherKeyHeading')}
+      </div>
+      <p className="text-sm text-muted-foreground">{t('otherKeyHint')}</p>
+      <div className="flex items-center gap-3">
+        <Button variant="outline" size="sm" onClick={chooseFile} disabled={busy}>
+          {t('otherKeyChooseFile')}
+        </Button>
+        <span className="text-sm text-muted-foreground truncate" title={keystorePath ?? undefined}>
+          {fileName ?? t('otherKeyNoFile')}
+        </span>
+      </div>
+      <Input
+        type="password"
+        autoComplete="off"
+        placeholder={t('otherKeySecret')}
+        value={secret}
+        disabled={busy}
+        onChange={(event) => setSecret(event.target.value)}
+        onKeyDown={(event) => {
+          if (event.key === 'Enter') void submit();
+        }}
+      />
+      {error && <p className="text-sm text-red-600">{error}</p>}
+      <Button size="sm" onClick={submit} disabled={!keystorePath || !secret || busy}>
+        {busy ? t('otherKeyOpening') : t('otherKeyOpen')}
+      </Button>
+    </div>
+  );
 }
 
 export function TranscriptRecovery({
@@ -39,6 +134,7 @@ export function TranscriptRecovery({
   onRecover,
   onDelete,
   onLoadPreview,
+  onOpenWithOtherKey,
 }: TranscriptRecoveryProps) {
   const t = useTranslations('recording');
   const tCommon = useTranslations('common');
@@ -51,6 +147,8 @@ export function TranscriptRecovery({
   // "Don't recover" asks first, inside the dialog: window.confirm is not
   // something the application window can be relied on to show.
   const [confirmingDismiss, setConfirmingDismiss] = useState(false);
+  /** Recordings re-encrypted during this dialog, to say so once. */
+  const [reopened, setReopened] = useState<string[]>([]);
 
   // Reset selection when dialog opens
   useEffect(() => {
@@ -261,11 +359,27 @@ export function TranscriptRecovery({
                   {/* Transcript Preview */}
                   <ScrollArea className="flex-1 p-4">
                     {selectedMeeting.audioOnly ? (
-                      <Alert variant={cannotRecover ? 'destructive' : 'default'}>
-                        <AlertDescription>
-                          {cannotRecover ? t('audioOnlyUnreadableExplanation') : t('audioOnlyExplanation')}
-                        </AlertDescription>
-                      </Alert>
+                      <>
+                        {reopened.includes(selectedMeeting.meetingId) && (
+                          <Alert className="mb-3">
+                            <AlertDescription>{t('otherKeyOpened')}</AlertDescription>
+                          </Alert>
+                        )}
+                        <Alert variant={cannotRecover ? 'destructive' : 'default'}>
+                          <AlertDescription>
+                            {cannotRecover ? t('audioOnlyUnreadableExplanation') : t('audioOnlyExplanation')}
+                          </AlertDescription>
+                        </Alert>
+                        {cannotRecover && (
+                          <OtherKeyForm
+                            key={selectedMeeting.meetingId}
+                            onOpen={async (keystorePath, secret) => {
+                              await onOpenWithOtherKey(selectedMeeting.meetingId, keystorePath, secret);
+                              setReopened((current) => [...current, selectedMeeting.meetingId]);
+                            }}
+                          />
+                        )}
+                      </>
                     ) : isLoadingPreview ? (
                       <div className="flex items-center justify-center h-full text-muted-foreground">
                         {t('loadingPreview')}

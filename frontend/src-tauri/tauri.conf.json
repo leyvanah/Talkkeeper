@@ -35,7 +35,7 @@
             "capabilities": [
                 {
                     "identifier": "main",
-                    "description": "Main window: window controls, events, store, save dialog and writing the file the owner picked in it",
+                    "description": "Main window: window controls, events, store, save and open dialogs, writing the file the owner picked in it",
                     "windows": [
                         "main",
                         "minibar"
@@ -58,6 +58,7 @@
                         "core:window:allow-close",
                         "store:default",
                         "dialog:allow-save",
+                        "dialog:allow-open",
                         "notification:default",
                         "notification:allow-is-permission-granted",
                         "fs:allow-write-file"
