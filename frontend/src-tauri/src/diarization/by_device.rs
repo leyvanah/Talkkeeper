@@ -248,6 +248,7 @@ pub async fn assign(
         .commit()
         .await
         .map_err(|error| format!("Failed to save the labels: {error}"))?;
+    crate::database::repositories::transcript_history::forget(meeting_id);
 
     let mut distinct: Vec<&String> = assignments.iter().map(|(_, label)| label).collect();
     distinct.sort();

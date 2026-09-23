@@ -7,4 +7,5 @@ pub mod summary;
 pub mod transcript;
 pub mod transcript_chunk;
 pub mod transcript_edit;
+pub mod transcript_history;
 pub mod vocabulary;

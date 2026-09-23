@@ -30,6 +30,7 @@ use uuid::Uuid;
 use crate::audio::word_timing::{realign, to_json, WordTiming};
 use crate::database::fields;
 use crate::database::repositories::speaker_role::is_local_speaker;
+use crate::database::repositories::transcript_history::{self, capture};
 use crate::state::AppState;
 
 /// Which recorded track a line came from.
@@ -271,6 +272,8 @@ impl TranscriptEditsRepository {
                 .map(String::as_str)
                 .filter(|id| *id != transcript_id),
         );
+        let touched: Vec<String> = ids.iter().map(|id| id.to_string()).collect();
+        let step = capture(&mut tx, &touched, &[]).await?;
 
         let mut parts: Vec<(f64, f64, Option<Vec<WordTiming>>)> = Vec::new();
         for id in &ids {
@@ -341,6 +344,7 @@ impl TranscriptEditsRepository {
                 .await?;
         }
         tx.commit().await?;
+        transcript_history::record(meeting_id, step);
 
         Ok(EditedLine {
             id: transcript_id.to_string(),
@@ -357,7 +361,13 @@ impl TranscriptEditsRepository {
         transcript_ids: &[String],
     ) -> Result<(), SqlxError> {
         let mut tx = pool.begin().await?;
-        for transcript_id in transcript_ids {
+        // Named before anything is written, so the history knows them as absent.
+        let removal_ids: Vec<String> = transcript_ids
+            .iter()
+            .map(|_| format!("removal-{}", Uuid::new_v4()))
+            .collect();
+        let step = capture(&mut tx, transcript_ids, &removal_ids).await?;
+        for (transcript_id, removal_id) in transcript_ids.iter().zip(&removal_ids) {
             let row = sqlx::query(
                 "SELECT speaker, source_track, speaker_set_at, audio_start_time, audio_end_time \
                  FROM transcripts WHERE id = ? AND meeting_id = ?",
@@ -378,7 +388,7 @@ impl TranscriptEditsRepository {
                      (id, meeting_id, audio_start_time, audio_end_time, track, removed_at) \
                      VALUES (?, ?, ?, ?, ?, ?)",
                 )
-                .bind(format!("removal-{}", Uuid::new_v4()))
+                .bind(removal_id)
                 .bind(meeting_id)
                 .bind(start)
                 .bind(end.max(start))
@@ -393,7 +403,9 @@ impl TranscriptEditsRepository {
                 .execute(&mut *tx)
                 .await?;
         }
-        tx.commit().await
+        tx.commit().await?;
+        transcript_history::record(meeting_id, step);
+        Ok(())
     }
 
     /// Give lines to another speaker, as a person's decision.
@@ -415,6 +427,7 @@ impl TranscriptEditsRepository {
         let now = Utc::now().to_rfc3339();
         let sealed = fields::seal_joinable(fields::TRANSCRIPT_SPEAKER, speaker)?;
         let mut tx = pool.begin().await?;
+        let step = capture(&mut tx, transcript_ids, &[]).await?;
         for transcript_id in transcript_ids {
             let updated = sqlx::query(
                 "UPDATE transcripts SET speaker = ?, speaker_set_at = ?, \
@@ -431,7 +444,9 @@ impl TranscriptEditsRepository {
                 return Err(SqlxError::RowNotFound);
             }
         }
-        tx.commit().await
+        tx.commit().await?;
+        transcript_history::record(meeting_id, step);
+        Ok(())
     }
 
     /// Cut what the screen shows as one line in two, at a point in its text.
@@ -458,6 +473,10 @@ impl TranscriptEditsRepository {
         }
 
         let mut tx = pool.begin().await?;
+        let second_id = format!("transcript-{}", Uuid::new_v4());
+        let mut touched = transcript_ids.to_vec();
+        touched.push(second_id.clone());
+        let step = capture(&mut tx, &touched, &[]).await?;
         let mut parts: Vec<StoredPart> = Vec::new();
         for id in transcript_ids {
             let row = sqlx::query(
@@ -533,7 +552,6 @@ impl TranscriptEditsRepository {
                 .execute(&mut *tx)
                 .await?;
         }
-        let second_id = format!("transcript-{}", Uuid::new_v4());
         sqlx::query(
             "INSERT INTO transcripts (id, meeting_id, transcript, timestamp, audio_start_time, \
              audio_end_time, duration, speaker, source_track, words, edited_at, speaker_set_at) \
@@ -555,6 +573,7 @@ impl TranscriptEditsRepository {
         .await?;
         let head_id = head.id.clone();
         tx.commit().await?;
+        transcript_history::record(meeting_id, step);
 
         Ok((
             EditedLine {
@@ -570,6 +589,44 @@ impl TranscriptEditsRepository {
                 words: second_words,
             },
         ))
+    }
+
+    /// Join what the screen shows as several lines into one — undoing a split,
+    /// or putting back together a turn the recognizer broke up.
+    ///
+    /// The stored texts are joined in the order they were said, and the
+    /// result is an edit of the earliest line that takes the others over: it
+    /// keeps that line's speaker and spans them all, word timings included.
+    pub async fn merge(
+        pool: &SqlitePool,
+        meeting_id: &str,
+        transcript_ids: &[String],
+    ) -> Result<EditedLine, SqlxError> {
+        let mut lines: Vec<(String, f64, String)> = Vec::new();
+        for id in transcript_ids {
+            let row = sqlx::query(
+                "SELECT transcript, audio_start_time FROM transcripts WHERE id = ? AND meeting_id = ?",
+            )
+            .bind(id)
+            .bind(meeting_id)
+            .fetch_optional(pool)
+            .await?;
+            // A line an edit just took over is already part of another; the
+            // join goes ahead with the ones that are left.
+            let Some(row) = row else {
+                continue;
+            };
+            let text = fields::open(fields::TRANSCRIPT_TEXT, &row.try_get::<String, _>("transcript")?)?;
+            let start = row.try_get::<Option<f64>, _>("audio_start_time")?.unwrap_or(0.0);
+            lines.push((id.clone(), start, text));
+        }
+        if lines.len() < 2 {
+            return Err(SqlxError::Protocol("merging needs at least two lines".into()));
+        }
+        lines.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
+        let text = lines.iter().map(|line| line.2.trim()).collect::<Vec<_>>().join(" ");
+        let absorbed: Vec<String> = lines[1..].iter().map(|line| line.0.clone()).collect();
+        Self::edit(pool, meeting_id, &lines[0].0, &text, &absorbed).await
     }
 
     /// Every stretch of a meeting a person has decided about.
@@ -622,6 +679,9 @@ impl TranscriptEditsRepository {
         meeting_id: &str,
         tracks_known: bool,
     ) -> Result<(), SqlxError> {
+        // The transcript is being rewritten: what the history remembers of it
+        // no longer fits.
+        transcript_history::forget(meeting_id);
         sqlx::query("DELETE FROM transcripts WHERE meeting_id = ? AND edited_at IS NULL")
             .bind(meeting_id)
             .execute(&mut **tx)
@@ -724,6 +784,20 @@ pub async fn api_split_transcript_line(
         SqlxError::RowNotFound => "Transcript line not found".to_string(),
         other => format!("Failed to split the line: {other}"),
     })
+}
+
+#[tauri::command]
+pub async fn api_merge_transcript_lines(
+    state: tauri::State<'_, AppState>,
+    meeting_id: String,
+    transcript_ids: Vec<String>,
+) -> Result<EditedLine, String> {
+    TranscriptEditsRepository::merge(state.db_manager.pool(), &meeting_id, &transcript_ids)
+        .await
+        .map_err(|error| match error {
+            SqlxError::RowNotFound => "Transcript line not found".to_string(),
+            other => format!("Failed to merge the lines: {other}"),
+        })
 }
 
 #[cfg(test)]
@@ -937,6 +1011,62 @@ mod tests {
                 ("будет готов".to_string(), 1.4, 2.5)
             ]
         );
+    }
+
+    #[tokio::test]
+    async fn a_split_is_undone_redone_and_merged_back() {
+        let pool = pool().await;
+        // Its own meeting: the history is process-wide, and other tests edit "m1".
+        let meeting = "undo-test";
+        sqlx::query("UPDATE transcripts SET meeting_id = ?")
+            .bind(meeting)
+            .execute(&pool)
+            .await
+            .unwrap();
+        let before = rows(&pool).await;
+
+        let (_, second) =
+            TranscriptEditsRepository::split(&pool, meeting, &["t1".to_string()], "отчет", "будет готов")
+                .await
+                .unwrap();
+        TranscriptEditsRepository::set_speaker(&pool, meeting, &[second.id.clone()], "You")
+            .await
+            .unwrap();
+        let after = rows(&pool).await;
+
+        // Two steps back: the speaker, then the split.
+        assert!(transcript_history::undo(&pool, meeting).await.unwrap());
+        assert!(transcript_history::undo(&pool, meeting).await.unwrap());
+        assert_eq!(rows(&pool).await, before, "the line is whole again");
+        let edited: Option<String> =
+            sqlx::query_scalar("SELECT edited_at FROM transcripts WHERE id = 't1'")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert!(edited.is_none(), "and no longer marked as a person's");
+
+        assert!(transcript_history::redo(&pool, meeting).await.unwrap());
+        assert!(transcript_history::redo(&pool, meeting).await.unwrap());
+        assert_eq!(rows(&pool).await, after);
+
+        // Merging puts the halves back into one line spanning both.
+        TranscriptEditsRepository::merge(&pool, meeting, &[second.id.clone(), "t1".to_string()])
+            .await
+            .unwrap();
+        let t1: (String, f64, f64) = sqlx::query_as(
+            "SELECT transcript, audio_start_time, audio_end_time FROM transcripts WHERE id = 't1'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(t1, ("отчет будет готов".to_string(), 1.0, 2.5));
+        let gone: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM transcripts WHERE id = ?")
+            .bind(&second.id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(gone, 0);
+        transcript_history::forget(meeting);
     }
 
     #[tokio::test]
