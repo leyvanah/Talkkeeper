@@ -1,22 +1,32 @@
 "use client";
 
+/**
+ * Making the summary: one button, and beside it what it is made with — the
+ * template, the language and the model — in a small panel of their own, so
+ * the toolbar is not four buttons in a row.
+ */
+
 import { ModelConfig, ModelSettingsModal } from '@/components/ModelSettingsModal';
 import {
   Dialog,
   DialogContent,
-  DialogTrigger,
   DialogTitle,
 } from "@/components/ui/dialog"
 import { VisuallyHidden } from "@/components/ui/visually-hidden"
 import { Button } from '@/components/ui/button';
-import { ButtonGroup } from '@/components/ui/button-group';
+import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
 import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuTrigger,
-} from '@/components/ui/dropdown-menu';
-import { Sparkles, Settings, Loader2, FileText, Check, Square } from 'lucide-react';
+  ArrowLeft,
+  Check,
+  ChevronRight,
+  Cpu,
+  FileText,
+  Languages,
+  Loader2,
+  SlidersHorizontal,
+  Sparkles,
+  Square,
+} from 'lucide-react';
 import { invoke } from '@tauri-apps/api/core';
 import { toast } from 'sonner';
 import { useState, useEffect, useRef, ReactNode } from 'react';
@@ -24,8 +34,15 @@ import { useTranslations } from 'next-intl';
 import { isOllamaNotInstalledError } from '@/lib/utils';
 import { BuiltInModelInfo } from '@/lib/builtin-ai';
 
+/** The summary's language, as the panel shows and changes it. */
+export interface SummaryLanguageChoice {
+  label: string;
+  /** The picker, told how to close itself. */
+  picker: (close: () => void) => ReactNode;
+}
+
 interface SummaryGeneratorButtonGroupProps {
-  languageSlot?: ReactNode;
+  language?: SummaryLanguageChoice;
   modelConfig: ModelConfig;
   setModelConfig: (config: ModelConfig | ((prev: ModelConfig) => ModelConfig)) => void;
   onSaveModelConfig: (config?: ModelConfig) => Promise<void>;
@@ -61,12 +78,15 @@ export function SummaryGeneratorButtonGroup({
   hasSummary = false,
   isModelConfigLoading = false,
   onOpenModelSettings,
-  languageSlot
+  language
 }: SummaryGeneratorButtonGroupProps) {
   const t = useTranslations('meetingDetails');
   const tc = useTranslations('common');
   const [isCheckingModels, setIsCheckingModels] = useState(false);
   const [settingsDialogOpen, setSettingsDialogOpen] = useState(false);
+  // The panel beside the button, and which of its pages is open.
+  const [panelOpen, setPanelOpen] = useState(false);
+  const [panelView, setPanelView] = useState<'main' | 'template' | 'language'>('main');
   // Regenerate-with-context popup: lets the user add one-off instructions
   // (e.g. "focus on action items", "keep it short") before regenerating.
   const [contextModalOpen, setContextModalOpen] = useState(false);
@@ -289,30 +309,39 @@ export function SummaryGeneratorButtonGroup({
     t('suggestionFormalTone'),
   ];
 
+  const templateName =
+    availableTemplates.find((template) => template.id === selectedTemplate)?.name ?? selectedTemplate;
+  const busy = isCheckingModels || isModelConfigLoading;
+
+  const row =
+    'flex w-full items-center gap-2.5 rounded-md px-2 py-1.5 text-left text-sm text-[var(--af-text)] transition-colors hover:bg-[var(--af-hover)]';
+  const settingRow = (Icon: typeof FileText, label: string, value: string, onClick: () => void) => (
+    <button type="button" className={row} onClick={onClick}>
+      <Icon size={15} className="shrink-0 text-[var(--af-text-3)]" />
+      <span className="shrink-0">{label}</span>
+      <span className="ml-auto min-w-0 truncate text-[var(--af-text-3)]">{value}</span>
+      <ChevronRight size={14} className="shrink-0 text-[var(--af-text-3)]" />
+    </button>
+  );
+
   return (
-    <ButtonGroup>
-      {/* Generate Summary or Stop button */}
+    <div className="flex items-center gap-1">
       {isGenerating ? (
-        <Button
-          variant="outline"
-          size="sm"
-          className="bg-gradient-to-r from-red-50 to-orange-50 hover:from-red-100 hover:to-orange-100 border-red-200 xl:px-4"
-          onClick={() => {
-            onStopGeneration();
-          }}
+        <button
+          type="button"
+          onClick={() => onStopGeneration()}
           title={t('stopSummaryGeneration')}
           aria-label={t('stopSummaryGeneration')}
+          className="inline-flex h-8 items-center gap-1.5 rounded-lg border border-red-500/40 px-3 text-sm font-medium text-red-500 transition-colors hover:bg-red-500/10"
         >
-          <Square className="xl:mr-2" size={18} fill="currentColor" />
-          <span className="hidden lg:inline xl:inline">{t('stop')}</span>
-        </Button>
+          <Square size={13} fill="currentColor" />
+          {t('stop')}
+        </button>
       ) : (
-        <Button
-          variant="outline"
-          size="sm"
-          className="bg-gradient-to-r from-blue-50 to-purple-50 hover:from-blue-100 hover:to-purple-100 border-blue-200 xl:px-4"
+        <button
+          type="button"
           onClick={handlePrimaryClick}
-          disabled={isCheckingModels || isModelConfigLoading}
+          disabled={busy}
           title={
             isModelConfigLoading
               ? t('loadingModelConfig')
@@ -320,40 +349,103 @@ export function SummaryGeneratorButtonGroup({
                 ? t('checkingModels')
                 : hasSummary ? t('regenerateSummary') : t('generateSummary')
           }
-          aria-label={hasSummary ? t('regenerateSummary') : t('generateSummary')}
+          className="inline-flex h-8 items-center gap-1.5 rounded-lg bg-[var(--af-accent)] px-3 text-sm font-medium text-[var(--af-accent-contrast)] transition-[filter] hover:brightness-110 disabled:opacity-60"
         >
-          {isCheckingModels || isModelConfigLoading ? (
-            <>
-              <Loader2 className="animate-spin xl:mr-2" size={18} />
-              <span className="hidden xl:inline">{t('processing')}</span>
-            </>
-          ) : (
-            <>
-              <Sparkles className="xl:mr-2" size={18} />
-              <span className="hidden lg:inline xl:inline">{hasSummary ? t('regenerateSummary') : t('generateSummary')}</span>
-            </>
-          )}
-        </Button>
+          {busy ? <Loader2 className="animate-spin" size={15} /> : <Sparkles size={15} />}
+          <span className="whitespace-nowrap">{hasSummary ? t('regenerateSummary') : t('generateSummary')}</span>
+        </button>
       )}
 
-      {languageSlot}
-
-      {/* Settings button */}
-      <Dialog open={settingsDialogOpen} onOpenChange={setSettingsDialogOpen}>
-        <DialogTrigger asChild>
-          <Button
-            variant="outline"
-            size="sm"
+      <Popover
+        open={panelOpen}
+        onOpenChange={(open) => {
+          setPanelOpen(open);
+          if (!open) setPanelView('main');
+        }}
+      >
+        <PopoverTrigger asChild>
+          <button
+            type="button"
             title={t('summarySettings')}
             aria-label={t('summarySettings')}
+            className="flex h-8 w-8 items-center justify-center rounded-lg text-[var(--af-text-2)] transition-colors hover:bg-[var(--af-hover)] hover:text-[var(--af-text)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--af-accent)]"
           >
-            <Settings />
-            <span className="hidden lg:inline">{t('aiModel')}</span>
-          </Button>
-        </DialogTrigger>
-        <DialogContent
-          aria-describedby={undefined}
+            <SlidersHorizontal size={16} />
+          </button>
+        </PopoverTrigger>
+        <PopoverContent
+          align="start"
+          className={
+            panelView === 'language'
+              ? 'w-auto border-0 bg-transparent p-0 shadow-none'
+              : 'w-72 border-[var(--af-border)] bg-[var(--af-panel)] p-1.5 text-[var(--af-text)]'
+          }
         >
+          {panelView === 'main' && (
+            <div className="flex flex-col">
+              <div className="px-2 pb-1 pt-1 text-xs text-[var(--af-text-3)]">{t('summarySettings')}</div>
+              {(availableTemplates.length > 0 || onManageTemplates) &&
+                settingRow(FileText, t('template'), templateName, () => setPanelView('template'))}
+              {language &&
+                settingRow(Languages, t('summaryLanguage'), language.label, () => setPanelView('language'))}
+              {settingRow(Cpu, t('aiModel'), modelConfig.model || t('modelNotChosen'), () => {
+                setPanelOpen(false);
+                setPanelView('main');
+                setSettingsDialogOpen(true);
+              })}
+            </div>
+          )}
+
+          {panelView === 'template' && (
+            <div className="flex flex-col">
+              <button
+                type="button"
+                onClick={() => setPanelView('main')}
+                className="flex items-center gap-1.5 rounded-md px-2 py-1 text-xs text-[var(--af-text-3)] hover:text-[var(--af-text)]"
+              >
+                <ArrowLeft size={13} />
+                {t('template')}
+              </button>
+              <div className="max-h-72 overflow-y-auto">
+                {availableTemplates.map((template) => (
+                  <button
+                    key={template.id}
+                    type="button"
+                    title={template.description}
+                    className={row}
+                    onClick={() => {
+                      onTemplateSelect(template.id, template.name);
+                      setPanelView('main');
+                    }}
+                  >
+                    <span className="min-w-0 flex-1 truncate">{template.name}</span>
+                    {selectedTemplate === template.id && <Check size={14} className="shrink-0 text-[var(--af-accent)]" />}
+                  </button>
+                ))}
+              </div>
+              {onManageTemplates && (
+                <button
+                  type="button"
+                  className={`${row} mt-1 border-t border-[var(--af-border)] text-[var(--af-text-2)]`}
+                  onClick={() => {
+                    setPanelOpen(false);
+                    setPanelView('main');
+                    onManageTemplates();
+                  }}
+                >
+                  {t('manageTemplates')}
+                </button>
+              )}
+            </div>
+          )}
+
+          {panelView === 'language' && language?.picker(() => setPanelView('main'))}
+        </PopoverContent>
+      </Popover>
+
+      {/* The model's own settings are a dialog: they need the room. */}
+      <Dialog open={settingsDialogOpen} onOpenChange={setSettingsDialogOpen}>
+        <DialogContent aria-describedby={undefined}>
           <VisuallyHidden>
             <DialogTitle>{t('modelSettings')}</DialogTitle>
           </VisuallyHidden>
@@ -369,47 +461,6 @@ export function SummaryGeneratorButtonGroup({
           />
         </DialogContent>
       </Dialog>
-
-      {/* Template selector dropdown */}
-      {(availableTemplates.length > 0 || onManageTemplates) && (
-        <DropdownMenu>
-          <DropdownMenuTrigger asChild>
-            <Button
-              variant="outline"
-              size="sm"
-              title={t('selectTemplate')}
-              aria-label={t('selectTemplate')}
-            >
-              <FileText />
-              <span className="hidden lg:inline">{t('template')}</span>
-            </Button>
-          </DropdownMenuTrigger>
-          <DropdownMenuContent align="end">
-            {availableTemplates.map((template) => (
-              <DropdownMenuItem
-                key={template.id}
-                onClick={() => onTemplateSelect(template.id, template.name)}
-                title={template.description}
-                className="flex items-center justify-between gap-2"
-              >
-                <span>{template.name}</span>
-                {selectedTemplate === template.id && (
-                  <Check className="h-4 w-4 text-green-600" />
-                )}
-              </DropdownMenuItem>
-            ))}
-
-            {onManageTemplates && (
-              <DropdownMenuItem
-                onClick={onManageTemplates}
-                className="mt-1 border-t border-gray-100 font-medium text-blue-600"
-              >
-                {t('manageTemplates')}
-              </DropdownMenuItem>
-            )}
-          </DropdownMenuContent>
-        </DropdownMenu>
-      )}
 
       {/* Regenerate-with-context popup */}
       <Dialog open={contextModalOpen} onOpenChange={setContextModalOpen}>
@@ -464,6 +515,6 @@ export function SummaryGeneratorButtonGroup({
           </div>
         </DialogContent>
       </Dialog>
-    </ButtonGroup>
+    </div>
   );
 }

@@ -664,7 +664,9 @@
     "summaryGenerationStopped": "Генерация саммари остановлена",
     "summaryGenerationStoppedDescription": "Новое саммари можно создать в любой момент",
     "moreActions": "Ещё",
-    "retranscribeMenu": "Распознать заново…"
+    "retranscribeMenu": "Распознать заново…",
+    "summaryLanguage": "Язык",
+    "modelNotChosen": "не выбрана"
   },
   "settings": {
     "language": "Язык",

@@ -18,15 +18,12 @@ import { EditableTitle } from '@/components/EditableTitle';
 import { BlockNoteSummaryView, BlockNoteSummaryViewRef } from '@/components/AISummary/BlockNoteSummaryView';
 import { EmptyStateSummary } from '@/components/EmptyStateSummary';
 import { ModelConfig } from '@/components/ModelSettingsModal';
-import { SummaryGeneratorButtonGroup } from './SummaryGeneratorButtonGroup';
+import { SummaryGeneratorButtonGroup, SummaryLanguageChoice } from './SummaryGeneratorButtonGroup';
 import { SummaryUpdaterButtonGroup } from './SummaryUpdaterButtonGroup';
 import { InsightTabs } from './InsightTabs';
 import { useEffect, useRef, useState, RefObject } from 'react';
 import { useTranslations } from 'next-intl';
 import { toast } from 'sonner';
-import { Languages, ChevronDown } from 'lucide-react';
-import { Button } from '@/components/ui/button';
-import { Popover, PopoverTrigger, PopoverContent } from '@/components/ui/popover';
 import { LanguagePickerPopover } from '@/components/LanguagePickerPopover';
 import { useRecentLanguages } from '@/hooks/useRecentLanguages';
 import { labelForCode } from '@/lib/summary-languages';
@@ -120,7 +117,6 @@ export function SummaryPanel({
   const t = useTranslations('meetingDetails');
   const [summaryLang, setSummaryLang] = useState<string | null>(null);
   const [summaryLangStorage, setSummaryLangStorage] = useState<SummaryLanguageStorage>('metadata');
-  const [langPickerOpen, setLangPickerOpen] = useState(false);
   const languageLoadVersionRef = useRef(0);
   const activeMeetingIdRef = useRef(meeting.id);
   const languageSaveVersionRef = useRef(0);
@@ -239,47 +235,29 @@ export function SummaryPanel({
     };
     languageSaveVersionRef.current += 1;
     setSummaryLang(nextStored);
-    setLangPickerOpen(false);
     void persistLatestLanguageSelection();
   };
 
   const isSummaryLoading = summaryStatus === 'processing' || summaryStatus === 'summarizing' || summaryStatus === 'regenerating';
 
-  const languageSlot = (
-    <Popover open={langPickerOpen} onOpenChange={setLangPickerOpen}>
-      <PopoverTrigger asChild>
-        <Button
-          variant="outline"
-          size="sm"
-          title={
-            isLocalFallbackLanguage
-              ? t('summaryLangTooltipLocal', { label: effectiveLangLabel })
-              : t('summaryLangTooltip', { label: effectiveLangLabel })
-          }
-          aria-label={t('summaryLangAria')}
-        >
-          <Languages size={18} />
-          <span className="hidden lg:inline">{effectiveLangLabel}</span>
-          <ChevronDown size={14} className="text-gray-400" />
-        </Button>
-      </PopoverTrigger>
-      <PopoverContent
-        align="end"
-        className="w-auto p-0 border-0 shadow-none bg-transparent"
-      >
-        <LanguagePickerPopover
-          value={summaryLang}
-          onChange={handleLangChange}
-          onClose={() => setLangPickerOpen(false)}
-          autoSubtitle={autoSubtitle}
-        />
-      </PopoverContent>
-    </Popover>
-  );
+  const language: SummaryLanguageChoice = {
+    label: effectiveLangLabel,
+    picker: (close) => (
+      <LanguagePickerPopover
+        value={summaryLang}
+        onChange={(code) => {
+          handleLangChange(code);
+          close();
+        }}
+        onClose={close}
+        autoSubtitle={autoSubtitle}
+      />
+    ),
+  };
 
   return (
     <div className="flex min-h-0 min-w-0 w-full flex-1 flex-col overflow-hidden border-t border-[var(--af-border)] bg-[var(--af-bg)] md:border-t-0">
-      <div className="flex min-h-12 items-center gap-2 overflow-x-auto border-b border-[var(--af-border)] bg-[var(--af-panel)] px-3 py-2">
+      <div className="flex min-h-11 items-center gap-2 overflow-x-auto px-3 py-1.5">
         <div className="flex-shrink-0">
           <SummaryGeneratorButtonGroup
             modelConfig={modelConfig}
@@ -298,7 +276,7 @@ export function SummaryPanel({
             hasSummary={!!aiSummary}
             isModelConfigLoading={isModelConfigLoading}
             onOpenModelSettings={onOpenModelSettings}
-            languageSlot={languageSlot}
+            language={language}
           />
         </div>
 
@@ -309,7 +287,6 @@ export function SummaryPanel({
               isDirty={isTitleDirty || (summaryRef.current?.isDirty || false)}
               onSave={onSaveAll}
               onCopy={onCopySummary}
-              onExport={onOpenExport}
               onFind={() => {
                 // TODO: Implement find in summary functionality
                 console.log('Find in summary clicked');

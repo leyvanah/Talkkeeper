@@ -664,7 +664,9 @@
     "summaryGenerationStopped": "Summary generation stopped",
     "summaryGenerationStoppedDescription": "You can generate a new summary anytime",
     "moreActions": "More",
-    "retranscribeMenu": "Transcribe again…"
+    "retranscribeMenu": "Transcribe again…",
+    "summaryLanguage": "Language",
+    "modelNotChosen": "not chosen"
   },
   "settings": {
     "language": "Language",
