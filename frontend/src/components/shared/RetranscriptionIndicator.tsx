@@ -18,12 +18,14 @@ import { useTranslations } from 'next-intl';
 import { Loader2, Pause, X } from 'lucide-react';
 import { toast } from 'sonner';
 import { useRetranscription } from '@/contexts/RetranscriptionContext';
+import { useRecordingState } from '@/contexts/RecordingStateContext';
 
 export function RetranscriptionIndicator() {
   const t = useTranslations('app');
   const td = useTranslations('meetingDetails');
   const { job, ambientStatus, needsAmbientIndicator, cancel } = useRetranscription();
   const [stopping, setStopping] = useState(false);
+  const { isRecording } = useRecordingState();
 
   if (!ambientStatus || !needsAmbientIndicator) return null;
   // Only a real retranscription can be stopped from here; a wider workflow
@@ -33,8 +35,9 @@ export function RetranscriptionIndicator() {
   // Never a bare zero: a bar with nothing in it reads as "stuck", not "starting"
   const visibleProgress = Math.max(2, Math.min(100, ambientStatus.progress));
 
-  // The job steps aside while a recording is on, and says so.
-  const paused = job?.stage === 'paused';
+  // All background work (recognition and finding speakers) steps aside while
+  // a recording is on; the job also says so itself.
+  const paused = isRecording || job?.stage === 'paused';
   const detail = paused ? t('postCallPausedDetail') : ambientStatus.message || t('postCallPreparing');
 
   return (
