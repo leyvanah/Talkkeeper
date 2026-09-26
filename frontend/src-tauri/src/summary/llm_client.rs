@@ -368,3 +368,42 @@ fn provider_name(provider: &LLMProvider) -> &str {
         LLMProvider::CustomOpenAI => "Custom OpenAI",
     }
 }
+
+/// Whether a request to this provider would leave this machine, known before
+/// any request is built — early enough to prepare what has to be hidden.
+///
+/// Mirrors where [`generate_summary`] sends it: the built-in model runs here,
+/// Ollama and a custom endpoint are local only on a loopback address.
+pub fn leaves_this_machine(
+    provider: &LLMProvider,
+    ollama_endpoint: Option<&str>,
+    custom_openai_endpoint: Option<&str>,
+) -> bool {
+    match provider {
+        LLMProvider::BuiltInAI => false,
+        LLMProvider::Ollama => !crate::network_policy::is_loopback_url(
+            ollama_endpoint.unwrap_or("http://localhost:11434"),
+        ),
+        LLMProvider::CustomOpenAI => {
+            !custom_openai_endpoint.is_some_and(crate::network_policy::is_loopback_url)
+        }
+        LLMProvider::OpenAI | LLMProvider::Claude | LLMProvider::Groq | LLMProvider::OpenRouter => true,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn only_what_answers_on_this_machine_stays() {
+        assert!(!leaves_this_machine(&LLMProvider::BuiltInAI, None, None));
+        assert!(!leaves_this_machine(&LLMProvider::Ollama, None, None));
+        assert!(!leaves_this_machine(&LLMProvider::Ollama, Some("http://127.0.0.1:11434"), None));
+        assert!(leaves_this_machine(&LLMProvider::Ollama, Some("http://gpu-box.lan:11434"), None));
+        assert!(!leaves_this_machine(&LLMProvider::CustomOpenAI, None, Some("http://localhost:8080/v1")));
+        assert!(leaves_this_machine(&LLMProvider::CustomOpenAI, None, Some("https://api.example.com/v1")));
+        assert!(leaves_this_machine(&LLMProvider::Claude, None, None));
+        assert!(leaves_this_machine(&LLMProvider::OpenAI, None, None));
+    }
+}

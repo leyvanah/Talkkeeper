@@ -37,15 +37,26 @@ pub async fn api_save_privacy_settings(
     state: State<'_, AppState>,
     anonymize_cloud: bool,
     hidden_terms: Vec<String>,
+    find_names_locally: Option<bool>,
 ) -> Result<(), String> {
+    let pool = state.db_manager.pool();
+    // Left out, the stored choice stands.
+    let find_names_locally = match find_names_locally {
+        Some(value) => value,
+        None => settings::load(pool).await?.find_names_locally,
+    };
     settings::save(
-        state.db_manager.pool(),
+        pool,
         &PrivacySettings {
             anonymize_cloud,
             hidden_terms,
+            find_names_locally,
         },
     )
     .await?;
-    log::info!("Privacy settings saved (hiding before the cloud: {anonymize_cloud})");
+    log::info!(
+        "Privacy settings saved (hiding before the cloud: {anonymize_cloud}, \
+         local name search: {find_names_locally})"
+    );
     Ok(())
 }

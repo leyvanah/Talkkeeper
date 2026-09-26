@@ -16,6 +16,8 @@ pub struct PrivacySettings {
     pub anonymize_cloud: bool,
     /// Words the owner added: places, employers, nicknames.
     pub hidden_terms: Vec<String>,
+    /// Before hiding, let the built-in model look for names nobody listed.
+    pub find_names_locally: bool,
 }
 
 impl Default for PrivacySettings {
@@ -23,6 +25,7 @@ impl Default for PrivacySettings {
         Self {
             anonymize_cloud: true,
             hidden_terms: Vec::new(),
+            find_names_locally: true,
         }
     }
 }
@@ -38,13 +41,14 @@ fn split_terms(stored: &str) -> Vec<String> {
 }
 
 pub async fn load(pool: &SqlitePool) -> Result<PrivacySettings, String> {
-    let row: Option<(i64, Option<String>)> =
-        sqlx::query_as("SELECT anonymize_cloud, hidden_terms FROM privacy_settings WHERE id = '1'")
-            .fetch_optional(pool)
-            .await
-            .map_err(|error| format!("Could not read the privacy settings: {error}"))?;
+    let row: Option<(i64, Option<String>, i64)> = sqlx::query_as(
+        "SELECT anonymize_cloud, hidden_terms, find_names_locally FROM privacy_settings WHERE id = '1'",
+    )
+    .fetch_optional(pool)
+    .await
+    .map_err(|error| format!("Could not read the privacy settings: {error}"))?;
 
-    let Some((anonymize_cloud, sealed_terms)) = row else {
+    let Some((anonymize_cloud, sealed_terms, find_names_locally)) = row else {
         return Ok(PrivacySettings::default());
     };
 
@@ -60,6 +64,7 @@ pub async fn load(pool: &SqlitePool) -> Result<PrivacySettings, String> {
     Ok(PrivacySettings {
         anonymize_cloud: anonymize_cloud != 0,
         hidden_terms,
+        find_names_locally: find_names_locally != 0,
     })
 }
 
@@ -82,15 +87,17 @@ pub async fn save(pool: &SqlitePool, settings: &PrivacySettings) -> Result<(), S
 
     sqlx::query(
         r#"
-        INSERT INTO privacy_settings (id, anonymize_cloud, hidden_terms)
-        VALUES ('1', $1, $2)
+        INSERT INTO privacy_settings (id, anonymize_cloud, hidden_terms, find_names_locally)
+        VALUES ('1', $1, $2, $3)
         ON CONFLICT(id) DO UPDATE SET
             anonymize_cloud = excluded.anonymize_cloud,
-            hidden_terms = excluded.hidden_terms
+            hidden_terms = excluded.hidden_terms,
+            find_names_locally = excluded.find_names_locally
         "#,
     )
     .bind(i64::from(settings.anonymize_cloud))
     .bind(sealed)
+    .bind(i64::from(settings.find_names_locally))
     .execute(pool)
     .await
     .map_err(|error| format!("Could not save the privacy settings: {error}"))?;
@@ -111,5 +118,25 @@ mod tests {
     #[test]
     fn hiding_is_on_before_anyone_chooses() {
         assert!(PrivacySettings::default().anonymize_cloud);
+        assert!(PrivacySettings::default().find_names_locally);
+    }
+
+    #[tokio::test]
+    async fn the_local_name_search_is_on_after_migration_and_keeps_the_owners_choice() {
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        crate::database::manager::MIGRATOR.run(&pool).await.unwrap();
+
+        assert!(load(&pool).await.unwrap().find_names_locally);
+
+        let mut chosen = load(&pool).await.unwrap();
+        chosen.find_names_locally = false;
+        save(&pool, &chosen).await.unwrap();
+        let reread = load(&pool).await.unwrap();
+        assert!(!reread.find_names_locally);
+        assert!(reread.anonymize_cloud);
     }
 }

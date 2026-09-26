@@ -258,6 +258,56 @@ impl SummaryService {
         }
     }
 
+    /// Names in this conversation the archive does not know, found by the
+    /// built-in model — only when the text is about to leave this machine and
+    /// the owner has hiding and the search on.
+    ///
+    /// A search that cannot run (no local model, a failed generation) leaves
+    /// the known names to do the hiding, as before the search existed; it is
+    /// logged, never a reason to lose the summary.
+    #[allow(clippy::too_many_arguments)]
+    async fn find_unlisted_names(
+        pool: &SqlitePool,
+        meeting_id: &str,
+        provider: &LLMProvider,
+        ollama_endpoint: Option<&str>,
+        custom_openai_endpoint: Option<&str>,
+        text: &str,
+        app_data_dir: Option<&std::path::PathBuf>,
+        cancellation_token: &CancellationToken,
+        emit_progress: &impl Fn(&str, &str, Option<serde_json::Value>),
+    ) -> Vec<String> {
+        if !crate::summary::llm_client::leaves_this_machine(
+            provider,
+            ollama_endpoint,
+            custom_openai_endpoint,
+        ) {
+            return Vec::new();
+        }
+        let privacy = crate::privacy::settings::load(pool).await.unwrap_or_default();
+        if !privacy.anonymize_cloud || !privacy.find_names_locally {
+            return Vec::new();
+        }
+        let Some(app_data_dir) = app_data_dir else {
+            return Vec::new();
+        };
+
+        emit_progress("generating", "Looking for names with the local model…", None);
+        let known = crate::privacy::vocabulary::for_meeting(pool, Some(meeting_id)).await;
+        let known: Vec<String> = known.names.into_iter().chain(known.terms).collect();
+        match crate::privacy::local_names::find(app_data_dir, text, &known, Some(cancellation_token)).await
+        {
+            Ok(names) => names,
+            Err(error) => {
+                warn!(
+                    "🛡️ Local name search did not run ({}); only the names the archive knows are hidden",
+                    error
+                );
+                Vec::new()
+            }
+        }
+    }
+
     async fn read_detected_summary_language(
         pool: &SqlitePool,
         meeting_id: &str,
@@ -565,7 +615,21 @@ impl SummaryService {
         let client = reqwest::Client::new();
         // What identifies the people in this recording is replaced before it
         // can reach a model off this machine, and put back in the answer.
-        let hidden = crate::privacy::vocabulary::shield_for(&pool, Some(&meeting_id)).await;
+        // Names nobody listed are looked for first, by the model on this machine.
+        let found_names = Self::find_unlisted_names(
+            &pool,
+            &meeting_id,
+            &provider,
+            ollama_endpoint.as_deref(),
+            custom_openai_endpoint.as_deref(),
+            &text,
+            app_data_dir.as_ref(),
+            &cancellation_token,
+            &emit_progress,
+        )
+        .await;
+        let hidden =
+            crate::privacy::vocabulary::shield_with_names(&pool, Some(&meeting_id), found_names).await;
         let result = generate_meeting_summary(
             &client,
             &provider,

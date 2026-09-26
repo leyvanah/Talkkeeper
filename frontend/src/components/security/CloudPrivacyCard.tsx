@@ -19,6 +19,7 @@ import { Button } from '@/components/ui/button'
 interface PrivacyOverview {
   anonymizeCloud: boolean
   hiddenTerms: string[]
+  findNamesLocally: boolean
   knownNames: string[]
 }
 
@@ -60,13 +61,14 @@ export function CloudPrivacyCard() {
   const persist = async (next: Partial<PrivacyOverview>) => {
     if (!overview) return
     const anonymizeCloud = next.anonymizeCloud ?? overview.anonymizeCloud
+    const findNamesLocally = next.findNamesLocally ?? overview.findNamesLocally
     const hiddenTerms = (next.hiddenTerms ?? terms.split('\n'))
       .map((term) => term.trim())
       .filter(Boolean)
     setSaving(true)
     try {
-      await invoke('api_save_privacy_settings', { anonymizeCloud, hiddenTerms })
-      setOverview({ ...overview, anonymizeCloud, hiddenTerms })
+      await invoke('api_save_privacy_settings', { anonymizeCloud, hiddenTerms, findNamesLocally })
+      setOverview({ ...overview, anonymizeCloud, hiddenTerms, findNamesLocally })
       toast.success(t('cloudPrivacySaved'))
     } catch (error) {
       console.error('[Privacy] Failed to save settings:', error)
@@ -122,6 +124,19 @@ export function CloudPrivacyCard() {
                 {t('cloudPrivacyTermsSave')}
               </Button>
             </div>
+          </div>
+
+          <div className="flex items-start justify-between gap-4">
+            <div className="min-w-0">
+              <p className="text-xs font-medium text-gray-700">{t('cloudPrivacyLocalNames')}</p>
+              <p className="mt-1 text-xs text-gray-500">{t('cloudPrivacyLocalNamesHint')}</p>
+            </div>
+            <Switch
+              checked={overview.findNamesLocally}
+              disabled={saving}
+              onCheckedChange={(checked) => void persist({ findNamesLocally: checked })}
+              aria-label={t('cloudPrivacyLocalNames')}
+            />
           </div>
 
           <p className="text-xs text-gray-500">{t('cloudPrivacyLimits')}</p>
