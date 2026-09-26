@@ -1510,6 +1510,20 @@
     "localOnlyTitle": "This computer only",
     "localOnlyDescription": "Summaries, the assistant and speech recognition talk only to programs on this computer (the built-in model, a local Ollama or a local server). A request to a cloud provider or another computer is not sent. Downloading a model with its button is not affected.",
     "localOnlyOffWarning": "Off: meeting text can go to a cloud provider or another computer if one is chosen in the model or transcription settings.",
-    "localOnlySaveFailed": "Could not save the setting."
+    "localOnlySaveFailed": "Could not save the setting.",
+    "libraryExportTitle": "Library export",
+    "libraryExportDescription": "Take every recording out of the app: audio, transcripts and summaries, in folders by client.",
+    "libraryExportReadable": "Export as ordinary files…",
+    "libraryExportConfirmTitle": "The files will not be encrypted",
+    "libraryExportConfirmText": "The audio and text of every recording will be written to the chosen folder in the clear. Anyone with access to that folder can listen to and read them. Choose a place that is protected on its own: an encrypted drive, or a folder you will delete afterwards.",
+    "libraryExportConfirm": "Understood, choose a folder",
+    "libraryExportCancel": "Cancel",
+    "libraryExportPreparing": "Listing the recordings…",
+    "libraryExportProgress": "{done} of {total} written",
+    "libraryExportSummary": "Recordings exported: {meetings}, audio files: {audioFiles} ({megabytes} MB). Folder:",
+    "libraryExportDone": "Library exported",
+    "libraryExportPartial": "Library exported, but {failed, plural, one {# recording} other {# recordings}} could not be written — see the log",
+    "libraryExportFailed": "Could not export the library",
+    "libraryExportUnassigned": "No client"
   }
 }
