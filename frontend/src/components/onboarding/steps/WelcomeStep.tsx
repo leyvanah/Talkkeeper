@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { useTranslations } from 'next-intl';
 import { invoke } from '@tauri-apps/api/core';
-import { Lock, Sparkles, Cpu, RefreshCw } from 'lucide-react';
+import { Lock, Sparkles, Mic, Users, PenLine, Circle, RefreshCw } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { OnboardingContainer } from '../OnboardingContainer';
 import { useOnboarding } from '@/contexts/OnboardingContext';
@@ -17,18 +17,12 @@ export function WelcomeStep() {
   const [saving, setSaving] = useState(false);
 
   const features = [
-    {
-      icon: Lock,
-      title: t('featurePrivacy'),
-    },
-    {
-      icon: Sparkles,
-      title: t('featureSummaries'),
-    },
-    {
-      icon: Cpu,
-      title: t('featureOffline'),
-    },
+    { icon: Lock, title: t('featurePrivacy') },
+    { icon: Mic, title: t('featureRecognition') },
+    { icon: Circle, title: t('featureInstantRecording') },
+    { icon: Users, title: t('featureLibrary') },
+    { icon: PenLine, title: t('featureEditing') },
+    { icon: Sparkles, title: t('featureSummaries') },
   ];
 
   useEffect(() => {
