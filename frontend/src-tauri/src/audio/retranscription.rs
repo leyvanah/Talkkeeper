@@ -827,8 +827,14 @@ async fn run_retranscription<R: Runtime>(
     }
 
     // Reconstructed timestamps must remain stable across repeated runs.
-    let segments =
+    let mut segments =
         create_source_labeled_segments(&all_transcripts, &speaker_hints, recording_started_at)?;
+    // Each line was recognised from one track, and its label says which — read
+    // before a carried name takes the label's place.
+    let tracks: Vec<Option<&'static str>> = segments
+        .iter()
+        .map(|segment| crate::diarization::by_device::source_of_label(segment.speaker.as_deref()))
+        .collect();
 
     let mut conn = pool.acquire().await.map_err(|e| anyhow!("DB error: {}", e))?;
     let mut tx = sqlx::Connection::begin(&mut *conn)
@@ -844,12 +850,24 @@ async fn run_retranscription<R: Runtime>(
             .map_err(|e| anyhow!("Failed to repair meeting recording start: {}", e))?;
     }
 
-    crate::database::repositories::person::clear_meeting_speaker_mappings(
-        &mut tx,
-        &meeting_id,
-    )
-    .await
-    .map_err(|e| anyhow!("Failed to clear person speaker mappings: {}", e))?;
+    // Names a person gave speakers go back onto the new lines where they sat
+    // in the recording, before the old lines are gone.
+    let named = crate::diarization::carried_names::named_spans(&mut tx, &meeting_id)
+        .await
+        .map_err(|e| anyhow!("Failed to read speaker names: {}", e))?;
+    if !named.is_empty() {
+        let mut carried = 0usize;
+        for (segment, track) in segments.iter_mut().zip(&tracks) {
+            let (Some(start), Some(end)) = (segment.audio_start_time, segment.audio_end_time) else {
+                continue;
+            };
+            if let Some(name) = crate::diarization::carried_names::name_for(start, end, *track, &named) {
+                segment.speaker = Some(name);
+                carried += 1;
+            }
+        }
+        info!("Carried speaker names onto {} of {} new lines", carried, segments.len());
+    }
 
     // The recognizer's old lines go; the lines a person wrote stay.
     TranscriptEditsRepository::clear_machine_lines(&mut tx, &meeting_id, tracks_known)
@@ -864,7 +882,7 @@ async fn run_retranscription<R: Runtime>(
     );
     // Segments are made from the texts one for one and in order, so the
     // timings line up with them by position.
-    for (segment, words) in segments.iter().zip(all_words.iter()) {
+    for ((segment, words), track) in segments.iter().zip(all_words.iter()).zip(&tracks) {
         sqlx::query(
             "INSERT INTO transcripts (id, meeting_id, transcript, timestamp, audio_start_time, audio_end_time, duration, speaker, words, source_track)
              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
@@ -886,12 +904,16 @@ async fn run_retranscription<R: Runtime>(
                 .map(|words| fields::seal(fields::TRANSCRIPT_WORDS, &to_json(words)))
                 .transpose()?,
         )
-        // Each line was recognised from one track, and its label says which.
-        .bind(crate::diarization::by_device::source_of_label(segment.speaker.as_deref()))
+        .bind(*track)
         .execute(&mut *tx)
         .await
         .map_err(|e| anyhow!("Failed to insert transcript: {}", e))?;
     }
+
+    // A person stays linked to a name that came back; other links go.
+    crate::database::repositories::person::retain_present_speaker_mappings(&mut tx, &meeting_id)
+        .await
+        .map_err(|e| anyhow!("Failed to update person speaker mappings: {}", e))?;
 
     tx.commit().await
         .map_err(|e| anyhow!("Failed to commit transaction: {}", e))?;

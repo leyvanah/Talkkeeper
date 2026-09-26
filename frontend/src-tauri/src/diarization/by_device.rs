@@ -28,7 +28,7 @@ const REMOTE_LABEL: &str = "Speaker 1";
 const LOCAL_LABEL: &str = "You";
 
 /// Whether a label is one the app made up rather than a name someone chose.
-fn is_generated(label: &str) -> bool {
+pub(crate) fn is_generated(label: &str) -> bool {
     let trimmed = label.trim();
     trimmed.is_empty()
         || trimmed.contains(" + ")
