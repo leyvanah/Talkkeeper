@@ -4,6 +4,7 @@ import React, { createContext, useContext, useState, useEffect, useRef, useCallb
 import { usePathname, useRouter } from 'next/navigation';
 import { useTranslations } from 'next-intl';
 import { invoke } from '@tauri-apps/api/core';
+import { listen } from '@tauri-apps/api/event';
 import { useRecordingState } from '@/contexts/RecordingStateContext';
 import { usePanelLayout } from '@/components/PanelLayoutProvider';
 
@@ -168,6 +169,17 @@ export function SidebarProvider({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     fetchClients();
   }, [fetchClients]);
+
+  // An import adds recordings and clients behind the sidebar's back.
+  useEffect(() => {
+    const unlisten = listen('library-changed', () => {
+      void fetchMeetings();
+      void fetchClients();
+    });
+    return () => {
+      void unlisten.then((stop) => stop());
+    };
+  }, [fetchMeetings, fetchClients]);
 
   const assignMeetingToClient = React.useCallback(async (meetingId: string, clientId: string | null) => {
     await invoke('api_set_meeting_client', { meetingId, clientId });

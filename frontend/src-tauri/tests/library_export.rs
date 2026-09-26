@@ -94,3 +94,108 @@ async fn a_sealed_recording_comes_out_readable() {
     assert_eq!(record.lines[0].text, "Мы переезжаем в марте");
     assert!(entry.folder.ends_with("Разговор о переезде"));
 }
+
+#[tokio::test]
+async fn a_package_carries_a_recording_into_another_library_whole() {
+    use app_lib::audio::encrypted_audio::AudioSource;
+    use app_lib::library_export::import::{import_meeting, match_clients, Outcome};
+    use app_lib::library_export::sealed::{SealedExport, SealedPackage};
+    use app_lib::library_export::{clients, Manifest, FORMAT_VERSION};
+    use std::io::Read;
+
+    open_the_archive();
+    let source = archive().await;
+
+    let recording = tempfile::tempdir().unwrap();
+    let audio: Vec<u8> = (0..150_000u32).map(|i| (i % 241) as u8).collect();
+    let file = std::fs::File::create(recording.path().join("mic.mp4")).unwrap();
+    session::with_current_key(|key| {
+        let mut writer = EncryptedWriter::create(file, key).unwrap();
+        writer.write_all(&audio).unwrap();
+        writer.finish().unwrap();
+    })
+    .unwrap();
+
+    let (client_id, _) = app_lib::database::repositories::client::ClientsRepository::find_or_create(&source, "Вера")
+        .await
+        .unwrap();
+    sqlx::query(
+        "INSERT INTO meetings (id, title, created_at, updated_at, folder_path, client_id) \
+         VALUES ('m-transfer', ?, '2026-09-12T10:00:00Z', '2026-09-12T11:00:00Z', ?, ?)",
+    )
+    .bind(fields::seal(fields::MEETING_TITLE, "Вторая встреча").unwrap())
+    .bind(recording.path().to_string_lossy().to_string())
+    .bind(&client_id)
+    .execute(&source)
+    .await
+    .unwrap();
+    sqlx::query(
+        "INSERT INTO transcripts (id, meeting_id, transcript, timestamp, speaker, source_track, audio_start_time, audio_end_time) \
+         VALUES ('t-transfer', 'm-transfer', ?, '10:00:01', ?, 'system', 1.0, 3.0)",
+    )
+    .bind(fields::seal(fields::TRANSCRIPT_TEXT, "Про работу и отпуск").unwrap())
+    .bind(fields::seal_joinable(fields::TRANSCRIPT_SPEAKER, "Вера").unwrap())
+    .execute(&source)
+    .await
+    .unwrap();
+    sqlx::query("INSERT INTO meeting_speaker_roles (meeting_id, speaker_label, role) VALUES ('m-transfer', ?, 'client')")
+        .bind(fields::seal_joinable(fields::SPEAKER_LABEL, "Вера").unwrap())
+        .execute(&source)
+        .await
+        .unwrap();
+
+    // Export from the first library.
+    let collected = collect_meeting(&source, "m-transfer").await.unwrap();
+    let target = tempfile::tempdir().unwrap();
+    let mut export = SealedExport::create(target.path(), "перенос-2026").unwrap();
+    let (entry, _) = export.write_meeting(&collected).unwrap();
+    export
+        .write_manifest(&Manifest {
+            format: FORMAT_VERSION,
+            app_version: "test".into(),
+            exported_at: String::new(),
+            clients: clients(&source).await.unwrap(),
+            meetings: vec![entry.clone()],
+        })
+        .unwrap();
+
+    // Import into a second, empty library.
+    let destination = archive().await;
+    let recordings = tempfile::tempdir().unwrap();
+    let (package, manifest) = SealedPackage::open(export.root(), "перенос-2026").unwrap();
+    let package = Arc::new(package);
+    let matched = match_clients(&destination, &manifest.clients).await.unwrap();
+    let outcome = import_meeting(&destination, package.clone(), &entry, &matched, recordings.path())
+        .await
+        .unwrap();
+    assert_eq!(outcome, Outcome::Imported);
+    // A second import of the same package leaves the library as it is.
+    let again = import_meeting(&destination, package, &entry, &matched, recordings.path())
+        .await
+        .unwrap();
+    assert_eq!(again, Outcome::AlreadyPresent);
+    let folders = std::fs::read_dir(recordings.path()).unwrap().count();
+    assert_eq!(folders, 1);
+
+    // The recording reads the same, and its text is sealed in the new library.
+    let imported = collect_meeting(&destination, "m-transfer").await.unwrap();
+    assert_eq!(imported.record.title, "Вторая встреча");
+    assert_eq!(imported.record.lines, collected.record.lines);
+    assert_eq!(imported.record.speakers, collected.record.speakers);
+    assert_eq!(
+        clients(&destination).await.unwrap()[0].name,
+        "Вера"
+    );
+    let stored: String = sqlx::query_scalar("SELECT transcript FROM transcripts WHERE id = 't-transfer'")
+        .fetch_one(&destination)
+        .await
+        .unwrap();
+    assert!(!stored.contains("отпуск"));
+
+    let (name, path) = &imported.audio[0];
+    assert_eq!(name, "mic.mp4");
+    assert!(file_looks_encrypted(path));
+    let mut read = Vec::new();
+    AudioSource::open(path).unwrap().read_to_end(&mut read).unwrap();
+    assert_eq!(read, audio);
+}

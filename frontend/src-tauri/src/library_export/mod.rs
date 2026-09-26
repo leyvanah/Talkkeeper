@@ -13,7 +13,9 @@
 //! to a temporary file on the way.
 
 pub mod commands;
+pub mod import;
 pub mod plain;
+pub mod sealed;
 
 use std::path::{Path, PathBuf};
 

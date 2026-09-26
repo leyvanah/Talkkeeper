@@ -604,6 +604,8 @@ pub fn run() {
             privacy::commands::api_get_privacy_settings,
             privacy::commands::api_save_privacy_settings,
             library_export::commands::export_library_readable,
+            library_export::commands::export_library_package,
+            library_export::commands::import_library_package,
             security::commands::security_lock,
             security::commands::security_export_key_backup,
             security::commands::security_touch,

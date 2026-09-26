@@ -972,6 +972,49 @@ fn format_audio_time(seconds: f64) -> String {
     format!("{:02}:{:02}", seconds / 60, seconds % 60)
 }
 
+/// Link a speaker of a meeting to the person going by `person_name`, creating
+/// the person when the library has nobody by that name. Used by an import,
+/// which brings the link from another installation by name, not by id.
+pub(crate) async fn link_speaker_to_person(
+    tx: &mut Transaction<'_, Sqlite>,
+    meeting_id: &str,
+    label: &str,
+    person_name: &str,
+) -> Result<(), sqlx::Error> {
+    if !is_person_name(person_name) {
+        return Ok(());
+    }
+    let normalized = normalize_person_name(person_name);
+    let person_id = match find_person_by_normalized_name(tx, &normalized).await? {
+        Some(id) => id,
+        None => {
+            let id = format!("person-{}", Uuid::new_v4());
+            sqlx::query(
+                "INSERT INTO people \
+                 (id, display_name, normalized_name, notes, created_at, updated_at) \
+                 VALUES (?, ?, ?, NULL, datetime('now'), datetime('now'))",
+            )
+            .bind(&id)
+            .bind(fields::seal(fields::PERSON_NAME, person_name.trim())?)
+            .bind(fields::lookup(fields::PERSON_LOOKUP, &normalized)?)
+            .execute(&mut **tx)
+            .await?;
+            id
+        }
+    };
+    sqlx::query(
+        "INSERT INTO person_speakers (person_id, meeting_id, speaker_label) \
+         VALUES (?, ?, ?) \
+         ON CONFLICT(meeting_id, speaker_label) DO UPDATE SET person_id = excluded.person_id",
+    )
+    .bind(person_id)
+    .bind(meeting_id)
+    .bind(fields::seal_joinable(fields::SPEAKER_LABEL, label)?)
+    .execute(&mut **tx)
+    .await?;
+    Ok(())
+}
+
 /// Drop the person links of labels no line of the meeting carries any more.
 ///
 /// After a retranscription a name carried back onto the new lines keeps the
