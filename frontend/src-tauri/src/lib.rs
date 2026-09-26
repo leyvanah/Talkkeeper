@@ -47,6 +47,7 @@ pub mod openai;
 pub mod anthropic;
 pub mod groq;
 pub mod openrouter;
+pub mod library_export;
 pub mod live_assistant;
 pub mod logging;
 pub mod meeting_detection;
@@ -602,6 +603,9 @@ pub fn run() {
             security::commands::security_unlock_with_recovery,
             privacy::commands::api_get_privacy_settings,
             privacy::commands::api_save_privacy_settings,
+            library_export::commands::export_library_readable,
+            library_export::commands::export_library_package,
+            library_export::commands::import_library_package,
             security::commands::security_lock,
             security::commands::security_export_key_backup,
             security::commands::security_touch,
