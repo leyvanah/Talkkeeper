@@ -5,8 +5,15 @@ import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import type { PermissionStatus, OnboardingPermissions } from '@/types/onboarding';
 import { resolveOnboardingSummaryModelStatus } from '@/lib/onboarding-summary-model';
+import { useAppLocale } from '@/contexts/LocaleContext';
 
 const PARAKEET_MODEL = 'parakeet-tdt-0.6b-v3-int8';
+
+/** Live speech recognition engine offered during onboarding. */
+export type SttEngine = 'parakeet' | 'gigaam';
+
+const isSttEngine = (value: unknown): value is SttEngine =>
+  value === 'parakeet' || value === 'gigaam';
 
 interface OnboardingStatus {
   version: string;
@@ -16,6 +23,7 @@ interface OnboardingStatus {
     parakeet: string;
     summary: string;
     selected_summary_model?: string;
+    stt_engine?: string;
   };
   last_updated: string;
 }
@@ -36,6 +44,11 @@ interface ParakeetProgressInfo {
 
 interface OnboardingContextType {
   currentStep: number;
+  /** Engine the user picked; until then Russian UI suggests GigaAM, others Parakeet. */
+  sttEngine: SttEngine;
+  /** The chosen engine's model is on disk. */
+  sttDownloaded: boolean;
+  gigaamDownloaded: boolean;
   parakeetDownloaded: boolean;
   parakeetProgress: number;
   parakeetProgressInfo: ParakeetProgressInfo;
@@ -54,7 +67,9 @@ interface OnboardingContextType {
   goNext: () => void;
   goPrevious: () => void;
   // Setters
+  setSttEngine: (engine: SttEngine) => void;
   setParakeetDownloaded: (value: boolean) => void;
+  setGigaamDownloaded: (value: boolean) => void;
   setSummaryModelDownloaded: (value: boolean) => void;
   setSelectedSummaryModel: (value: string) => void;
   setDatabaseExists: (value: boolean) => void;
@@ -66,7 +81,8 @@ interface OnboardingContextType {
 }
 
 interface StartBackgroundDownloadsOptions {
-  includeParakeet: boolean;
+  /** Download the chosen speech recognition engine. */
+  includeStt: boolean;
   includeSummary: boolean;
   summaryModel?: string;
 }
@@ -76,7 +92,12 @@ const OnboardingContext = createContext<OnboardingContextType | undefined>(undef
 export function OnboardingProvider({ children }: { children: React.ReactNode }) {
   const [currentStep, setCurrentStep] = useState(1);
   const [completed, setCompleted] = useState(false);
+  const { locale } = useAppLocale();
+  const [chosenSttEngine, setChosenSttEngine] = useState<SttEngine | null>(null);
+  const sttEngine: SttEngine = chosenSttEngine ?? (locale === 'ru' ? 'gigaam' : 'parakeet');
+  const [gigaamDownloaded, setGigaamDownloaded] = useState(false);
   const [parakeetDownloaded, setParakeetDownloaded] = useState(false);
+  const sttDownloaded = sttEngine === 'gigaam' ? gigaamDownloaded : parakeetDownloaded;
   const [parakeetProgress, setParakeetProgress] = useState(0);
   const [parakeetProgressInfo, setParakeetProgressInfo] = useState<ParakeetProgressInfo>({
     percent: 0,
@@ -239,7 +260,7 @@ export function OnboardingProvider({ children }: { children: React.ReactNode }) 
     return () => {
       if (saveTimeoutRef.current) clearTimeout(saveTimeoutRef.current);
     };
-  }, [currentStep, parakeetDownloaded, summaryModelDownloaded, completed]);
+  }, [currentStep, parakeetDownloaded, summaryModelDownloaded, chosenSttEngine, completed]);
 
   // Listen to Parakeet download progress
   useEffect(() => {
@@ -294,6 +315,16 @@ export function OnboardingProvider({ children }: { children: React.ReactNode }) 
       unlisten.then(fn => fn());
       unlistenComplete.then(fn => fn());
       unlistenError.then(fn => fn());
+    };
+  }, []);
+
+  // GigaAM reports completion only; progress is drawn by the download step
+  useEffect(() => {
+    const unlisten = listen('gigaam-model-download-complete', () => {
+      setGigaamDownloaded(true);
+    });
+    return () => {
+      unlisten.then(fn => fn());
     };
   }, []);
 
@@ -353,6 +384,9 @@ export function OnboardingProvider({ children }: { children: React.ReactNode }) 
           setCurrentStep(status.current_step);
           setCompleted(true);
           setParakeetDownloaded(status.model_status.parakeet === 'downloaded');
+          if (isSttEngine(status.model_status.stt_engine)) {
+            setChosenSttEngine(status.model_status.stt_engine);
+          }
           setSummaryModelDownloaded(status.model_status.summary === 'downloaded');
           if (status.model_status.selected_summary_model) {
             setSelectedSummaryModel(status.model_status.selected_summary_model);
@@ -368,6 +402,10 @@ export function OnboardingProvider({ children }: { children: React.ReactNode }) 
         setCurrentStep(verifiedStatus.currentStep);
         setCompleted(verifiedStatus.completed);
         setParakeetDownloaded(verifiedStatus.parakeetDownloaded);
+        setGigaamDownloaded(verifiedStatus.gigaamDownloaded);
+        if (isSttEngine(status.model_status.stt_engine)) {
+          setChosenSttEngine(status.model_status.stt_engine);
+        }
         setSummaryModelDownloaded(verifiedStatus.summaryModelDownloaded);
         if (verifiedStatus.selectedSummaryModel) {
           setSelectedSummaryModel(verifiedStatus.selectedSummaryModel);
@@ -389,6 +427,7 @@ export function OnboardingProvider({ children }: { children: React.ReactNode }) 
   // Verify that models actually exist on disk, not just trust saved JSON
   const verifyModelStatus = async (savedStatus: OnboardingStatus) => {
     let parakeetDownloaded = false;
+    let gigaamDownloaded = false;
     let summaryModelDownloaded = false;
     let selectedSummaryModel = '';
 
@@ -400,6 +439,13 @@ export function OnboardingProvider({ children }: { children: React.ReactNode }) 
     } catch (error) {
       console.warn('[OnboardingContext] Failed to verify Parakeet:', error);
       parakeetDownloaded = false;
+    }
+
+    try {
+      const gigaam = await invoke<{ installed: boolean }>('gigaam_get_model_status');
+      gigaamDownloaded = gigaam.installed;
+    } catch (error) {
+      console.warn('[OnboardingContext] Failed to verify GigaAM:', error);
     }
 
     // Verify the selected/recommended Summary model exists on disk.
@@ -441,6 +487,7 @@ export function OnboardingProvider({ children }: { children: React.ReactNode }) 
       currentStep,
       completed,
       parakeetDownloaded,
+      gigaamDownloaded,
       summaryModelDownloaded,
       selectedSummaryModel,
     };
@@ -465,6 +512,7 @@ export function OnboardingProvider({ children }: { children: React.ReactNode }) 
             parakeet: parakeetDownloaded ? 'downloaded' : 'not_downloaded',
             summary: summaryModelDownloaded ? 'downloaded' : 'not_downloaded',
             selected_summary_model: selectedSummaryModel || undefined,
+            stt_engine: chosenSttEngine || undefined,
           },
           last_updated: new Date().toISOString(),
         },
@@ -503,6 +551,7 @@ export function OnboardingProvider({ children }: { children: React.ReactNode }) 
       // Onboarding always uses builtin-ai with selected model
       await invoke('complete_onboarding', {
         model: modelToSave,
+        sttEngine,
       });
       setCompleted(true);
       console.log('[OnboardingContext] Onboarding completed with model:', modelToSave);
@@ -518,36 +567,41 @@ export function OnboardingProvider({ children }: { children: React.ReactNode }) 
 
   // Start background downloads for models.
   const startBackgroundDownloads = async ({
-    includeParakeet,
+    includeStt,
     includeSummary,
     summaryModel,
   }: StartBackgroundDownloadsOptions) => {
     console.log('[OnboardingContext] Starting background downloads:', {
-      includeParakeet,
+      sttEngine,
+      includeStt,
       includeSummary,
       summaryModel,
     });
 
     try {
-      const shouldStartParakeet = includeParakeet && !parakeetDownloaded;
+      const shouldStartStt = includeStt && !sttDownloaded;
       const shouldStartSummary = includeSummary
-        && parakeetDownloaded
+        && sttDownloaded
         && !summaryModelDownloaded
         && !!summaryModel;
 
-      if (!shouldStartParakeet && !shouldStartSummary) {
+      if (!shouldStartStt && !shouldStartSummary) {
         if (includeSummary && !summaryModelDownloaded && !summaryModel) {
           console.warn('[OnboardingContext] Summary Model download skipped until recommendation is loaded');
-        } else if (includeSummary && !parakeetDownloaded) {
-          console.log('[OnboardingContext] Summary Model download is waiting for Parakeet');
+        } else if (includeSummary && !sttDownloaded) {
+          console.log('[OnboardingContext] Summary Model download is waiting for speech recognition');
         }
         return;
       }
 
       setIsBackgroundDownloading(true);
 
-      // Start Parakeet download first (speech recognition - always required)
-      if (shouldStartParakeet) {
+      // Speech recognition first - recording needs it
+      if (shouldStartStt && sttEngine === 'gigaam') {
+        console.log('[OnboardingContext] Starting GigaAM download');
+        invoke('gigaam_download_model')
+          .catch(err => console.error('[OnboardingContext] GigaAM download failed:', err));
+      } else if (shouldStartStt) {
         console.log('[OnboardingContext] Starting Parakeet download');
         invoke('parakeet_download_model', { modelName: PARAKEET_MODEL })
           .catch(err => console.error('[OnboardingContext] Parakeet download failed:', err));
@@ -623,6 +677,9 @@ export function OnboardingProvider({ children }: { children: React.ReactNode }) 
     <OnboardingContext.Provider
       value={{
         currentStep,
+        sttEngine,
+        sttDownloaded,
+        gigaamDownloaded,
         parakeetDownloaded,
         parakeetProgress,
         parakeetProgressInfo,
@@ -638,7 +695,9 @@ export function OnboardingProvider({ children }: { children: React.ReactNode }) 
         goToStep,
         goNext,
         goPrevious,
+        setSttEngine: setChosenSttEngine,
         setParakeetDownloaded,
+        setGigaamDownloaded,
         setSummaryModelDownloaded,
         setSelectedSummaryModel,
         setDatabaseExists,

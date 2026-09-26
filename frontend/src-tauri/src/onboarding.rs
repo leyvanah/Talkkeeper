@@ -23,6 +23,9 @@ pub struct ModelStatus {
     pub summary: String,   // Generic field for summary model (Qwen 3.5 or legacy Gemma variants)
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub selected_summary_model: Option<String>,
+    /// Live speech recognition engine picked during onboarding: "parakeet" | "gigaam"
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stt_engine: Option<String>,
 }
 
 impl Default for OnboardingStatus {
@@ -35,6 +38,7 @@ impl Default for OnboardingStatus {
                 parakeet: "not_downloaded".to_string(),
                 summary: "not_downloaded".to_string(),  // Changed from gemma
                 selected_summary_model: None,
+                stt_engine: None,
             },
             last_updated: chrono::Utc::now().to_rfc3339(),
         }
@@ -172,8 +176,10 @@ pub async fn complete_onboarding<R: Runtime>(
     app: AppHandle<R>,
     state: tauri::State<'_, AppState>,
     model: String,
+    stt_engine: Option<String>,
 ) -> Result<(), String> {
     info!("Completing onboarding with builtin-ai model: {}", model);
+    let (stt_provider, stt_model) = live_transcript_config(stt_engine.as_deref());
 
     // Step 1: Save model configuration to SQLite database FIRST
     let pool = state.db_manager.pool();
@@ -191,16 +197,16 @@ pub async fn complete_onboarding<R: Runtime>(
     }
     info!("Saved builtin-ai model config: model={}", model);
 
-    // Save transcription model config (parakeet provider) - always parakeet
+    // Save the live transcription engine the user picked (Parakeet or GigaAM)
     if let Err(e) = SettingsRepository::save_transcript_config(
         pool,
-        "parakeet",
-        crate::config::DEFAULT_PARAKEET_MODEL,
+        stt_provider,
+        stt_model,
     ).await {
         error!("Failed to save transcription model config: {}", e);
         return Err(format!("Failed to save transcription model config: {}", e));
     }
-    info!("Saved transcription model config: provider=parakeet, model={}", crate::config::DEFAULT_PARAKEET_MODEL);
+    info!("Saved transcription model config: provider={}, model={}", stt_provider, stt_model);
 
     // Step 2: Only NOW mark onboarding as complete (after DB operations succeed)
     let mut status = load_onboarding_status(&app)
@@ -209,9 +215,12 @@ pub async fn complete_onboarding<R: Runtime>(
 
     status.completed = true;
     status.current_step = 4; // Max step (4 on macOS with permissions, 3 on other platforms)
-    status.model_status.parakeet = "downloaded".to_string();
+    if stt_provider == "parakeet" {
+        status.model_status.parakeet = "downloaded".to_string();
+    }
     status.model_status.summary = "downloaded".to_string();
     status.model_status.selected_summary_model = Some(model.clone());
+    status.model_status.stt_engine = Some(stt_provider.to_string());
 
     save_onboarding_status(&app, &status)
         .await
@@ -221,9 +230,35 @@ pub async fn complete_onboarding<R: Runtime>(
     Ok(())
 }
 
+/// Provider and model saved as the live transcription config for the engine
+/// chosen during onboarding. Anything unknown (older frontends send nothing)
+/// keeps the previous default, Parakeet.
+fn live_transcript_config(stt_engine: Option<&str>) -> (&'static str, &'static str) {
+    match stt_engine {
+        Some("gigaam") => ("gigaam", crate::gigaam_engine::engine::MODEL_NAME),
+        _ => ("parakeet", crate::config::DEFAULT_PARAKEET_MODEL),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn onboarding_engine_choice_maps_to_the_live_transcript_config() {
+        assert_eq!(
+            live_transcript_config(Some("gigaam")),
+            ("gigaam", crate::gigaam_engine::engine::MODEL_NAME)
+        );
+        assert_eq!(
+            live_transcript_config(Some("parakeet")),
+            ("parakeet", crate::config::DEFAULT_PARAKEET_MODEL)
+        );
+        assert_eq!(
+            live_transcript_config(None),
+            ("parakeet", crate::config::DEFAULT_PARAKEET_MODEL)
+        );
+    }
 
     #[test]
     fn onboarding_status_deserializes_without_selected_summary_model() {

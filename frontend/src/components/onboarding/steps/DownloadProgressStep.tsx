@@ -9,8 +9,12 @@ import { useOnboarding } from '@/contexts/OnboardingContext';
 import { toast } from 'sonner';
 import { motion, AnimatePresence } from 'framer-motion';
 import { getSummaryModelSizeLabel, getSummaryModelSizeMb } from '@/lib/onboarding-summary-model';
+import { GIGAAM_MODEL_NAME } from '@/components/GigaamModelManager';
 
 const PARAKEET_MODEL = 'parakeet-tdt-0.6b-v3-int8';
+
+// Download sizes shown before the first progress event arrives
+const STT_SIZE_MB = { parakeet: 670, gigaam: 215 } as const;
 
 type DownloadStatus = 'waiting' | 'downloading' | 'completed' | 'error';
 
@@ -29,8 +33,10 @@ export function DownloadProgressStep() {
     goNext,
     selectedSummaryModel,
     recommendedSummaryModel,
-    parakeetDownloaded,
+    sttEngine,
+    sttDownloaded,
     setParakeetDownloaded,
+    setGigaamDownloaded,
     summaryModelDownloaded,
     setSummaryModelDownloaded,
     startBackgroundDownloads,
@@ -39,11 +45,11 @@ export function DownloadProgressStep() {
 
   const [isMac, setIsMac] = useState(false);
 
-  const [parakeetState, setParakeetState] = useState<DownloadState>({
-    status: parakeetDownloaded ? 'completed' : 'waiting',
-    progress: parakeetDownloaded ? 100 : 0,
+  const [sttState, setSttState] = useState<DownloadState>({
+    status: sttDownloaded ? 'completed' : 'waiting',
+    progress: sttDownloaded ? 100 : 0,
     downloadedMb: 0,
-    totalMb: 670,
+    totalMb: STT_SIZE_MB[sttEngine],
     speedMbps: 0,
   });
 
@@ -56,7 +62,7 @@ export function DownloadProgressStep() {
   });
 
   const [isCompleting, setIsCompleting] = useState(false);
-  const parakeetDownloadStartedRef = useRef(false);
+  const sttDownloadStartedRef = useRef(false);
   const summaryDownloadStartedRef = useRef(false);
   const retryingRef = useRef(false);
   const retryingSummaryRef = useRef(false);
@@ -69,11 +75,11 @@ export function DownloadProgressStep() {
       return;
     }
 
-    console.log('[DownloadProgressStep] Retrying Parakeet download');
+    console.log('[DownloadProgressStep] Retrying speech recognition download:', sttEngine);
     retryingRef.current = true;
 
     // Reset error state
-    setParakeetState((prev) => ({
+    setSttState((prev) => ({
       ...prev,
       status: 'waiting',
       error: undefined,
@@ -83,12 +89,18 @@ export function DownloadProgressStep() {
     }));
 
     try {
-      await invoke('parakeet_retry_download', { modelName: PARAKEET_MODEL });
+      if (sttEngine === 'gigaam') {
+        // Picks up the partial files where the last attempt stopped
+        setSttState((prev) => ({ ...prev, status: 'downloading' }));
+        await invoke('gigaam_download_model');
+      } else {
+        await invoke('parakeet_retry_download', { modelName: PARAKEET_MODEL });
+      }
       // Progress events will update state
     } catch (error) {
       console.error('[DownloadProgressStep] Retry failed:', error);
       const message = String(error);
-      setParakeetState((prev) => ({
+      setSttState((prev) => ({
         ...prev,
         status: 'error',
         error: message,
@@ -169,20 +181,20 @@ export function DownloadProgressStep() {
 
   // Start the required transcription model immediately; summary readiness must not block it.
   useEffect(() => {
-    if (parakeetDownloadStartedRef.current) return;
-    parakeetDownloadStartedRef.current = true;
+    if (sttDownloadStartedRef.current) return;
+    sttDownloadStartedRef.current = true;
 
-    if (!parakeetDownloaded) {
-      setParakeetState((prev) => ({ ...prev, status: 'downloading' }));
+    if (!sttDownloaded) {
+      setSttState((prev) => ({ ...prev, status: 'downloading' }));
     }
 
     startBackgroundDownloads({
-      includeParakeet: true,
+      includeStt: true,
       includeSummary: false,
     }).catch((error) => {
-      console.error('Failed to start Parakeet download:', error);
-      if (!parakeetDownloaded) {
-        setParakeetState((prev) => ({ ...prev, status: 'error', error: String(error) }));
+      console.error('Failed to start speech recognition download:', error);
+      if (!sttDownloaded) {
+        setSttState((prev) => ({ ...prev, status: 'error', error: String(error) }));
       }
     });
   }, []);
@@ -190,15 +202,16 @@ export function DownloadProgressStep() {
   // Step 2 starts only after the required transcription model reaches 100%.
   useEffect(() => {
     if (summaryDownloadStartedRef.current) return;
-    if (!parakeetDownloaded || summaryModelDownloaded) return;
+    if (!sttDownloaded || summaryModelDownloaded) return;
     if (!selectedSummaryModel) return;
     summaryDownloadStartedRef.current = true;
 
     startSummaryDownload();
-  }, [parakeetDownloaded, selectedSummaryModel, summaryModelDownloaded]);
+  }, [sttDownloaded, selectedSummaryModel, summaryModelDownloaded]);
 
   // Listen to Parakeet download progress
   useEffect(() => {
+    if (sttEngine !== 'parakeet') return;
     const unlistenProgress = listen<{
       modelName: string;
       progress: number;
@@ -209,7 +222,7 @@ export function DownloadProgressStep() {
     }>('parakeet-model-download-progress', (event) => {
       const { modelName, progress, downloaded_mb, total_mb, speed_mbps, status } = event.payload;
       if (modelName === PARAKEET_MODEL) {
-        setParakeetState((prev) => ({
+        setSttState((prev) => ({
           ...prev,
           status: status === 'completed'
             ? 'completed'
@@ -232,7 +245,7 @@ export function DownloadProgressStep() {
       'parakeet-model-download-complete',
       (event) => {
         if (event.payload.modelName === PARAKEET_MODEL) {
-          setParakeetState((prev) => ({ ...prev, status: 'completed', progress: 100 }));
+          setSttState((prev) => ({ ...prev, status: 'completed', progress: 100 }));
           setParakeetDownloaded(true);
         }
       }
@@ -242,7 +255,7 @@ export function DownloadProgressStep() {
       'parakeet-model-download-error',
       (event) => {
         if (event.payload.modelName === PARAKEET_MODEL) {
-          setParakeetState((prev) => ({
+          setSttState((prev) => ({
             ...prev,
             status: 'error',
             error: event.payload.error,
@@ -256,7 +269,45 @@ export function DownloadProgressStep() {
       unlistenComplete.then((fn) => fn());
       unlistenError.then((fn) => fn());
     };
-  }, []);
+  }, [sttEngine]);
+
+  // Listen to GigaAM download progress
+  useEffect(() => {
+    if (sttEngine !== 'gigaam') return;
+    const unlisteners = [
+      listen<{
+        progress: { downloadedMb: number; totalMb: number; speedMbps: number; percent: number };
+      }>('gigaam-model-download-progress', (event) => {
+        const { downloadedMb, totalMb, speedMbps, percent } = event.payload.progress;
+        setSttState((prev) => ({
+          ...prev,
+          status: 'downloading',
+          progress: percent,
+          downloadedMb,
+          totalMb: totalMb || prev.totalMb,
+          speedMbps,
+        }));
+      }),
+      listen('gigaam-model-download-complete', () => {
+        setSttState((prev) => ({ ...prev, status: 'completed', progress: 100 }));
+        setGigaamDownloaded(true);
+      }),
+      listen<{ error?: string }>('gigaam-model-download-failed', (event) => {
+        setSttState((prev) => ({
+          ...prev,
+          status: 'error',
+          error: event.payload?.error,
+        }));
+      }),
+      listen('gigaam-model-download-cancelled', () => {
+        setSttState((prev) => ({ ...prev, status: 'waiting', speedMbps: 0 }));
+      }),
+    ];
+
+    return () => {
+      unlisteners.forEach((pending) => pending.then((fn) => fn()));
+    };
+  }, [sttEngine]);
 
   // Listen to Summary Model download progress (always downloading for builtin-ai)
   useEffect(() => {
@@ -327,7 +378,7 @@ export function DownloadProgressStep() {
           totalMb: getSummaryModelSizeMb(selectedSummaryModel),
         }));
         await startBackgroundDownloads({
-          includeParakeet: false,
+          includeStt: false,
           includeSummary: true,
           summaryModel: selectedSummaryModel,
         });
@@ -341,18 +392,28 @@ export function DownloadProgressStep() {
   const handleContinue = async () => {
     // Verify actual model availability (catches state drift)
     try {
-      await invoke('parakeet_init');
-      const actuallyAvailable = await invoke<boolean>('parakeet_has_available_models');
+      let actuallyAvailable: boolean;
+      if (sttEngine === 'gigaam') {
+        const status = await invoke<{ installed: boolean }>('gigaam_get_model_status');
+        actuallyAvailable = status.installed;
+      } else {
+        await invoke('parakeet_init');
+        actuallyAvailable = await invoke<boolean>('parakeet_has_available_models');
+      }
 
-      if (actuallyAvailable && !parakeetDownloaded) {
+      if (actuallyAvailable && !sttDownloaded) {
         console.log('[DownloadProgressStep] Model available but state not updated');
-        setParakeetDownloaded(true);
-        setParakeetState((prev) => ({
+        if (sttEngine === 'gigaam') {
+          setGigaamDownloaded(true);
+        } else {
+          setParakeetDownloaded(true);
+        }
+        setSttState((prev) => ({
           ...prev,
           status: 'completed',
           progress: 100,
         }));
-      } else if (!actuallyAvailable && parakeetState.status === 'error') {
+      } else if (!actuallyAvailable && sttState.status === 'error') {
         toast.error(t('dlEngineRequired'), {
           description: t('dlRetryBeforeContinuing'),
         });
@@ -363,7 +424,7 @@ export function DownloadProgressStep() {
     }
 
     // Check if downloads are complete for toast notification
-    const downloadsComplete = parakeetState.status === 'completed' &&
+    const downloadsComplete = sttState.status === 'completed' &&
       summaryState.status === 'completed';
 
     // Show toast if downloads still in progress
@@ -481,10 +542,10 @@ export function DownloadProgressStep() {
           {renderDownloadCard(
             1,
             t('dlTranscriptionEngine'),
-            PARAKEET_MODEL,
+            sttEngine === 'gigaam' ? GIGAAM_MODEL_NAME : PARAKEET_MODEL,
             <Mic className="w-5 h-5 text-gray-600" />,
-            parakeetState,
-            '~670 MB'
+            sttState,
+            `~${STT_SIZE_MB[sttEngine]} MB`
           )}
 
           {renderDownloadCard(
@@ -500,7 +561,7 @@ export function DownloadProgressStep() {
 
         {/* Info Message - Only show when Parakeet is downloaded */}
         <AnimatePresence>
-          {parakeetDownloaded && !summaryModelDownloaded && (
+          {sttDownloaded && !summaryModelDownloaded && (
             <motion.div
               initial={{ opacity: 0, y: -10 }}
               animate={{ opacity: 1, y: 0 }}
@@ -525,10 +586,10 @@ export function DownloadProgressStep() {
         <div className="w-full max-w-xs">
           <Button
             onClick={handleContinue}
-            disabled={!parakeetDownloaded || isCompleting}
+            disabled={!sttDownloaded || isCompleting}
             className="w-full h-11 bg-gray-900 hover:bg-gray-800 text-white disabled:opacity-50 disabled:cursor-not-allowed"
           >
-            {(isCompleting || !parakeetDownloaded) ? (
+            {(isCompleting || !sttDownloaded) ? (
               <Loader2 className="w-4 h-4 mr-2 animate-spin" />
             ) : (
               t('continue')
