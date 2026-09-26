@@ -108,7 +108,7 @@ impl Vocabulary {
 /// The stem is the word without its final vowel; a word ending in a consonant
 /// keeps all of it. Short words keep all of it too — a two-letter stem would
 /// match half the language.
-fn stem_of(word: &str) -> &str {
+pub(super) fn stem_of(word: &str) -> &str {
     const VOWELS: [char; 12] = ['а', 'е', 'ё', 'и', 'й', 'о', 'у', 'ы', 'э', 'ю', 'я', 'ь'];
     let lowered: Vec<char> = word.chars().collect();
     if lowered.len() < 4 {
@@ -125,7 +125,7 @@ fn stem_of(word: &str) -> &str {
 
 /// The longest tail allowed after a stem, in characters. Russian endings are
 /// short; three covers "Анной", "Марией", "Петровичем" is a separate word.
-const MAX_TAIL: usize = 3;
+pub(super) const MAX_TAIL: usize = 3;
 
 fn is_word_char(c: char) -> bool {
     c.is_alphanumeric() || c == '_'

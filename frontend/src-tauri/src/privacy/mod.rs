@@ -2,6 +2,7 @@
 
 pub mod anonymize;
 pub mod commands;
+pub mod local_names;
 pub mod settings;
 pub mod vocabulary;
 
