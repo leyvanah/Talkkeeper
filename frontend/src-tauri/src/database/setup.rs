@@ -30,6 +30,11 @@ pub async fn initialize_database_on_startup(app: &AppHandle) -> Result<(), Strin
             .await
             .map_err(|e| format!("Failed to initialize database manager: {}", e))?;
 
+        // A development build takes its own recordings out of the installed
+        // application's folder, before anything scans or plays them.
+        #[cfg(debug_assertions)]
+        crate::audio::recording_preferences::adopt_development_recordings(db_manager.pool()).await;
+
         app.manage(AppState { db_manager });
         info!("Database initialized successfully");
     }
