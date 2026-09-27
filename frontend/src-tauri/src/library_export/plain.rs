@@ -82,6 +82,9 @@ impl PlainExport {
         if let Some(summary) = record.summary_markdown() {
             write_atomically(&folder.join("summary.md"), summary.as_bytes())?;
         }
+        if let Some(notes) = notes_markdown(record) {
+            write_atomically(&folder.join("notes.md"), notes.as_bytes())?;
+        }
         let json = serde_json::to_vec_pretty(record).map_err(io::Error::other)?;
         write_atomically(&folder.join(MEETING_NAME), &json)?;
 
@@ -124,6 +127,22 @@ fn with_suffix(path: &Path, suffix: &str) -> PathBuf {
     let mut name = path.file_name().unwrap_or_default().to_os_string();
     name.push(suffix);
     path.with_file_name(name)
+}
+
+/// The owner's notes as a person reads them, each with its moment in the
+/// recording when it has one.
+pub fn notes_markdown(record: &MeetingRecord) -> Option<String> {
+    if record.notes.is_empty() {
+        return None;
+    }
+    let mut out = format!("# {}\n\n", record.title.trim());
+    for note in &record.notes {
+        match note.at {
+            Some(at) => out.push_str(&format!("**[{}]** {}\n\n", clock(at), note.text)),
+            None => out.push_str(&format!("{}\n\n", note.text)),
+        }
+    }
+    Some(out)
 }
 
 /// The transcript as a person reads it: who spoke, when, what.
@@ -171,6 +190,15 @@ mod tests {
         }
     }
 
+    fn note(id: &str, at: Option<f64>, text: &str) -> crate::meeting_notes::Note {
+        crate::meeting_notes::Note {
+            id: id.into(),
+            at,
+            text: text.into(),
+            written_at: "2026-09-12T11:00:00+00:00".into(),
+        }
+    }
+
     fn record() -> MeetingRecord {
         MeetingRecord {
             id: "m1".into(),
@@ -187,6 +215,7 @@ mod tests {
             summary: Some(r#"{"markdown":"Итоги"}"#.into()),
             speakers: Vec::new(),
             tracks: vec!["audio.mp4".into()],
+            notes: vec![note("n1", Some(83.0), "по ходу"), note("n2", None, "после")],
         }
     }
 
@@ -225,6 +254,9 @@ mod tests {
         let folder = export.root().join(&entry.folder);
         assert_eq!(std::fs::read(folder.join("audio.mp4")).unwrap(), b"audio bytes");
         assert_eq!(std::fs::read_to_string(folder.join("summary.md")).unwrap(), "Итоги");
+        let notes = std::fs::read_to_string(folder.join("notes.md")).unwrap();
+        assert!(notes.contains("**[01:23]** по ходу\n\n"));
+        assert!(notes.contains("\nпосле\n"));
         let reread: MeetingRecord =
             serde_json::from_slice(&std::fs::read(folder.join(MEETING_NAME)).unwrap()).unwrap();
         assert_eq!(reread, record());

@@ -359,6 +359,24 @@ pub async fn api_process_transcript<R: Runtime>(
         if t.is_empty() { None } else { Some(t.to_string()) }
     });
 
+    // The owner's own notes are read after the transcript: often they are
+    // exactly what the summary should keep. Everything after this point —
+    // the stored chunks, the hiding before a cloud model — treats them as
+    // part of the text.
+    let text = match crate::meeting_notes::load(&pool, &m_id).await {
+        Ok(notes) => match crate::meeting_notes::for_summary(&notes) {
+            Some(section) => {
+                log_info!("Summary reads {} notes beside the transcript", notes.len());
+                format!("{text}\n\n{section}")
+            }
+            None => text,
+        },
+        Err(error) => {
+            log_warn!("Could not read the notes for the summary: {}", error);
+            text
+        }
+    };
+
     // Create or reset the process entry in the database
     if let Err(error) = SummaryProcessesRepository::create_or_reset_process(&pool, &m_id).await {
         SummaryService::cleanup_cancellation_token(&m_id, &registration);

@@ -50,6 +50,7 @@ pub mod openrouter;
 pub mod library_export;
 pub mod live_assistant;
 pub mod logging;
+pub mod meeting_notes;
 pub mod meeting_detection;
 pub mod minibar;
 pub mod model_integrity;
@@ -606,6 +607,14 @@ pub fn run() {
             library_export::commands::export_library_readable,
             library_export::commands::export_library_package,
             library_export::commands::import_library_package,
+            meeting_notes::commands::recording_note_add,
+            meeting_notes::commands::recording_note_edit,
+            meeting_notes::commands::recording_note_remove,
+            meeting_notes::commands::recording_notes,
+            meeting_notes::commands::api_get_meeting_notes,
+            meeting_notes::commands::api_add_meeting_note,
+            meeting_notes::commands::api_edit_meeting_note,
+            meeting_notes::commands::api_remove_meeting_note,
             security::commands::security_lock,
             security::commands::security_export_key_backup,
             security::commands::security_touch,

@@ -118,6 +118,15 @@ pub fn is_recording_active() -> bool {
     IS_RECORDING.load(Ordering::SeqCst)
 }
 
+/// How far into the recording now running we are, in seconds of recorded
+/// sound: the time pauses took is left out, as it is from the audio itself.
+pub fn recorded_seconds() -> Option<f64> {
+    lock_or_recover(&RECORDING_MANAGER)
+        .as_ref()
+        .and_then(|manager| manager.get_active_recording_duration())
+        .map(|seconds| seconds.max(0.0))
+}
+
 /// Rechecked by the minibar lifecycle after acquiring its own serialization
 /// lock. The minimize callback may have observed recording=true before native
 /// shutdown claimed IS_STOPPING.

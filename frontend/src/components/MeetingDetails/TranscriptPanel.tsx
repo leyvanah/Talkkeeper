@@ -30,6 +30,7 @@ import { WindowHeaderSlot } from '@/components/AppHeader';
 import { TranscriptTableView } from './TranscriptTableView';
 import { TRANSCRIPT_REWOUND } from './TranscriptLineEditor';
 import { createPlayhead } from '@/lib/playhead';
+import { onMeetingSeek } from '@/lib/meeting-seek';
 import { speakerChoices } from '@/lib/transcript-speakers';
 import { toast } from 'sonner';
 import {
@@ -121,6 +122,11 @@ export function TranscriptPanel({
   const [hasAudio, setHasAudio] = useState(false);
   const playerRef = useRef<RecordingPlayerHandle>(null);
   const seekTo = useCallback((seconds: number) => playerRef.current?.seek(seconds), []);
+  // A note's moment, clicked in the panel beside this one.
+  useEffect(() => {
+    if (!meetingId || isRecording) return;
+    return onMeetingSeek(meetingId, seekTo);
+  }, [meetingId, isRecording, seekTo]);
   // Corrections, on a saved meeting only. The transcript is read again after
   // each, so both layouts show what was stored rather than a local guess.
   // Who a line can be given to: the speakers the loaded transcript has.

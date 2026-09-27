@@ -207,5 +207,7 @@ async fn insert_meeting(
         }
     }
 
+    crate::meeting_notes::store(&mut tx, &record.id, &record.notes).await?;
+
     tx.commit().await
 }

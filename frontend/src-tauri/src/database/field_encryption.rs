@@ -143,6 +143,13 @@ fn columns() -> Vec<Column> {
             kind: Kind::Sealed,
         },
         Column {
+            table: "meeting_notes",
+            key: "meeting_id",
+            name: "notes_json",
+            field: fields::MEETING_NOTES,
+            kind: Kind::Sealed,
+        },
+        Column {
             table: "privacy_settings",
             key: "id",
             name: "hidden_terms",
@@ -444,6 +451,7 @@ mod tests {
                  speaker_label TEXT NOT NULL, role TEXT NOT NULL); \
              CREATE TABLE privacy_settings (id TEXT PRIMARY KEY, \
                  anonymize_cloud INTEGER NOT NULL DEFAULT 1, hidden_terms TEXT); \
+             CREATE TABLE meeting_notes (meeting_id TEXT PRIMARY KEY, notes_json TEXT); \
              INSERT INTO meetings VALUES ('m1', 'Встреча'); \
              INSERT INTO transcripts VALUES ('t1', 'первая реплика', 'Анна', NULL, NULL, NULL, \
                  '[{\"w\":\"первая\",\"s\":0.0,\"e\":0.4}]'); \

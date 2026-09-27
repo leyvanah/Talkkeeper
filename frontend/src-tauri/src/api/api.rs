@@ -989,10 +989,17 @@ pub async fn api_save_transcript<R: Runtime>(
 
     // Now, call the repository with the correctly typed data.
     let journal_folder = folder_path.clone();
+    // The notes written during the recording are in its journal; they are
+    // saved with the meeting, before the journal goes.
+    let notes = folder_path
+        .as_deref()
+        .map(|folder| crate::audio::transcript_journal::notes_in(std::path::Path::new(folder)))
+        .unwrap_or_default();
     match TranscriptsRepository::save_transcript(
         pool,
         &meeting_title,
         &transcripts_to_save,
+        &notes,
         folder_path,
         recording_started_at,
     )

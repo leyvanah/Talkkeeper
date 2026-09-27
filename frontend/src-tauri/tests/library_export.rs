@@ -144,8 +144,14 @@ async fn a_package_carries_a_recording_into_another_library_whole() {
         .await
         .unwrap();
 
+    let notes = vec![app_lib::meeting_notes::Note::new("вернуться к отпуску", Some(2.0)).unwrap()];
+    let mut conn = source.acquire().await.unwrap();
+    app_lib::meeting_notes::store(&mut conn, "m-transfer", &notes).await.unwrap();
+    drop(conn);
+
     // Export from the first library.
     let collected = collect_meeting(&source, "m-transfer").await.unwrap();
+    assert_eq!(collected.record.notes, notes);
     let target = tempfile::tempdir().unwrap();
     let mut export = SealedExport::create(target.path(), "перенос-2026").unwrap();
     let (entry, _) = export.write_meeting(&collected).unwrap();
@@ -182,6 +188,12 @@ async fn a_package_carries_a_recording_into_another_library_whole() {
     assert_eq!(imported.record.title, "Вторая встреча");
     assert_eq!(imported.record.lines, collected.record.lines);
     assert_eq!(imported.record.speakers, collected.record.speakers);
+    assert_eq!(imported.record.notes, notes);
+    let sealed_notes: String = sqlx::query_scalar("SELECT notes_json FROM meeting_notes WHERE meeting_id = 'm-transfer'")
+        .fetch_one(&destination)
+        .await
+        .unwrap();
+    assert!(!sealed_notes.contains("отпуск"));
     assert_eq!(
         clients(&destination).await.unwrap()[0].name,
         "Вера"
