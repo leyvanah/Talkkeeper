@@ -77,6 +77,10 @@ async fn archive() -> SqlitePool {
         .execute(&pool)
         .await
         .unwrap();
+    sqlx::raw_sql(include_str!("../migrations/20251223000000_add_meeting_notes.sql"))
+        .execute(&pool)
+        .await
+        .unwrap();
     pool
 }
 
@@ -122,6 +126,7 @@ async fn the_words_are_not_in_the_database_file() {
             segment("s1", "отчёт за квартал будет в пятницу", "Анна", 0.0),
             segment("s2", "давайте сверим числа", "You", 3.0),
         ],
+        &[],
         None,
         None,
     )
@@ -179,6 +184,7 @@ async fn search_still_finds_a_sealed_word() {
         &pool,
         "Встреча в четверг",
         &[segment("s1", "отчёт будет в пятницу", "Анна", 0.0)],
+        &[],
         None,
         None,
     )
@@ -219,6 +225,7 @@ async fn a_person_profile_still_joins_to_the_lines_they_said() {
             segment("s1", "первая реплика", "Анна", 0.0),
             segment("s2", "вторая реплика", "Анна", 3.0),
         ],
+        &[],
         None,
         None,
     )
@@ -296,6 +303,7 @@ async fn a_role_assigned_to_a_named_speaker_is_found_again() {
             segment("s1", "первая реплика", "You", 0.0),
             segment("s2", "вторая реплика", "Анна", 3.0),
         ],
+        &[],
         None,
         None,
     )
@@ -340,6 +348,7 @@ async fn a_correction_is_sealed_and_a_removal_leaves_no_words() {
             segment("s1", "первая реплика", "Анна", 0.0),
             segment("s2", "вторая реплика", "You", 3.0),
         ],
+        &[],
         None,
         None,
     )

@@ -9,13 +9,13 @@ use uuid::Uuid;
 pub struct TranscriptsRepository;
 
 impl TranscriptsRepository {
-    /// Saves a new meeting and its associated transcript segments.
-    /// This function uses a transaction to ensure that either both the meeting
-    /// and all its transcripts are saved, or none of them are.
+    /// Saves a new meeting, its transcript segments and the notes the owner
+    /// wrote while it was recorded — all of them or none, in one transaction.
     pub async fn save_transcript(
         pool: &SqlitePool,
         meeting_title: &str,
         transcripts: &[TranscriptSegment],
+        notes: &[crate::meeting_notes::Note],
         folder_path: Option<String>,
         recording_started_at: Option<DateTime<Utc>>,
     ) -> Result<String, SqlxError> {
@@ -101,6 +101,12 @@ impl TranscriptsRepository {
             transcripts.len(),
             meeting_id
         );
+
+        if let Err(e) = crate::meeting_notes::store(&mut transaction, &meeting_id, notes).await {
+            error!("Failed to save the notes of meeting {}: {}", meeting_id, e);
+            transaction.rollback().await?;
+            return Err(e);
+        }
 
         // Commit the transaction
         transaction.commit().await?;

@@ -13,6 +13,9 @@
 //! was still filling when the process died, which for a transcript is all of
 //! it. A torn last line is simply skipped on reading.
 //!
+//! The owner's notes written during the recording go into the same journal,
+//! for the same reason: a crash that loses the meeting must not lose them.
+//!
 //! The journal is deleted once the meeting is saved to the database. A journal
 //! still on disk therefore means a recording that was never saved, which is
 //! exactly what the recovery dialog asks for.
@@ -28,6 +31,7 @@ use serde::{Deserialize, Serialize};
 use super::orphan_recordings::{dismiss, is_dismissed, looks_like_recording, probe, AudioOnly};
 use super::recording_saver::TranscriptSegment;
 use crate::database::fields;
+use crate::meeting_notes::Note;
 use crate::security::field::Field;
 
 /// File name inside the meeting folder.
@@ -46,6 +50,10 @@ enum Record {
     /// A line of transcript. A later record with the same `sequence_id`
     /// replaces an earlier one, as the in-memory list does.
     Segment(TranscriptSegment),
+    /// A note the owner wrote. A later record with the same `id` replaces it.
+    Note(Note),
+    /// A note the owner took back.
+    NoteRemoved { id: String },
 }
 
 /// The journal of the recording now running, if any.
@@ -54,6 +62,9 @@ static CURRENT: Mutex<Option<Journal>> = Mutex::new(None);
 struct Journal {
     folder: PathBuf,
     file: File,
+    /// The notes as they stand, so the window can show them again after it
+    /// was closed or reloaded mid-recording.
+    notes: Vec<Note>,
 }
 
 impl Journal {
@@ -79,6 +90,7 @@ pub fn begin(folder: &Path, title: &str, started_at: &str) {
         Ok(file) => Journal {
             folder: folder.to_path_buf(),
             file,
+            notes: Vec::new(),
         },
         Err(error) => {
             warn!("Could not open the transcript journal: {error}");
@@ -102,6 +114,69 @@ pub fn append(segment: &TranscriptSegment) {
     if let Some(journal) = current().as_mut() {
         if let Err(error) = journal.append(&Record::Segment(segment.clone())) {
             warn!("Could not add a line to the transcript journal: {error}");
+        }
+    }
+}
+
+/// Adds a note to the running journal. Unlike a transcript line, a note that
+/// cannot be kept is the owner's to know about: it is an error.
+pub fn add_note(note: Note) -> Result<Note, String> {
+    let mut guard = current();
+    let journal = guard.as_mut().ok_or("No recording is running")?;
+    journal
+        .append(&Record::Note(note.clone()))
+        .map_err(|error| format!("Could not keep the note: {error}"))?;
+    journal.notes.push(note.clone());
+    Ok(note)
+}
+
+/// Replaces the text of a note of the running recording.
+pub fn edit_note(id: &str, text: &str) -> Result<Note, String> {
+    let mut guard = current();
+    let journal = guard.as_mut().ok_or("No recording is running")?;
+    let index = journal
+        .notes
+        .iter()
+        .position(|note| note.id == id)
+        .ok_or("No such note")?;
+    let edited = journal.notes[index].edited(text)?;
+    journal
+        .append(&Record::Note(edited.clone()))
+        .map_err(|error| format!("Could not keep the note: {error}"))?;
+    journal.notes[index] = edited.clone();
+    Ok(edited)
+}
+
+/// Takes a note of the running recording back.
+pub fn remove_note(id: &str) -> Result<(), String> {
+    let mut guard = current();
+    let journal = guard.as_mut().ok_or("No recording is running")?;
+    if !journal.notes.iter().any(|note| note.id == id) {
+        return Ok(());
+    }
+    journal
+        .append(&Record::NoteRemoved { id: id.to_string() })
+        .map_err(|error| format!("Could not remove the note: {error}"))?;
+    journal.notes.retain(|note| note.id != id);
+    Ok(())
+}
+
+/// The notes of the running recording; none when nothing is recording.
+pub fn current_notes() -> Vec<Note> {
+    current()
+        .as_ref()
+        .map(|journal| journal.notes.clone())
+        .unwrap_or_default()
+}
+
+/// The notes the journal in `folder` holds, for the meeting being saved from
+/// it. A journal that does not open gives none; the meeting is saved anyway.
+pub fn notes_in(folder: &Path) -> Vec<Note> {
+    match read(folder) {
+        Ok(journal) => journal.map(|journal| journal.notes).unwrap_or_default(),
+        Err(error) => {
+            warn!("Could not read the notes of a recording: {error}");
+            Vec::new()
         }
     }
 }
@@ -143,6 +218,9 @@ pub struct Unsaved {
     /// Modification time of the journal, milliseconds since the epoch.
     pub last_updated: i64,
     pub segments: Vec<TranscriptSegment>,
+    /// The owner's notes, kept with the meeting when it is restored.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub notes: Vec<Note>,
     /// Set when there is no transcript to restore, only audio: restoring then
     /// means recognising the recording again.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -186,6 +264,7 @@ fn read(folder: &Path) -> anyhow::Result<Option<Unsaved>> {
     let mut title = String::new();
     let mut started_at = String::new();
     let mut segments: Vec<TranscriptSegment> = Vec::new();
+    let mut notes: Vec<Note> = Vec::new();
     let mut skipped = 0usize;
 
     for line in BufReader::new(file).lines() {
@@ -213,6 +292,11 @@ fn read(folder: &Path) -> anyhow::Result<Option<Unsaved>> {
                     None => segments.push(segment),
                 }
             }
+            Some(Record::Note(note)) => match notes.iter_mut().find(|existing| existing.id == note.id) {
+                Some(existing) => *existing = note,
+                None => notes.push(note),
+            },
+            Some(Record::NoteRemoved { id }) => notes.retain(|note| note.id != id),
             None => skipped += 1,
         }
     }
@@ -227,6 +311,7 @@ fn read(folder: &Path) -> anyhow::Result<Option<Unsaved>> {
         started_at,
         last_updated,
         segments,
+        notes,
         audio_only: None,
     }))
 }
@@ -343,8 +428,8 @@ pub async fn list_unsaved_recordings<R: tauri::Runtime>(
                 let Some(audio) = probe(&folder, archive_open) else {
                     continue;
                 };
-                let (title, started_at) = journal
-                    .map(|journal| (journal.title, journal.started_at))
+                let (title, started_at, notes) = journal
+                    .map(|journal| (journal.title, journal.started_at, journal.notes))
                     .unwrap_or_default();
                 unsaved.push(Unsaved {
                     folder_path: folder.to_string_lossy().into_owned(),
@@ -352,6 +437,7 @@ pub async fn list_unsaved_recordings<R: tauri::Runtime>(
                     started_at,
                     last_updated: last_written(&folder),
                     segments: Vec::new(),
+                    notes,
                     audio_only: Some(audio),
                 });
             }
@@ -423,8 +509,20 @@ mod tests {
         append(&segment(2, "второе"));
         append(&segment(1, "первое"));
         append(&segment(2, "второе, исправленное"));
+
+        // Notes: added, edited, one taken back — and remembered for the window.
+        let kept = add_note(Note::new("заметка", Some(1.5)).unwrap()).unwrap();
+        let dropped = add_note(Note::new("лишняя", Some(2.0)).unwrap()).unwrap();
+        edit_note(&kept.id, "заметка, дописанная").unwrap();
+        remove_note(&dropped.id).unwrap();
+        assert!(edit_note("no-such-note", "x").is_err());
+        let live: Vec<_> = current_notes().into_iter().map(|note| note.text).collect();
+        assert_eq!(live, ["заметка, дописанная"]);
+
         end();
         assert!(active_folder().is_none());
+        assert!(current_notes().is_empty());
+        assert!(add_note(Note::new("после остановки", None).unwrap()).is_err());
 
         // A crash mid-write leaves half a line.
         let mut file = OpenOptions::new()
@@ -438,6 +536,11 @@ mod tests {
         assert_eq!(journal.title, "Встреча");
         let texts: Vec<_> = journal.segments.iter().map(|s| s.text.as_str()).collect();
         assert_eq!(texts, ["первое", "второе, исправленное"]);
+        assert_eq!(journal.notes.len(), 1);
+        assert_eq!(journal.notes[0].id, kept.id);
+        assert_eq!(journal.notes[0].text, "заметка, дописанная");
+        assert_eq!(journal.notes[0].at, Some(1.5));
+        assert_eq!(notes_in(&folder), journal.notes);
 
         assert_eq!(find(&[root.path().to_path_buf()]), vec![folder.clone()]);
         remove(&folder);

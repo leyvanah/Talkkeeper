@@ -674,8 +674,6 @@
     "tabSummary": "Summary",
     "tabNotes": "Notes",
     "tabChat": "Chat",
-    "notesSoonTitle": "Notes are coming",
-    "notesSoonBody": "You will be able to write your own notes here during a recording. They will be kept with the meeting.",
     "chatEmpty": "Ask anything about this meeting — the answer is drawn from its transcript."
   },
   "settings": {
@@ -1545,5 +1543,27 @@
     "libraryImportDone": "Package imported",
     "libraryImportPartial": "Package imported, but {failed, plural, one {# recording} other {# recordings}} could not be added — see the log",
     "libraryImportFailed": "Could not import the package"
+  },
+  "notes": {
+    "title": "Notes",
+    "show": "Notes",
+    "hide": "Hide notes",
+    "placeholderLive": "A note… Enter to save",
+    "placeholder": "A new note… Enter to save",
+    "newLineHint": "Shift+Enter for a new line",
+    "emptyLive": "Write as the recording goes. Each note gets the time you started typing it and is kept with the meeting.",
+    "empty": "No notes yet. Notes written during the recording appear here with their time in it.",
+    "summaryHint": "Notes are taken into account when the summary is written.",
+    "add": "Add note",
+    "edit": "Edit",
+    "remove": "Delete",
+    "confirmRemove": "Delete?",
+    "save": "Save",
+    "cancel": "Cancel",
+    "seekTo": "Go to {time} in the recording",
+    "afterRecording": "after the recording",
+    "saveFailed": "Could not save the note",
+    "removeFailed": "Could not delete the note",
+    "loadFailed": "Could not read the notes"
   }
 }

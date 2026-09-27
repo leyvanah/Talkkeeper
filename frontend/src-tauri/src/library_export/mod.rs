@@ -120,6 +120,9 @@ pub struct MeetingRecord {
     pub speakers: Vec<SpeakerRecord>,
     /// Audio files of the recording, by name inside its folder.
     pub tracks: Vec<String>,
+    /// The owner's own notes. Absent from exports made before notes existed.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub notes: Vec<crate::meeting_notes::Note>,
 }
 
 impl MeetingRecord {
@@ -185,6 +188,10 @@ pub async fn collect_meeting(pool: &SqlitePool, meeting_id: &str) -> Result<Coll
 
     let speakers = speakers_of(pool, meeting_id).await?;
 
+    let notes = crate::meeting_notes::load(pool, meeting_id)
+        .await
+        .map_err(|error| format!("Could not read the notes: {error}"))?;
+
     let audio = match meeting.folder_path.as_deref() {
         Some(folder) => audio_files(Path::new(folder)),
         None => Vec::new(),
@@ -201,6 +208,7 @@ pub async fn collect_meeting(pool: &SqlitePool, meeting_id: &str) -> Result<Coll
             summary,
             speakers,
             tracks: audio.iter().map(|(name, _)| name.clone()).collect(),
+            notes,
         },
         audio,
     })
@@ -409,6 +417,7 @@ mod tests {
             summary: Some(r#"{"markdown":"итоги"}"#.into()),
             speakers: Vec::new(),
             tracks: Vec::new(),
+            notes: Vec::new(),
         };
         assert_eq!(record.summary_markdown().as_deref(), Some("итоги"));
         record.summary = Some("not json".into());

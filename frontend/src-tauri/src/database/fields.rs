@@ -77,10 +77,9 @@ pub const PERSON_NOTES: Field = Field::new("people", "notes");
 /// nothing — silently, which is the worst way for it to fail.
 pub const SPEAKER_LABEL: Field = TRANSCRIPT_SPEAKER;
 
-// `meeting_notes` is deliberately absent. The table exists in the schema
-// from upstream, but nothing in this application reads or writes it — the
-// notes editor keeps its content on the front end. Sealing a table no code
-// opens would encrypt rows nothing can decrypt again.
+/// The owner's own notes on a meeting, as one JSON list. The table comes from
+/// upstream, which never used it; its `notes_markdown` column stays empty.
+pub const MEETING_NOTES: Field = Field::new("meeting_notes", "notes_json");
 
 /// Lookup columns. These are not sealed — they are blinded, so SQL can still
 /// match a row by exact name without being able to read the name.

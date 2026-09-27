@@ -276,6 +276,12 @@ mod tests {
             summary: None,
             speakers: Vec::new(),
             tracks: vec!["audio.mp4".into()],
+            notes: vec![crate::meeting_notes::Note {
+                id: "n1".into(),
+                at: Some(4.0),
+                text: "заметка".into(),
+                written_at: "2026-09-12T11:00:00+00:00".into(),
+            }],
         }
     }
 
