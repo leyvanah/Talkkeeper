@@ -240,41 +240,137 @@ impl Default for RecordingPreferences {
     }
 }
 
-/// Get the default recordings folder based on platform
-pub fn get_default_recordings_folder() -> PathBuf {
+/// Name of the recordings folder.
+///
+/// A development build keeps its own. Sharing the installed application's
+/// folder mixed test takes into the owner's recordings, and made the
+/// development build offer the installed one's recordings — sealed with a key
+/// it does not have — as interrupted meetings to restore, on every start.
+/// Worse, setting or removing a password re-encrypts everything under the
+/// recording roots: from a development build that reached into the real
+/// archive.
+#[cfg(debug_assertions)]
+const RECORDINGS_DIR_NAME: &str = "meetily-recordings-dev";
+#[cfg(not(debug_assertions))]
+const RECORDINGS_DIR_NAME: &str = "meetily-recordings";
+
+/// The recording preferences store. A development build keeps its own too:
+/// the store sits in the per-identifier app data folder the installed
+/// application reads, and a development build writing its folder into it
+/// would send the installed application's recordings there.
+#[cfg(debug_assertions)]
+const PREFERENCES_STORE: &str = "recording_preferences-dev.json";
+#[cfg(not(debug_assertions))]
+const PREFERENCES_STORE: &str = "recording_preferences.json";
+
+/// Where the platform keeps a user's recordings folder.
+fn recordings_base_dir() -> PathBuf {
     #[cfg(target_os = "windows")]
     {
-        // Windows: %USERPROFILE%\Music\meetily-recordings
-        if let Some(music_dir) = dirs::audio_dir() {
-            music_dir.join("meetily-recordings")
-        } else {
-            // Fallback to Documents if Music folder is not available
-            dirs::document_dir()
-                .unwrap_or_else(|| PathBuf::from("."))
-                .join("meetily-recordings")
-        }
+        // Windows: %USERPROFILE%\Music, else Documents
+        dirs::audio_dir()
+            .or_else(dirs::document_dir)
+            .unwrap_or_else(|| PathBuf::from("."))
     }
 
     #[cfg(target_os = "macos")]
     {
-        // macOS: ~/Movies/meetily-recordings
-        if let Some(movies_dir) = dirs::video_dir() {
-            movies_dir.join("meetily-recordings")
-        } else {
-            // Fallback to Documents if Movies folder is not available
-            dirs::document_dir()
-                .unwrap_or_else(|| PathBuf::from("."))
-                .join("meetily-recordings")
-        }
+        // macOS: ~/Movies, else Documents
+        dirs::video_dir()
+            .or_else(dirs::document_dir)
+            .unwrap_or_else(|| PathBuf::from("."))
     }
 
     #[cfg(not(any(target_os = "windows", target_os = "macos")))]
     {
-        // Linux/Others: ~/Documents/meetily-recordings
-        dirs::document_dir()
-            .unwrap_or_else(|| PathBuf::from("."))
-            .join("meetily-recordings")
+        // Linux/Others: ~/Documents
+        dirs::document_dir().unwrap_or_else(|| PathBuf::from("."))
     }
+}
+
+/// Get the default recordings folder based on platform
+pub fn get_default_recordings_folder() -> PathBuf {
+    recordings_base_dir().join(RECORDINGS_DIR_NAME)
+}
+
+/// The installed application's recordings folder, as seen from a development
+/// build — only to take back the development build's own recordings from it.
+#[cfg(debug_assertions)]
+fn release_recordings_folder() -> PathBuf {
+    recordings_base_dir().join("meetily-recordings")
+}
+
+/// Moves the recordings this development build's library owns out of the
+/// installed application's folder into its own.
+///
+/// "Owns" is decided by this build's database alone: a folder is moved only
+/// when a meeting here points at it. Everything else in that folder belongs to
+/// the installed application and is not touched. A move is a rename on the
+/// same drive; the meeting is repointed only after it succeeded, and the
+/// folder goes back if the database refuses the new path.
+#[cfg(debug_assertions)]
+pub async fn adopt_development_recordings(pool: &sqlx::SqlitePool) {
+    let moved = adopt_recordings(pool, &release_recordings_folder(), &get_default_recordings_folder()).await;
+    if moved > 0 {
+        info!("Moved {moved} development recordings into their own folder");
+    }
+}
+
+/// Moves the folders under `release` that meetings in `pool` point at into
+/// `own`, repointing each meeting. Returns how many moved.
+#[cfg_attr(not(any(debug_assertions, test)), allow(dead_code))]
+async fn adopt_recordings(pool: &sqlx::SqlitePool, release: &Path, own: &Path) -> usize {
+    let Ok(release_canonical) = release.canonicalize() else {
+        return 0;
+    };
+    let rows: Vec<(String, String)> = match sqlx::query_as(
+        "SELECT id, folder_path FROM meetings WHERE folder_path IS NOT NULL",
+    )
+    .fetch_all(pool)
+    .await
+    {
+        Ok(rows) => rows,
+        Err(error) => {
+            warn!("Could not list recording folders to move: {error}");
+            return 0;
+        }
+    };
+
+    let mut moved = 0usize;
+    for (meeting_id, folder_path) in rows {
+        let folder = PathBuf::from(&folder_path);
+        let inside_release = folder
+            .parent()
+            .and_then(|parent| parent.canonicalize().ok())
+            .is_some_and(|parent| parent == release_canonical);
+        if !inside_release || !folder.is_dir() {
+            continue;
+        }
+        let Some(name) = folder.file_name() else {
+            continue;
+        };
+        let target = own.join(name);
+        if target.exists() {
+            warn!("Not moving {}: the development folder already has it", folder.display());
+            continue;
+        }
+        if let Err(error) = std::fs::create_dir_all(own).and_then(|_| std::fs::rename(&folder, &target)) {
+            warn!("Could not move {} to the development folder: {error}", folder.display());
+            continue;
+        }
+        let updated = sqlx::query("UPDATE meetings SET folder_path = ? WHERE id = ?")
+            .bind(target.to_string_lossy().to_string())
+            .bind(&meeting_id)
+            .execute(pool)
+            .await;
+        if let Err(error) = updated {
+            warn!("Could not repoint meeting {meeting_id}; moving its folder back: {error}");
+            let _ = std::fs::rename(&target, &folder);
+            continue;
+        }
+        moved += 1;
+    }
+    moved
 }
 
 /// Ensure the recordings directory exists
@@ -397,7 +493,7 @@ pub async fn load_recording_preferences<R: Runtime>(
     app: &AppHandle<R>,
 ) -> Result<RecordingPreferences> {
     // Try to load from Tauri store
-    let store = match app.store("recording_preferences.json") {
+    let store = match app.store(PREFERENCES_STORE) {
         Ok(store) => store,
         Err(e) => {
             warn!("Failed to access store: {}, using defaults", e);
@@ -426,8 +522,20 @@ pub async fn load_recording_preferences<R: Runtime>(
             }
         }
     } else {
-        info!("No stored preferences found, using defaults");
-        RecordingPreferences::default()
+        let seeded = seed_development_preferences(app);
+        match &seeded {
+            // Kept in this build's own store, so the seeding happens once.
+            Some(preferences) => {
+                if let Ok(value) = serde_json::to_value(preferences) {
+                    store.set("preferences", value);
+                    if let Err(error) = store.save() {
+                        warn!("Failed to keep the development preferences: {error}");
+                    }
+                }
+            }
+            None => info!("No stored preferences found, using defaults"),
+        }
+        seeded.unwrap_or_default()
     };
 
     #[cfg(target_os = "macos")]
@@ -465,6 +573,24 @@ pub async fn load_recording_preferences<R: Runtime>(
     Ok(prefs)
 }
 
+/// A development build's first preferences: the installed application's,
+/// with the development recordings folder. Read only — the shared store is
+/// never written from here.
+#[cfg(debug_assertions)]
+fn seed_development_preferences<R: Runtime>(app: &AppHandle<R>) -> Option<RecordingPreferences> {
+    let shared = app.store("recording_preferences.json").ok()?;
+    let value = shared.get("preferences")?;
+    let mut preferences = serde_json::from_value::<RecordingPreferences>(value).ok()?;
+    preferences.save_folder = get_default_recordings_folder();
+    info!("Development preferences started from the installed application's, with their own folder");
+    Some(preferences)
+}
+
+#[cfg(not(debug_assertions))]
+fn seed_development_preferences<R: Runtime>(_app: &AppHandle<R>) -> Option<RecordingPreferences> {
+    None
+}
+
 /// Save recording preferences to store
 pub async fn save_recording_preferences<R: Runtime>(
     app: &AppHandle<R>,
@@ -484,7 +610,7 @@ pub async fn save_recording_preferences<R: Runtime>(
 
     // Get or create store
     let store = app
-        .store("recording_preferences.json")
+        .store(PREFERENCES_STORE)
         .map_err(|e| anyhow::anyhow!("Failed to access store: {}", e))?;
 
     // Serialize preferences to JSON value
@@ -784,6 +910,45 @@ pub async fn get_audio_backend_info() -> Result<Vec<BackendInfo>, String> {
 
 #[cfg(test)]
 mod tests {
+    #[tokio::test]
+    async fn only_folders_this_library_owns_move_into_its_own_folder() {
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        crate::database::manager::MIGRATOR.run(&pool).await.unwrap();
+        let root = tempfile::tempdir().unwrap();
+        let shared = root.path().join("meetily-recordings");
+        let own = root.path().join("meetily-recordings-dev");
+        for name in ["rec-mine", "rec-theirs"] {
+            std::fs::create_dir_all(shared.join(name)).unwrap();
+            std::fs::write(shared.join(name).join("audio.mp4"), b"a").unwrap();
+        }
+        sqlx::query(
+            "INSERT INTO meetings (id, title, created_at, updated_at, folder_path) VALUES              ('m1', 't', '2026-09-23T10:00:00Z', '2026-09-23T10:00:00Z', ?),              ('m2', 't', '2026-09-23T10:00:00Z', '2026-09-23T10:00:00Z', ?)",
+        )
+        .bind(shared.join("rec-mine").to_string_lossy().to_string())
+        .bind(root.path().join("elsewhere").join("rec-x").to_string_lossy().to_string())
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        assert_eq!(adopt_recordings(&pool, &shared, &own).await, 1);
+        // A second start has nothing left to move.
+        assert_eq!(adopt_recordings(&pool, &shared, &own).await, 0);
+
+        assert!(own.join("rec-mine").join("audio.mp4").exists());
+        assert!(!shared.join("rec-mine").exists());
+        // Not this library's: left exactly where it was.
+        assert!(shared.join("rec-theirs").join("audio.mp4").exists());
+        let path: String = sqlx::query_scalar("SELECT folder_path FROM meetings WHERE id = 'm1'")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(PathBuf::from(path), own.join("rec-mine"));
+    }
+
     use super::*;
     use std::time::{SystemTime, UNIX_EPOCH};
 

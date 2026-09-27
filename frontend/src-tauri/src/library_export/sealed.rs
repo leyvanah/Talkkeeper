@@ -18,7 +18,7 @@
 //! nothing about them.
 
 use std::fs;
-use std::io::{self, Read, Write};
+use std::io::{self, Read};
 use std::path::{Path, PathBuf};
 
 use base64::Engine as _;
