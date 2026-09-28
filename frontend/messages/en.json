@@ -1351,6 +1351,7 @@
     "postCallNoModel": "No downloaded transcription model is available for post-call enhancement.",
     "postCallTimedOut": "Enhancement stopped making progress and was cancelled.",
     "postCallPreparing": "Preparing enhanced transcript…",
+    "postCallWaiting": "Waiting for another recording to finish processing…",
     "postCallSpeakersRefreshed": "Speaker labels refreshed from the saved transcript.",
     "postCallEnhancedAndRefreshed": "Transcript enhanced and speaker labels refreshed.",
     "postCallRefreshing": "Refreshing the enhanced transcript…",
