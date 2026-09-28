@@ -128,7 +128,7 @@ export function NotesPanel({ source, live, onSeek }: NotesPanelProps) {
             <Send size={16} />
           </button>
         </div>
-        {notes.length > 0 && <p className="mt-1.5 px-1 text-xs text-[var(--af-text-3)]">{t('summaryHint')}</p>}
+        <p className="mt-1.5 px-1 text-xs text-[var(--af-text-3)]">{notes.length > 0 ? t('summaryHint') : t('newLineHint')}</p>
       </div>
     </div>
   );

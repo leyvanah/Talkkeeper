@@ -356,6 +356,15 @@ export function PostCallProvider({ children }: { children: React.ReactNode }) {
     [begin, isPending, isDone, release, transcriptVersion],
   );
 
+  // The answer closes the question at once. The work itself may have to wait
+  // for another recording's to finish; until it starts, the dialog used to
+  // stay open with nothing moving — and each further click queued the same
+  // work again.
+  const answered = (meetingId: string) => {
+    update(meetingId, { stage: 'queued', error: null, message: t('postCallWaiting') });
+    if (working && working.meetingId !== meetingId) toast.info(t('postCallWaiting'));
+  };
+
   // The question and the failure are asked about one recording at a time.
   const asking = Object.values(runs).find((run) => run.stage === 'prompt' || run.stage === 'error');
 
@@ -367,15 +376,14 @@ export function PostCallProvider({ children }: { children: React.ReactNode }) {
           key={asking.meetingId}
           run={asking}
           onRun={(count) => {
-            if (asking.stage === 'error' && asking.failedStage === 'diarizing') {
-              void proceed(asking.meetingId, count, 'diarizing');
-            } else {
-              void proceed(asking.meetingId, count, 'enhancing');
-            }
+            const from = asking.stage === 'error' && asking.failedStage === 'diarizing' ? 'diarizing' : 'enhancing';
+            answered(asking.meetingId);
+            void proceed(asking.meetingId, count, from);
           }}
           onSkipEnhancement={(count) => {
             // The X at the count question: keep the live transcript, but still
             // tell the speakers apart and let the summary go ahead.
+            answered(asking.meetingId);
             void exclusive(async () => {
               try {
                 await identifySpeakers(asking.meetingId, count);
