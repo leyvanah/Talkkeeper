@@ -26,7 +26,7 @@ import { SummaryGeneratorButtonGroup, SummaryLanguageChoice } from './SummaryGen
 import { SummaryUpdaterButtonGroup } from './SummaryUpdaterButtonGroup';
 import { InsightTabs } from './InsightTabs';
 import { MeetingChat } from './MeetingChat';
-import { NotesPanel } from '@/components/Notes/NotesPanel';
+import { NotesEditor } from '@/components/Notes/NotesEditor';
 import { useSavedMeetingNotes } from '@/hooks/useMeetingNotes';
 import { requestMeetingSeek } from '@/lib/meeting-seek';
 import { useCallback, useEffect, useRef, useState, RefObject } from 'react';
@@ -367,7 +367,7 @@ export function SummaryPanel({
       </div>
 
       <div className={`min-h-0 flex-1 flex-col ${tab === 'notes' ? 'flex' : 'hidden'}`}>
-        <NotesPanel
+        <NotesEditor
           source={notes}
           live={false}
           onSeek={(seconds) => requestMeetingSeek(meeting.id, seconds)}

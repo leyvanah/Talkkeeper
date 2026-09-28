@@ -56,6 +56,21 @@ impl Note {
     }
 }
 
+/// Puts `note` right after the note `after`, or first when `after` is none —
+/// the notes are lines of one text, and a line can be started anywhere in it.
+/// An `after` that names no note puts it last. Returns where it went.
+pub fn insert_after(notes: &mut Vec<Note>, note: Note, after: Option<&str>) -> usize {
+    let index = match after {
+        None => 0,
+        Some(id) => notes
+            .iter()
+            .position(|existing| existing.id == id)
+            .map_or(notes.len(), |found| found + 1),
+    };
+    notes.insert(index, note);
+    index
+}
+
 fn checked_text(text: &str) -> Result<String, String> {
     let text = text.trim();
     if text.is_empty() {
@@ -192,6 +207,22 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(rows, 0);
+    }
+
+    #[test]
+    fn a_line_goes_where_it_was_started() {
+        let note = |id: &str| Note {
+            id: id.into(),
+            at: None,
+            text: id.into(),
+            written_at: String::new(),
+        };
+        let mut notes = vec![note("a"), note("c")];
+        assert_eq!(insert_after(&mut notes, note("b"), Some("a")), 1);
+        assert_eq!(insert_after(&mut notes, note("first"), None), 0);
+        assert_eq!(insert_after(&mut notes, note("last"), Some("gone")), 4);
+        let order: Vec<_> = notes.iter().map(|n| n.id.as_str()).collect();
+        assert_eq!(order, ["first", "a", "b", "c", "last"]);
     }
 
     #[test]

@@ -23,7 +23,7 @@ import { usePostCall } from '@/contexts/PostCallContext';
 import { deleteLegacyRecoveryStore } from '@/lib/unsaved-recordings';
 import { toast } from 'sonner';
 import { useRouter } from 'next/navigation';
-import { NotesPanel } from '@/components/Notes/NotesPanel';
+import { NotesEditor } from '@/components/Notes/NotesEditor';
 import { useRecordingNotes } from '@/hooks/useMeetingNotes';
 
 /** Whether the notes beside a recording are open; a habit, kept per machine. */
@@ -270,7 +270,7 @@ export default function Home() {
             className="flex shrink-0 flex-col border-l border-[var(--af-border)] bg-[var(--af-bg)]"
             style={{ width: NOTES_WIDTH }}
           >
-            <NotesPanel source={recordingNotes} live />
+            <NotesEditor source={recordingNotes} live />
           </aside>
         )}
 

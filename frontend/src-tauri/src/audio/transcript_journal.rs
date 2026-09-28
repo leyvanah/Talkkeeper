@@ -54,6 +54,8 @@ enum Record {
     Note(Note),
     /// A note the owner took back.
     NoteRemoved { id: String },
+    /// The order of the notes, written when one was started between others.
+    NoteOrder { ids: Vec<String> },
 }
 
 /// The journal of the recording now running, if any.
@@ -118,15 +120,24 @@ pub fn append(segment: &TranscriptSegment) {
     }
 }
 
-/// Adds a note to the running journal. Unlike a transcript line, a note that
-/// cannot be kept is the owner's to know about: it is an error.
-pub fn add_note(note: Note) -> Result<Note, String> {
+/// Adds a note to the running journal, right after the note `after` (first
+/// when none). Unlike a transcript line, a note that cannot be kept is the
+/// owner's to know about: it is an error.
+pub fn add_note(note: Note, after: Option<&str>) -> Result<Note, String> {
     let mut guard = current();
     let journal = guard.as_mut().ok_or("No recording is running")?;
     journal
         .append(&Record::Note(note.clone()))
         .map_err(|error| format!("Could not keep the note: {error}"))?;
-    journal.notes.push(note.clone());
+    let index = crate::meeting_notes::insert_after(&mut journal.notes, note.clone(), after);
+    // Read back, the journal lists notes in the order they were added; one
+    // started between others needs its place written down.
+    if index + 1 != journal.notes.len() {
+        let ids = journal.notes.iter().map(|note| note.id.clone()).collect();
+        journal
+            .append(&Record::NoteOrder { ids })
+            .map_err(|error| format!("Could not keep the order of the notes: {error}"))?;
+    }
     Ok(note)
 }
 
@@ -297,6 +308,10 @@ fn read(folder: &Path) -> anyhow::Result<Option<Unsaved>> {
                 None => notes.push(note),
             },
             Some(Record::NoteRemoved { id }) => notes.retain(|note| note.id != id),
+            Some(Record::NoteOrder { ids }) => {
+                // Stable: a note the list does not name keeps its place after the rest.
+                notes.sort_by_key(|note| ids.iter().position(|id| *id == note.id).unwrap_or(usize::MAX));
+            }
             None => skipped += 1,
         }
     }
@@ -511,18 +526,21 @@ mod tests {
         append(&segment(2, "второе, исправленное"));
 
         // Notes: added, edited, one taken back — and remembered for the window.
-        let kept = add_note(Note::new("заметка", Some(1.5)).unwrap()).unwrap();
-        let dropped = add_note(Note::new("лишняя", Some(2.0)).unwrap()).unwrap();
+        let kept = add_note(Note::new("заметка", Some(1.5)).unwrap(), None).unwrap();
+        let dropped = add_note(Note::new("лишняя", Some(2.0)).unwrap(), Some(&kept.id)).unwrap();
+        let last = add_note(Note::new("последняя", Some(3.0)).unwrap(), Some(&dropped.id)).unwrap();
+        // A line started between two others stays between them.
+        add_note(Note::new("вставленная", Some(4.0)).unwrap(), Some(&kept.id)).unwrap();
         edit_note(&kept.id, "заметка, дописанная").unwrap();
         remove_note(&dropped.id).unwrap();
         assert!(edit_note("no-such-note", "x").is_err());
         let live: Vec<_> = current_notes().into_iter().map(|note| note.text).collect();
-        assert_eq!(live, ["заметка, дописанная"]);
+        assert_eq!(live, ["заметка, дописанная", "вставленная", "последняя"]);
 
         end();
         assert!(active_folder().is_none());
         assert!(current_notes().is_empty());
-        assert!(add_note(Note::new("после остановки", None).unwrap()).is_err());
+        assert!(add_note(Note::new("после остановки", None).unwrap(), Some(&last.id)).is_err());
 
         // A crash mid-write leaves half a line.
         let mut file = OpenOptions::new()
@@ -536,9 +554,9 @@ mod tests {
         assert_eq!(journal.title, "Встреча");
         let texts: Vec<_> = journal.segments.iter().map(|s| s.text.as_str()).collect();
         assert_eq!(texts, ["первое", "второе, исправленное"]);
-        assert_eq!(journal.notes.len(), 1);
+        let read_back: Vec<_> = journal.notes.iter().map(|note| note.text.as_str()).collect();
+        assert_eq!(read_back, ["заметка, дописанная", "вставленная", "последняя"]);
         assert_eq!(journal.notes[0].id, kept.id);
-        assert_eq!(journal.notes[0].text, "заметка, дописанная");
         assert_eq!(journal.notes[0].at, Some(1.5));
         assert_eq!(notes_in(&folder), journal.notes);
 
