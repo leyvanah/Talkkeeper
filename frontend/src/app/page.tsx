@@ -28,6 +28,8 @@ import { useRecordingNotes } from '@/hooks/useMeetingNotes';
 
 /** Whether the notes beside a recording are open; a habit, kept per machine. */
 const NOTES_OPEN_KEY = 'recording_notes_open';
+/** The notes column: narrower in a small window, so the transcript keeps room. */
+const NOTES_WIDTH = 'clamp(15rem, 26vw, 20rem)';
 
 export default function Home() {
   const t = useTranslations('home');
@@ -265,7 +267,8 @@ export default function Home() {
         {showNotes && (
           <aside
             aria-label={tn('title')}
-            className="flex w-80 shrink-0 flex-col border-l border-[var(--af-border)] bg-[var(--af-bg)]"
+            className="flex shrink-0 flex-col border-l border-[var(--af-border)] bg-[var(--af-bg)]"
+            style={{ width: NOTES_WIDTH }}
           >
             <NotesPanel source={recordingNotes} live />
           </aside>
@@ -277,12 +280,12 @@ export default function Home() {
           status !== RecordingStatus.SAVING && (
             <div className="fixed bottom-12 left-0 right-0 z-30 pointer-events-none">
               <div
-                className="flex justify-center pl-8 transition-[margin] duration-300 pointer-events-none"
-                // The controls stay centred over the transcript, not under the notes.
-                style={{ marginLeft: 'var(--sidebar-offset)', marginRight: showNotes ? '20rem' : undefined }}
+                className="flex justify-center px-4 transition-[margin] duration-300 pointer-events-none"
+                // The controls stay over the transcript, never over the notes.
+                style={{ marginLeft: 'var(--sidebar-offset)', marginRight: showNotes ? NOTES_WIDTH : undefined }}
               >
-                <div className="w-2/3 max-w-[750px] flex justify-center pointer-events-auto">
-                  <div className="flex items-center">
+                <div className="w-full max-w-[750px] flex justify-center pointer-events-auto">
+                  <div className="flex w-full min-w-0 items-center justify-center">
                     <RecordingControls
                       isRecording={recordingState.isRecording}
                       onRecordingStop={(callApi = true) => handleRecordingStop(callApi)}

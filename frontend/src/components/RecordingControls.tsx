@@ -497,7 +497,9 @@ export const RecordingControls: React.FC<RecordingControlsProps> = ({
 
   return (
     <TooltipProvider>
-      <div className="flex flex-col items-center space-y-2">
+      {/* As wide as the column it sits in, so the bar shrinks with a narrow
+          window instead of spilling over what is beside the transcript. */}
+      <div className="flex w-full min-w-0 flex-col items-center space-y-2">
         {isProcessing && !isParentProcessing ? (
           <div className={`${panel} gap-2 px-4 py-3`}>
             <Loader2 size={16} className="animate-spin text-[var(--af-text-3)]" />
