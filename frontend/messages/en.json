@@ -1551,20 +1551,12 @@
     "hide": "Hide notes",
     "placeholderLive": "A note…",
     "placeholder": "A new note…",
-    "newLineHint": "Enter to save, Shift+Enter for a new line",
-    "emptyLive": "Write as the recording goes. Each note gets the time you started typing it and is kept with the meeting.",
+    "newLineHint": "Enter starts a new line with its own time, Shift+Enter breaks within one",
+    "emptyLive": "Write as the recording goes. Each line gets the time you started typing it and is kept with the meeting.",
     "empty": "No notes yet. Notes written during the recording appear here with their time in it.",
     "summaryHint": "Notes are taken into account when the summary is written.",
-    "add": "Add note",
-    "edit": "Edit",
-    "remove": "Delete",
-    "confirmRemove": "Delete?",
-    "save": "Save",
-    "cancel": "Cancel",
     "seekTo": "Go to {time} in the recording",
-    "afterRecording": "after the recording",
     "saveFailed": "Could not save the note",
-    "removeFailed": "Could not delete the note",
     "loadFailed": "Could not read the notes"
   }
 }
