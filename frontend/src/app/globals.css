@@ -357,6 +357,17 @@ html, body { background-color: var(--af-bg); color: var(--af-text); }
   box-shadow: none !important;
 }
 
+/* The recording bar sits over the transcript column and shrinks with it.
+   Short of room it drops the words on its buttons, then the level meters,
+   rather than spilling over what is beside the column. */
+.af-recording-bar { container-type: inline-size; }
+@container (max-width: 470px) {
+  .af-recording-bar-label { display: none; }
+}
+@container (max-width: 360px) {
+  .af-recording-bar-levels { display: none; }
+}
+
 /* InputGroup (icon + field as one control) draws its own surface, and its inner
    input is deliberately transparent. The blanket rule above would repaint that
    inner input, so the wrapper and the field ended up painting two different
