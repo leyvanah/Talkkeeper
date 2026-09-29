@@ -401,9 +401,14 @@ pub fn run() {
     #[cfg(windows)]
     notifications::native_windows::ensure_app_identity();
 
+    #[cfg_attr(debug_assertions, allow(unused_mut))]
     let mut builder = tauri::Builder::default();
 
-    #[cfg(any(target_os = "macos", windows, target_os = "linux"))]
+    // A development build shares the installed application's identifier, so
+    // with this plugin it found the installed one running, focused its window
+    // and quit — it could not be started while the real archive was open.
+    // It keeps its own database and recordings folder, so it can run beside it.
+    #[cfg(all(any(target_os = "macos", windows, target_os = "linux"), not(debug_assertions)))]
     {
         builder = builder.plugin(tauri_plugin_single_instance::init(|app, args, cwd| {
             log_info!(
