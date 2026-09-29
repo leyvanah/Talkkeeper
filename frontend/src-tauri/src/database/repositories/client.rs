@@ -117,6 +117,26 @@ impl ClientsRepository {
         })
     }
 
+    /// The client going by this name, found through the same lookup the
+    /// library uses — or created. `true` in the answer means created.
+    pub async fn find_or_create(
+        pool: &SqlitePool,
+        display_name: &str,
+    ) -> Result<(String, bool), SqlxError> {
+        let found: Option<String> =
+            sqlx::query_scalar("SELECT id FROM clients WHERE normalized_name = ?")
+                .bind(fields::lookup(
+                    fields::CLIENT_LOOKUP,
+                    &normalize_display_name(display_name),
+                )?)
+                .fetch_optional(pool)
+                .await?;
+        match found {
+            Some(id) => Ok((id, false)),
+            None => Ok((Self::create(pool, display_name).await?.id, true)),
+        }
+    }
+
     pub async fn rename(
         pool: &SqlitePool,
         client_id: &str,

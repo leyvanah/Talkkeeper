@@ -497,7 +497,9 @@ export const RecordingControls: React.FC<RecordingControlsProps> = ({
 
   return (
     <TooltipProvider>
-      <div className="flex flex-col items-center space-y-2">
+      {/* As wide as the column it sits in, so the bar shrinks with a narrow
+          window instead of spilling over what is beside the transcript. */}
+      <div className="af-recording-bar flex w-full min-w-0 flex-col items-center space-y-2">
         {isProcessing && !isParentProcessing ? (
           <div className={`${panel} gap-2 px-4 py-3`}>
             <Loader2 size={16} className="animate-spin text-[var(--af-text-3)]" />
@@ -578,7 +580,7 @@ export const RecordingControls: React.FC<RecordingControlsProps> = ({
             </div>
 
             {/* Live input levels (Rust-driven, per source), each with its mute. */}
-            <div className="flex min-w-0 flex-1 flex-col gap-1">
+            <div className="af-recording-bar-levels flex min-w-0 flex-1 flex-col gap-1">
               {([
                 ['mic', isMicrophoneMuted, handleMicrophoneMute, t('muteMicrophone'), t('unmuteMicrophone'), Mic, MicOff],
                 ['system', isSystemAudioMuted, handleSystemAudioMute, t('muteSystemAudio'), t('unmuteSystemAudio'), Volume2, VolumeX],
@@ -621,10 +623,11 @@ export const RecordingControls: React.FC<RecordingControlsProps> = ({
                 }}
                 disabled={isPausing || isResuming || isStopping || isChangingMicrophoneMute || isChangingSystemAudioMute}
                 title={isPaused ? t('resumeRecordingTooltip') : t('pauseRecordingTooltip')}
+                aria-label={isPaused ? t('resume') : t('pause')}
                 className="inline-flex h-8 items-center gap-1.5 rounded-lg border border-[var(--af-border)] px-2.5 text-xs text-[var(--af-text-2)] transition-colors hover:bg-[var(--af-hover)] hover:text-[var(--af-text)] disabled:opacity-40"
               >
                 {isPaused ? <Play size={13} /> : <Pause size={13} />}
-                {isPaused ? t('resume') : t('pause')}
+                <span className="af-recording-bar-label">{isPaused ? t('resume') : t('pause')}</span>
               </button>
 
               <button
@@ -633,10 +636,11 @@ export const RecordingControls: React.FC<RecordingControlsProps> = ({
                 }}
                 disabled={isStopping || isPausing || isResuming || isChangingMicrophoneMute || isChangingSystemAudioMute}
                 title={t('stopRecordingTooltip')}
+                aria-label={t('stop')}
                 className="inline-flex h-8 items-center gap-1.5 rounded-lg border border-red-500/40 px-2.5 text-xs text-red-500 transition-colors hover:bg-red-500/10 disabled:opacity-40"
               >
                 <Square size={11} fill="currentColor" />
-                {t('stop')}
+                <span className="af-recording-bar-label">{t('stop')}</span>
               </button>
 
               <div className="relative">

@@ -11,7 +11,7 @@ import {
   type WhisperBackend,
 } from '@/lib/transcription-acceleration';
 import { OnboardingContainer } from '../OnboardingContainer';
-import { useOnboarding } from '@/contexts/OnboardingContext';
+import { useOnboarding, type SttEngine } from '@/contexts/OnboardingContext';
 import {
   Tooltip,
   TooltipContent,
@@ -21,7 +21,7 @@ import {
 
 export function SetupOverviewStep() {
   const t = useTranslations('onboarding');
-  const { goNext } = useOnboarding();
+  const { goNext, sttEngine, setSttEngine } = useOnboarding();
   const [isMac, setIsMac] = useState(false);
   const [whisperBackend, setWhisperBackend] = useState<WhisperBackend | null | undefined>();
   const [cudaStatus, setCudaStatus] = useState<CudaReconfigurationStatus | null>(null);
@@ -58,16 +58,17 @@ export function SetupOverviewStep() {
     void checkAcceleration();
   }, []);
 
-  const steps = [
+  const engines: { id: SttEngine; title: string; note: string; badge?: string }[] = [
     {
-      number: 1,
-      type: 'transcription',
-      title: t('setupStepTranscription'),
+      id: 'gigaam',
+      title: 'GigaAM v3',
+      note: t('setupEngineGigaamNote'),
+      badge: t('setupEngineGigaamBadge'),
     },
     {
-      number: 2,
-      type: 'summarization',
-      title: t('setupStepSummarization'),
+      id: 'parakeet',
+      title: 'Parakeet v3',
+      note: t('setupEngineParakeetNote'),
     },
   ];
 
@@ -121,38 +122,62 @@ export function SetupOverviewStep() {
     >
       <div className="flex flex-col items-center space-y-10">
         {/* Steps Card */}
-        <div className="w-full max-w-md bg-white rounded-lg border border-gray-200 p-4">
-          <div className="space-y-4">
-            {steps.map((step) => {
-              return (
-                <div
-                  key={step.number}
-                  className="flex items-start gap-4 p-1"
-                >
-                  <div className="flex-1 ml-1">
-                    <h3 className="font-medium text-gray-900 flex items-center gap-2">
-                        {t('setupStepPrefix', { number: step.number })}  {step.title}
-
-                        {step.type === 'summarization' && (
-                            <TooltipProvider>
-                            <Tooltip>
-                                <TooltipTrigger asChild>
-                                <button className="text-gray-400 hover:text-gray-600">
-                                    <Info className="w-4 h-4" />
-                                </button>
-                                </TooltipTrigger>
-                                <TooltipContent className="max-w-xs text-sm">
-                                {t('setupSummaryProvidersTooltip')}
-                                </TooltipContent>
-                            </Tooltip>
-                            </TooltipProvider>
-                        )}
-                        </h3>
-                  </div>
-                </div>
-              );
-            })}
+        <div className="w-full max-w-md bg-white rounded-lg border border-gray-200 p-4 space-y-5">
+          <div className="space-y-3">
+            <h3 className="font-medium text-gray-900 ml-1">
+              {t('setupStepPrefix', { number: 1 })}  {t('setupStepTranscription')}
+            </h3>
+            <div role="radiogroup" aria-label={t('setupStepTranscription')} className="grid gap-2">
+              {engines.map((engine) => {
+                const selected = sttEngine === engine.id;
+                return (
+                  <button
+                    key={engine.id}
+                    type="button"
+                    role="radio"
+                    aria-checked={selected}
+                    onClick={() => setSttEngine(engine.id)}
+                    className={`rounded-lg border px-3 py-2.5 text-left transition-colors ${
+                      selected
+                        ? 'border-[var(--af-accent)] bg-[var(--af-accent-soft)] ring-1 ring-[var(--af-accent)]'
+                        : 'border-gray-200 hover:border-gray-400'
+                    }`}
+                  >
+                    <span className="flex items-center gap-2 text-sm font-medium text-gray-900">
+                      {engine.title}
+                      {engine.badge && (
+                        <span
+                          className="rounded-full bg-sky-500/10 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-sky-500"
+                        >
+                          {engine.badge}
+                        </span>
+                      )}
+                    </span>
+                    <span className="mt-0.5 block text-xs leading-5 text-gray-500">
+                      {engine.note}
+                    </span>
+                  </button>
+                );
+              })}
+            </div>
+            <p className="ml-1 text-xs text-gray-500">{t('setupEngineChangeLater')}</p>
           </div>
+
+          <h3 className="font-medium text-gray-900 flex items-center gap-2 ml-1">
+            {t('setupStepPrefix', { number: 2 })}  {t('setupStepSummarization')}
+            <TooltipProvider>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <button className="text-gray-400 hover:text-gray-600">
+                    <Info className="w-4 h-4" />
+                  </button>
+                </TooltipTrigger>
+                <TooltipContent className="max-w-xs text-sm">
+                  {t('setupSummaryProvidersTooltip')}
+                </TooltipContent>
+              </Tooltip>
+            </TooltipProvider>
+          </h3>
         </div>
 
         <div className="w-full max-w-md rounded-lg border border-gray-200 bg-white p-4">

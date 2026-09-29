@@ -16,7 +16,7 @@ import { PermissionWarning } from '@/components/PermissionWarning';
 import { RecordingClientSelector } from '@/components/RecordingClientSelector';
 import { Button } from '@/components/ui/button';
 import { ButtonGroup } from '@/components/ui/button-group';
-import { AudioLines, Copy, GlobeIcon } from 'lucide-react';
+import { AudioLines, Copy, GlobeIcon, NotebookPen } from 'lucide-react';
 import { useTranscripts } from '@/contexts/TranscriptContext';
 import { useConfig } from '@/contexts/ConfigContext';
 import { useRecordingState } from '@/contexts/RecordingStateContext';
@@ -80,14 +80,22 @@ interface TranscriptPanelProps {
   isProcessingStop: boolean;
   isStopping: boolean;
   showModal: (name: ModalType, message?: string) => void;
+  /** The notes beside the recording: open or not, and how many there are. */
+  notesOpen?: boolean;
+  notesCount?: number;
+  onToggleNotes?: () => void;
 }
 
 export function TranscriptPanel({
   isProcessingStop,
   isStopping,
-  showModal
+  showModal,
+  notesOpen = false,
+  notesCount = 0,
+  onToggleNotes,
 }: TranscriptPanelProps) {
   const t = useTranslations('recording');
+  const tn = useTranslations('notes');
 
   // Contexts
   const { transcripts, transcriptContainerRef, copyTranscript } = useTranscripts();
@@ -111,7 +119,7 @@ export function TranscriptPanel({
   );
 
   return (
-    <div ref={transcriptContainerRef} className="w-full border-r border-gray-200 bg-white flex flex-col overflow-y-auto">
+    <div ref={transcriptContainerRef} className="w-full min-w-0 border-r border-gray-200 bg-white flex flex-col overflow-y-auto">
       {/* Title area - Sticky header */}
       <div className="sticky top-0 z-10 bg-white p-4 border-gray-200">
         <div className="flex flex-col space-y-3">
@@ -129,6 +137,20 @@ export function TranscriptPanel({
                     <Copy />
                     <span className='hidden md:inline'>
                       {t('copy')}
+                    </span>
+                  </Button>
+                )}
+                {isRecording && onToggleNotes && (
+                  <Button
+                    variant={notesOpen ? 'secondary' : 'outline'}
+                    size="sm"
+                    onClick={onToggleNotes}
+                    aria-pressed={notesOpen}
+                    title={notesOpen ? tn('hide') : tn('show')}
+                  >
+                    <NotebookPen />
+                    <span className='hidden md:inline'>
+                      {tn('show')}{notesCount > 0 ? ` · ${notesCount}` : ''}
                     </span>
                   </Button>
                 )}

@@ -5,7 +5,8 @@
  *   - Summary: generation/regeneration (SummaryGenerator/Updater button
  *     groups + language picker) and the read view via <InsightTabs> (AI
  *     Summary / Action Items / Key Topics);
- *   - Notes: the owner's own notes — a placeholder until they exist;
+ *   - Notes: the owner's own notes, those written during the recording with
+ *     their moment in it (a click plays from there) and any added after;
  *   - Chat: questions about the meeting, via <MeetingChat>.
  * The chosen tab is remembered per machine.
  *
@@ -25,7 +26,9 @@ import { SummaryGeneratorButtonGroup, SummaryLanguageChoice } from './SummaryGen
 import { SummaryUpdaterButtonGroup } from './SummaryUpdaterButtonGroup';
 import { InsightTabs } from './InsightTabs';
 import { MeetingChat } from './MeetingChat';
-import { NotebookPen } from 'lucide-react';
+import { NotesEditor } from '@/components/Notes/NotesEditor';
+import { useSavedMeetingNotes } from '@/hooks/useMeetingNotes';
+import { requestMeetingSeek } from '@/lib/meeting-seek';
 import { useCallback, useEffect, useRef, useState, RefObject } from 'react';
 import { useTranslations } from 'next-intl';
 import { toast } from 'sonner';
@@ -126,6 +129,7 @@ export function SummaryPanel({
 }: SummaryPanelProps) {
   const t = useTranslations('meetingDetails');
   const [tab, setTab] = useState<SideTab>('summary');
+  const notes = useSavedMeetingNotes(meeting.id);
   useEffect(() => {
     try {
       const stored = localStorage.getItem(TAB_STORAGE_KEY);
@@ -363,12 +367,11 @@ export function SummaryPanel({
       </div>
 
       <div className={`min-h-0 flex-1 flex-col ${tab === 'notes' ? 'flex' : 'hidden'}`}>
-        {/* A place kept for the owner's own notes, written during a recording. */}
-        <div className="flex flex-1 flex-col items-center justify-center gap-2 px-8 text-center">
-          <NotebookPen size={20} className="text-[var(--af-text-3)]" />
-          <p className="text-sm font-medium text-[var(--af-text-2)]">{t('notesSoonTitle')}</p>
-          <p className="max-w-xs text-sm text-[var(--af-text-3)]">{t('notesSoonBody')}</p>
-        </div>
+        <NotesEditor
+          source={notes}
+          live={false}
+          onSeek={(seconds) => requestMeetingSeek(meeting.id, seconds)}
+        />
       </div>
 
       <div className={`min-h-0 flex-1 flex-col ${tab === 'chat' ? 'flex' : 'hidden'}`}>

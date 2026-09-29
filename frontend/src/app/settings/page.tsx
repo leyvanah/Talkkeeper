@@ -17,6 +17,7 @@ import { AboutSettings } from '@/components/AboutSettings';
 import { BetaSettings } from '@/components/BetaSettings';
 import { LocalStackStatus } from '@/components/LocalStackStatus';
 import { SecuritySettings } from '@/components/SecuritySettings';
+import { LibraryExportCard } from '@/components/security/LibraryExportCard'
 import { useConfig } from '@/contexts/ConfigContext';
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs';
 
@@ -174,6 +175,9 @@ export default function SettingsPage() {
               </TabsContent>
               <TabsContent value="security" className="mt-0 min-w-0 max-w-full focus-visible:ring-0">
                 <SecuritySettings />
+                <div className="mx-auto mt-6 max-w-2xl">
+                  <LibraryExportCard />
+                </div>
               </TabsContent>
               <TabsContent value="localStack" className="mt-0 min-w-0 max-w-full focus-visible:ring-0">
                 <LocalStackStatus />

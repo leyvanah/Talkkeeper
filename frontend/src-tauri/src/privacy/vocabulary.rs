@@ -118,6 +118,36 @@ pub async fn shield_for(pool: &SqlitePool, meeting_id: Option<&str>) -> Option<s
     session_for(pool, meeting_id).await.map(std::sync::Mutex::new)
 }
 
+/// A shield that also hides names found for this one request — by the local
+/// model, in the text itself — beside the ones the archive knows.
+pub async fn shield_with_names(
+    pool: &SqlitePool,
+    meeting_id: Option<&str>,
+    found: Vec<String>,
+) -> Option<std::sync::Mutex<Session>> {
+    let stored = settings::load(pool).await.unwrap_or_default();
+    if !stored.anonymize_cloud {
+        return None;
+    }
+    let mut vocabulary = for_meeting(pool, meeting_id).await;
+    add_names(&mut vocabulary.names, found);
+    Some(std::sync::Mutex::new(Session::new(vocabulary)))
+}
+
+fn add_names(names: &mut Vec<String>, found: Vec<String>) {
+    for name in found {
+        let trimmed = name.trim().to_string();
+        if trimmed.is_empty() || is_placeholder(&trimmed) {
+            continue;
+        }
+        // Unicode folding: ASCII-only would keep "анна" beside "Анна".
+        let lowered = trimmed.to_lowercase();
+        if !names.iter().any(|kept| kept.to_lowercase() == lowered) {
+            names.push(trimmed);
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -127,6 +157,16 @@ mod tests {
         for label in ["You", "вы", "Speaker 1", "Спикер 12", "You + Speaker 1", "  "] {
             assert!(is_placeholder(label), "{label}");
         }
+    }
+
+    #[test]
+    fn found_names_join_the_list_once_and_placeholders_stay_out() {
+        let mut names = vec!["Анна".to_string()];
+        add_names(
+            &mut names,
+            vec!["Маша".into(), "анна".into(), "Speaker 2".into(), " ".into(), "Маша".into()],
+        );
+        assert_eq!(names, vec!["Анна", "Маша"]);
     }
 
     #[test]

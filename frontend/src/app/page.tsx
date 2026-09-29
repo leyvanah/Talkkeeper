@@ -23,9 +23,17 @@ import { usePostCall } from '@/contexts/PostCallContext';
 import { deleteLegacyRecoveryStore } from '@/lib/unsaved-recordings';
 import { toast } from 'sonner';
 import { useRouter } from 'next/navigation';
+import { NotesEditor } from '@/components/Notes/NotesEditor';
+import { useRecordingNotes } from '@/hooks/useMeetingNotes';
+
+/** Whether the notes beside a recording are open; a habit, kept per machine. */
+const NOTES_OPEN_KEY = 'recording_notes_open';
+/** The notes column: narrower in a small window, so the transcript keeps room. */
+const NOTES_WIDTH = 'clamp(15rem, 26vw, 20rem)';
 
 export default function Home() {
   const t = useTranslations('home');
+  const tn = useTranslations('notes');
   // Local page state (not moved to contexts)
   const [isRecording, setIsRecordingState] = useState(false);
   const [barHeights, setBarHeights] = useState(['58%', '76%', '58%']);
@@ -43,6 +51,28 @@ export default function Home() {
 
   // Extract status from global state
   const { status, isStopping, isProcessing, isSaving } = recordingState;
+
+  // The owner's notes, written beside the recording and kept with it.
+  const recordingNotes = useRecordingNotes(recordingState.isRecording);
+  const [notesOpen, setNotesOpen] = useState(true);
+  useEffect(() => {
+    try {
+      if (localStorage.getItem(NOTES_OPEN_KEY) === 'false') setNotesOpen(false);
+    } catch {
+      // Without storage the notes simply start open.
+    }
+  }, []);
+  const toggleNotes = () => {
+    setNotesOpen((open) => {
+      try {
+        localStorage.setItem(NOTES_OPEN_KEY, String(!open));
+      } catch {
+        // Remembering is a convenience.
+      }
+      return !open;
+    });
+  };
+  const showNotes = recordingState.isRecording && notesOpen;
 
   // Hooks
   const { hasMicrophone } = usePermissionCheck();
@@ -229,7 +259,20 @@ export default function Home() {
           isProcessingStop={isProcessingStop}
           isStopping={isStopping}
           showModal={showModal}
+          notesOpen={showNotes}
+          notesCount={recordingNotes.notes.length}
+          onToggleNotes={toggleNotes}
         />
+
+        {showNotes && (
+          <aside
+            aria-label={tn('title')}
+            className="flex shrink-0 flex-col border-l border-[var(--af-border)] bg-[var(--af-bg)]"
+            style={{ width: NOTES_WIDTH }}
+          >
+            <NotesEditor source={recordingNotes} live />
+          </aside>
+        )}
 
         {/* Recording controls - only show when permissions are granted or already recording and not showing status messages */}
         {(hasMicrophone || isRecording) &&
@@ -237,11 +280,12 @@ export default function Home() {
           status !== RecordingStatus.SAVING && (
             <div className="fixed bottom-12 left-0 right-0 z-30 pointer-events-none">
               <div
-                className="flex justify-center pl-8 transition-[margin] duration-300 pointer-events-none"
-                style={{ marginLeft: 'var(--sidebar-offset)' }}
+                className="flex justify-center px-4 transition-[margin] duration-300 pointer-events-none"
+                // The controls stay over the transcript, never over the notes.
+                style={{ marginLeft: 'var(--sidebar-offset)', marginRight: showNotes ? NOTES_WIDTH : undefined }}
               >
-                <div className="w-2/3 max-w-[750px] flex justify-center pointer-events-auto">
-                  <div className="flex items-center">
+                <div className="w-full max-w-[750px] flex justify-center pointer-events-auto">
+                  <div className="flex w-full min-w-0 items-center justify-center">
                     <RecordingControls
                       isRecording={recordingState.isRecording}
                       onRecordingStop={(callApi = true) => handleRecordingStop(callApi)}

@@ -972,14 +972,85 @@ fn format_audio_time(seconds: f64) -> String {
     format!("{:02}:{:02}", seconds / 60, seconds % 60)
 }
 
-pub(crate) async fn clear_meeting_speaker_mappings(
+/// Link a speaker of a meeting to the person going by `person_name`, creating
+/// the person when the library has nobody by that name. Used by an import,
+/// which brings the link from another installation by name, not by id.
+pub(crate) async fn link_speaker_to_person(
+    tx: &mut Transaction<'_, Sqlite>,
+    meeting_id: &str,
+    label: &str,
+    person_name: &str,
+) -> Result<(), sqlx::Error> {
+    if !is_person_name(person_name) {
+        return Ok(());
+    }
+    let normalized = normalize_person_name(person_name);
+    let person_id = match find_person_by_normalized_name(tx, &normalized).await? {
+        Some(id) => id,
+        None => {
+            let id = format!("person-{}", Uuid::new_v4());
+            sqlx::query(
+                "INSERT INTO people \
+                 (id, display_name, normalized_name, notes, created_at, updated_at) \
+                 VALUES (?, ?, ?, NULL, datetime('now'), datetime('now'))",
+            )
+            .bind(&id)
+            .bind(fields::seal(fields::PERSON_NAME, person_name.trim())?)
+            .bind(fields::lookup(fields::PERSON_LOOKUP, &normalized)?)
+            .execute(&mut **tx)
+            .await?;
+            id
+        }
+    };
+    sqlx::query(
+        "INSERT INTO person_speakers (person_id, meeting_id, speaker_label) \
+         VALUES (?, ?, ?) \
+         ON CONFLICT(meeting_id, speaker_label) DO UPDATE SET person_id = excluded.person_id",
+    )
+    .bind(person_id)
+    .bind(meeting_id)
+    .bind(fields::seal_joinable(fields::SPEAKER_LABEL, label)?)
+    .execute(&mut **tx)
+    .await?;
+    Ok(())
+}
+
+/// Drop the person links of labels no line of the meeting carries any more.
+///
+/// After a retranscription a name carried back onto the new lines keeps the
+/// person it was linked to; a label that went with the old lines lets go.
+pub(crate) async fn retain_present_speaker_mappings(
     tx: &mut Transaction<'_, Sqlite>,
     meeting_id: &str,
 ) -> Result<(), sqlx::Error> {
-    sqlx::query("DELETE FROM person_speakers WHERE meeting_id = ?")
-        .bind(meeting_id)
-        .execute(&mut **tx)
-        .await?;
+    let present: Vec<Option<String>> =
+        sqlx::query_scalar("SELECT DISTINCT speaker FROM transcripts WHERE meeting_id = ?")
+            .bind(meeting_id)
+            .fetch_all(&mut **tx)
+            .await?;
+    let mut labels = std::collections::HashSet::new();
+    for sealed in present {
+        if let Some(label) = fields::open_opt(fields::TRANSCRIPT_SPEAKER, sealed)? {
+            labels.insert(label);
+        }
+    }
+
+    let mapped: Vec<String> =
+        sqlx::query_scalar("SELECT speaker_label FROM person_speakers WHERE meeting_id = ?")
+            .bind(meeting_id)
+            .fetch_all(&mut **tx)
+            .await?;
+    for sealed in mapped {
+        let label = fields::open(fields::SPEAKER_LABEL, &sealed)?;
+        if labels.contains(&label) {
+            continue;
+        }
+        sqlx::query("DELETE FROM person_speakers WHERE meeting_id = ? AND speaker_label = ?")
+            .bind(meeting_id)
+            .bind(&sealed)
+            .execute(&mut **tx)
+            .await?;
+    }
     delete_orphan_people(tx).await
 }
 
@@ -1031,7 +1102,7 @@ async fn find_person_by_normalized_name(
 #[cfg(test)]
 mod tests {
     use super::{
-        build_person_context, clear_meeting_speaker_mappings, is_person_name,
+        build_person_context, is_person_name, retain_present_speaker_mappings,
         normalize_person_name, visible_summary_text, PeopleRepository, PersonContextMeeting,
         PersonContextMessage, PERSON_CONTEXT_CHARS,
     };
@@ -1291,7 +1362,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn replacement_cleanup_removes_meeting_mappings_and_orphans() {
+    async fn replacement_cleanup_keeps_names_still_present_and_drops_the_rest() {
         let pool = sqlx::SqlitePool::connect(":memory:").await.unwrap();
         sqlx::raw_sql(
             "CREATE TABLE people (id TEXT PRIMARY KEY); \
@@ -1300,15 +1371,19 @@ mod tests {
              CREATE TABLE meeting_speaker_roles (meeting_id TEXT NOT NULL, \
                  speaker_label TEXT NOT NULL, role TEXT NOT NULL, \
                  PRIMARY KEY (meeting_id, speaker_label)); \
-             INSERT INTO people VALUES ('only-m1'), ('shared'); \
+             CREATE TABLE transcripts (meeting_id TEXT NOT NULL, speaker TEXT); \
+             INSERT INTO people VALUES ('only-m1'), ('shared'), ('kept'); \
              INSERT INTO person_speakers VALUES \
-                 ('only-m1', 'm1', 'Alice'), ('shared', 'm1', 'Bob'), ('shared', 'm2', 'Bob');",
+                 ('only-m1', 'm1', 'Alice'), ('shared', 'm1', 'Bob'), ('shared', 'm2', 'Bob'), \
+                 ('kept', 'm1', 'Carol'); \
+             INSERT INTO transcripts VALUES ('m1', 'Carol'), ('m1', 'Speaker 1'), ('m1', NULL), \
+                 ('m2', 'Alice');",
         )
         .execute(&pool)
         .await
         .unwrap();
         let mut tx = pool.begin().await.unwrap();
-        clear_meeting_speaker_mappings(&mut tx, "m1").await.unwrap();
+        retain_present_speaker_mappings(&mut tx, "m1").await.unwrap();
         tx.commit().await.unwrap();
 
         let m1_mappings: i64 =
@@ -1324,7 +1399,15 @@ mod tests {
             .fetch_one(&pool)
             .await
             .unwrap();
-        assert_eq!(m1_mappings, 0);
+        let kept: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM person_speakers WHERE meeting_id = 'm1' AND speaker_label = 'Carol'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        // Carol still speaks in m1; Alice and Bob went with the old lines.
+        assert_eq!(m1_mappings, 1);
+        assert_eq!(kept, 1);
         assert_eq!(orphan, 0);
         assert_eq!(shared, 1);
     }

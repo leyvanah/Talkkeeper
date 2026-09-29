@@ -15,6 +15,7 @@
 //! Models live install-locally in `<install>/data/models/diarization`.
 
 pub mod by_device;
+pub mod carried_names;
 pub mod clustering;
 pub mod download;
 pub mod dsp;
