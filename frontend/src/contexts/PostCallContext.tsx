@@ -37,6 +37,13 @@ import type { RawModelInfo } from '@/hooks/useTranscriptionModels';
 import { isVisibleParakeetModel } from '@/lib/parakeet';
 import { externalSttLabel, type ExternalSttConfig } from '@/components/ExternalSttSettings';
 import { GIGAAM_MODEL_NAME, type GigaamModelStatus } from '@/components/GigaamModelManager';
+import {
+  chooseEnhancementModel,
+  PROVIDER_LABELS,
+  type EnhancementChoice,
+  type ModelChoice,
+  type RequestedModel,
+} from '@/lib/enhancement-model';
 
 export type Stage = 'queued' | 'prompt' | 'enhancing' | 'diarizing' | 'error' | 'done';
 export type FailedStage = 'enhancing' | 'diarizing';
@@ -53,20 +60,15 @@ export interface PostCallRun {
   singleRemoteSpeaker: boolean;
 }
 
-interface ModelChoice {
-  provider: 'whisper' | 'parakeet' | 'gigaam' | 'externalStt';
-  name: string;
-}
-
 interface PostCallTranscriptConfig {
-  provider: 'live' | 'whisper' | 'parakeet';
+  provider: 'live' | 'whisper' | 'parakeet' | 'gigaam';
   model: string;
 }
 
 async function resolveEnhancementModel(
-  configuredProvider?: string,
-  configuredModel?: string,
-): Promise<ModelChoice> {
+  postCall: RequestedModel,
+  live: RequestedModel | undefined,
+): Promise<EnhancementChoice | null> {
   const [whisperModels, parakeetModels] = await Promise.all([
     invoke<RawModelInfo[]>('whisper_get_available_models').catch(() => []),
     invoke<RawModelInfo[]>('parakeet_get_available_models').catch(() => []),
@@ -91,31 +93,7 @@ async function resolveEnhancementModel(
   if (externalConfig?.url.trim()) {
     available.push({ provider: 'externalStt' as const, name: externalSttLabel(externalConfig) });
   }
-  const normalizedProvider = configuredProvider === 'localWhisper'
-    ? 'whisper'
-    : configuredProvider;
-  if (normalizedProvider === 'gigaam') {
-    const local = available.find((model) => model.provider === 'gigaam');
-    if (local) return local;
-    throw new Error('The GigaAM model is not downloaded for enhancement.');
-  }
-  if (normalizedProvider === 'externalStt') {
-    const external = available.find((model) => model.provider === 'externalStt');
-    if (external) return external;
-    throw new Error('The external speech service is not configured for enhancement.');
-  }
-  const configured = available.find(
-    (model) => model.provider === normalizedProvider && model.name === configuredModel,
-  );
-  if (configured) return configured;
-  if (normalizedProvider === 'whisper' || normalizedProvider === 'parakeet') {
-    const sameProvider = available.find((model) => model.provider === normalizedProvider);
-    if (sameProvider) return sameProvider;
-    throw new Error(`No downloaded ${normalizedProvider} model is available for enhancement.`);
-  }
-  const localDefault = available.find((model) => model.provider === 'parakeet') ?? available[0];
-  if (localDefault) return localDefault;
-  throw new Error('No downloaded transcription model is available for post-call enhancement.');
+  return chooseEnhancementModel(available, postCall, live);
 }
 
 /** Survives a reload of the window; the run itself does not need to. */
@@ -252,11 +230,15 @@ export function PostCallProvider({ children }: { children: React.ReactNode }) {
     const { selectedLanguage: language, transcriptModelConfig: live } = configRef.current;
     const postCallConfig = await invoke<PostCallTranscriptConfig>('api_get_post_call_transcript_config')
       .catch(() => ({ provider: 'live' as const, model: '' }));
-    const useLiveDefault = postCallConfig.provider === 'live';
-    const model = await resolveEnhancementModel(
-      useLiveDefault ? live?.provider : postCallConfig.provider,
-      useLiveDefault ? live?.model : postCallConfig.model,
-    );
+    const choice = await resolveEnhancementModel(postCallConfig, live);
+    if (!choice) throw new Error(t('postCallNoModel'));
+    const { model, replaced } = choice;
+    if (replaced) {
+      toast.info(t('postCallModelReplaced', {
+        wanted: PROVIDER_LABELS[replaced],
+        used: PROVIDER_LABELS[model.provider],
+      }));
+    }
     await startRetranscription({
       meetingId,
       meetingFolderPath: run.folderPath,
