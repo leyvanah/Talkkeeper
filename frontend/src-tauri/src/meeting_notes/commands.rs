@@ -4,11 +4,24 @@
 //! The window edits the notes as lines of one text, so both kinds answer in
 //! the same shape: an added or edited line comes back as the note it became.
 
-use tauri::State;
+use tauri::{Emitter, Runtime, State, WebviewWindow};
 
 use super::{insert_after, load_in, store, Note};
 use crate::audio::transcript_journal;
 use crate::state::AppState;
+
+/// The notes of the running recording can be written in the main window and in
+/// the compact bar. Each change is announced with the label of the window that
+/// made it, so the other one reads them again.
+fn announce<R: Runtime, T>(
+    window: &WebviewWindow<R>,
+    result: Result<T, String>,
+) -> Result<T, String> {
+    if result.is_ok() {
+        let _ = window.emit("recording-notes-changed", window.label());
+    }
+    result
+}
 
 /// Adds a line to the notes of the recording now running, right after the
 /// line `after` (first when none).
@@ -18,13 +31,18 @@ use crate::state::AppState;
 /// Without it — or with a moment the recording has not reached — the line is
 /// placed where the recording is now.
 #[tauri::command]
-pub async fn recording_note_add(
+pub async fn recording_note_add<R: Runtime>(
+    window: WebviewWindow<R>,
     text: String,
     started_at: Option<f64>,
     after: Option<String>,
 ) -> Result<Note, String> {
     let now = crate::audio::recording_commands::recorded_seconds();
-    transcript_journal::add_note(Note::new(&text, moment(started_at, now))?, after.as_deref())
+    let note = Note::new(&text, moment(started_at, now))?;
+    announce(
+        &window,
+        transcript_journal::add_note(note, after.as_deref()),
+    )
 }
 
 fn moment(started_at: Option<f64>, now: Option<f64>) -> Option<f64> {
@@ -35,13 +53,20 @@ fn moment(started_at: Option<f64>, now: Option<f64>) -> Option<f64> {
 }
 
 #[tauri::command]
-pub async fn recording_note_edit(id: String, text: String) -> Result<Note, String> {
-    transcript_journal::edit_note(&id, &text)
+pub async fn recording_note_edit<R: Runtime>(
+    window: WebviewWindow<R>,
+    id: String,
+    text: String,
+) -> Result<Note, String> {
+    announce(&window, transcript_journal::edit_note(&id, &text))
 }
 
 #[tauri::command]
-pub async fn recording_note_remove(id: String) -> Result<(), String> {
-    transcript_journal::remove_note(&id)
+pub async fn recording_note_remove<R: Runtime>(
+    window: WebviewWindow<R>,
+    id: String,
+) -> Result<(), String> {
+    announce(&window, transcript_journal::remove_note(&id))
 }
 
 /// The notes of the recording now running, for a window that opens mid-way.

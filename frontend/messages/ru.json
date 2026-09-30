@@ -1382,6 +1382,8 @@
     "pickerAllLanguages": "Все языки",
     "localStackReadFailed": "Не удалось прочитать состояние локального стека",
     "minibarHideTitle": "Скрыть панель. Запись продолжится — вернуться можно через значок Talkkeeper в трее",
+    "minibarNotesShow": "Заметки",
+    "minibarNotesHide": "Свернуть заметки",
     "postCallPaused": "Улучшение на паузе",
     "postCallPausedDetail": "Идёт запись — улучшение транскрипта продолжится после неё"
   },

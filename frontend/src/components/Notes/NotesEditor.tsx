@@ -39,6 +39,8 @@ interface NotesEditorProps {
   live: boolean;
   /** Plays the recording from a line's moment. */
   onSeek?: (seconds: number) => void;
+  /** Tight room, as in the compact recording bar: no hints under the text. */
+  compact?: boolean;
 }
 
 /** The editor starts over whenever the notes belong to something else. */
@@ -73,7 +75,7 @@ const fromNote = (note: MeetingNote): Line => ({ key: note.id, id: note.id, at: 
 // Grows with its text; Chromium sizes the field to its content.
 const AUTO_HEIGHT = { fieldSizing: 'content' } as CSSProperties;
 
-function EditorBody({ source, live, onSeek }: NotesEditorProps) {
+function EditorBody({ source, live, onSeek, compact = false }: NotesEditorProps) {
   const t = useTranslations('notes');
   const [lines, setLinesState] = useState<Line[]>(() => withDraft(source.notes.map(fromNote)));
   // The saves run after renders; they read the text as it is by then.
@@ -341,7 +343,7 @@ function EditorBody({ source, live, onSeek }: NotesEditorProps) {
   return (
     <div className="flex h-full min-h-0 flex-col">
       <div
-        className="min-h-0 flex-1 cursor-text overflow-y-auto px-3 py-4"
+        className={`min-h-0 flex-1 cursor-text overflow-y-auto px-3 ${compact ? 'py-2' : 'py-4'}`}
         onMouseDown={(event) => {
           // A click below the text writes at its end.
           if (event.target !== event.currentTarget) return;
@@ -387,13 +389,15 @@ function EditorBody({ source, live, onSeek }: NotesEditorProps) {
             />
           </div>
         ))}
-        {onlyDraft && !source.loading && (
+        {onlyDraft && !source.loading && !compact && (
           <p className="mt-3 pl-14 pr-2 text-xs leading-5 text-[var(--af-text-3)]">{live ? t('emptyLive') : t('empty')}</p>
         )}
       </div>
-      <p className="shrink-0 px-4 pb-3 pt-1 text-xs text-[var(--af-text-3)]">
-        {hasNotes ? t('summaryHint') : t('newLineHint')}
-      </p>
+      {!compact && (
+        <p className="shrink-0 px-4 pb-3 pt-1 text-xs text-[var(--af-text-3)]">
+          {hasNotes ? t('summaryHint') : t('newLineHint')}
+        </p>
+      )}
     </div>
   );
 }

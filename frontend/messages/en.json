@@ -1382,6 +1382,8 @@
     "pickerAllLanguages": "All Languages",
     "localStackReadFailed": "Could not read local stack status",
     "minibarHideTitle": "Hide the bar. The recording goes on — the Talkkeeper tray icon brings the window back",
+    "minibarNotesShow": "Notes",
+    "minibarNotesHide": "Roll up the notes",
     "postCallPaused": "Improvement paused",
     "postCallPausedDetail": "A recording is on — the transcript improvement resumes after it"
   },

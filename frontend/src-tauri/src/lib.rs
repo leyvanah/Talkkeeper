@@ -53,6 +53,7 @@ pub mod logging;
 pub mod meeting_notes;
 pub mod meeting_detection;
 pub mod minibar;
+pub mod minibar_dock;
 pub mod model_integrity;
 pub mod network_policy;
 pub mod gigaam_engine;
@@ -755,6 +756,8 @@ pub fn run() {
             minibar::enter_compact_mode,
             minibar::exit_compact_mode,
             minibar::hide_compact_bar,
+            minibar_dock::minibar_dock_state,
+            minibar_dock::set_minibar_notes_open,
             audio::recording_commands::recording_live_transcription,
             audio::recording_commands::recording_would_be_live,
             minibar::stop_recording_from_minibar,

@@ -9,6 +9,8 @@
 
 import { useCallback, useEffect, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
+import { listen } from '@tauri-apps/api/event';
+import { getCurrentWindow } from '@tauri-apps/api/window';
 import { useTranslations } from 'next-intl';
 import { toast } from 'sonner';
 
@@ -70,6 +72,29 @@ export function useRecordingNotes(isRecording: boolean): NotesSource {
       });
     return () => {
       cancelled = true;
+    };
+  }, [isRecording]);
+
+  // The compact bar writes these notes too. A change made in the other window
+  // is read again, and the editor starts over from it.
+  useEffect(() => {
+    if (!isRecording) return;
+    let disposed = false;
+    let revision = 0;
+    const own = getCurrentWindow().label;
+    const listening = listen<string>('recording-notes-changed', (event) => {
+      if (event.payload === own) return;
+      invoke<MeetingNote[]>('recording_notes')
+        .then((stored) => {
+          if (disposed) return;
+          setNotes(stored);
+          setIdentity(`recording:${++revision}`);
+        })
+        .catch((error) => console.error('[Notes] Could not read the recording notes:', error));
+    });
+    return () => {
+      disposed = true;
+      void listening.then((unlisten) => unlisten());
     };
   }, [isRecording]);
 

@@ -539,6 +539,18 @@ html.dark.minibar-window body {
   overflow: hidden;
 }
 
+/* The compact bar's notes unroll downwards from under it, like a scroll. */
+.minibar-unroll {
+  animation: minibar-unroll 180ms cubic-bezier(0.2, 0.8, 0.2, 1) both;
+}
+.minibar-roll-up {
+  animation: minibar-unroll 180ms cubic-bezier(0.4, 0, 1, 1) reverse both;
+}
+@keyframes minibar-unroll {
+  from { clip-path: inset(0 0 100% 0 round 12px); opacity: 0.4; }
+  to { clip-path: inset(0 0 0 0 round 12px); opacity: 1; }
+}
+
 /* Selection in the brand accent rather than the OS default blue. */
 .dark ::selection {
   background-color: rgba(74, 139, 255, 0.28);
