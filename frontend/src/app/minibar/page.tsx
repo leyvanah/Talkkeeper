@@ -26,7 +26,7 @@ import { NotesEditor } from '@/components/Notes/NotesEditor';
 import { useRecordingNotes } from '@/hooks/useMeetingNotes';
 import { recordingService } from '@/services/recordingService';
 import { applyAppTheme, getSavedAppTheme } from '@/lib/app-theme';
-import { dockedTabPaths, revealFor } from '@/lib/minibar-dock';
+import { barPaths, peelFor, revealFor } from '@/lib/minibar-dock';
 
 /** Room the window leaves on each side for the corners of the docked tab. */
 const EAR = 10;
@@ -39,7 +39,31 @@ const LINGER_MS = 1200;
 const NOTES_HEIGHT = 216;
 const NOTES_ANIMATION_MS = 180;
 
+/** How long the corners take to peel off the edge, or settle onto it. */
+const PEEL_MS = 140;
+
 type NotesState = 'closed' | 'open' | 'closing';
+
+/** `target`, reached over `duration` ms with an ease-out rather than at once. */
+function useEased(target: number, duration: number): number {
+  const [value, setValue] = useState(target);
+  const current = useRef(target);
+  useEffect(() => {
+    const from = current.current;
+    if (from === target) return;
+    const start = performance.now();
+    let frame = 0;
+    const step = (now: number) => {
+      const t = Math.min(1, (now - start) / duration);
+      current.current = from + (target - from) * (1 - (1 - t) ** 3);
+      setValue(current.current);
+      if (t < 1) frame = requestAnimationFrame(step);
+    };
+    frame = requestAnimationFrame(step);
+    return () => cancelAnimationFrame(frame);
+  }, [target, duration]);
+  return value;
+}
 
 function formatElapsed(totalSeconds: number): string {
   const h = Math.floor(totalSeconds / 3600);
@@ -188,6 +212,7 @@ export default function MiniBarPage() {
 
   // --- Docking -------------------------------------------------------------
   const [docked, setDocked] = useState(false);
+  const [edgeGap, setEdgeGap] = useState(0);
   const [distance, setDistance] = useState(0);
   const [lingering, setLingering] = useState(false);
   const [viewport, setViewport] = useState({ width: 440, height: BAR_HEIGHT });
@@ -197,6 +222,7 @@ export default function MiniBarPage() {
     const unlisteners = [
       listen<boolean>('minibar-dock', (event) => setDocked(event.payload)),
       listen<number>('minibar-pointer', (event) => setDistance(event.payload)),
+      listen<number>('minibar-edge-gap', (event) => setEdgeGap(event.payload)),
     ];
     invoke<boolean>('minibar_dock_state')
       .then((state) => !disposed && setDocked(state))
@@ -283,7 +309,8 @@ export default function MiniBarPage() {
   const motion = hiding
     ? 'transform 520ms cubic-bezier(0.4, 0, 0.2, 1), opacity 520ms ease'
     : 'transform 140ms ease-out, opacity 140ms ease-out';
-  const tab = dockedTabPaths(viewport.width, BAR_HEIGHT, EAR, 16);
+  const peel = useEased(peelFor(docked, edgeGap), PEEL_MS);
+  const shape = barPaths(viewport.width, BAR_HEIGHT, EAR, 16, peel);
 
   const busy = isStopping || isChangingMicMute || isChangingSystemMute;
   const icon =
@@ -300,20 +327,20 @@ export default function MiniBarPage() {
         style={{ transform: `translateY(${offset}px)`, opacity: 0.5 + 0.5 * reveal, transition: motion }}
       >
         <div className="relative" style={{ height: BAR_HEIGHT }}>
-          {/* Free: a pill. Docked: a tab whose top corners spread into the edge. */}
-          <div
-            className="pointer-events-none absolute inset-y-0 rounded-full border border-[var(--af-border-strong)] bg-[var(--af-panel)] transition-opacity duration-200"
-            style={{ left: EAR, right: EAR, opacity: docked ? 0 : 1 }}
-          />
+          {/* Against the edge, a tab whose top corners spread into it; away
+              from it, a pill. One shape, eased between the two. */}
           <svg
-            className="pointer-events-none absolute left-0 top-0 transition-opacity duration-200"
+            className="pointer-events-none absolute left-0 top-0"
             width={viewport.width}
             height={BAR_HEIGHT}
-            style={{ opacity: docked ? 1 : 0 }}
             aria-hidden
           >
-            <path d={tab.fill} style={{ fill: 'var(--af-panel)' }} />
-            <path d={tab.outline} style={{ fill: 'none', stroke: 'var(--af-border-strong)', strokeWidth: 1 }} />
+            <path d={shape.fill} style={{ fill: 'var(--af-panel)' }} />
+            <path d={shape.outline} style={{ fill: 'none', stroke: 'var(--af-border-strong)', strokeWidth: 1 }} />
+            <path
+              d={shape.top}
+              style={{ fill: 'none', stroke: 'var(--af-border-strong)', strokeWidth: 1, opacity: peel }}
+            />
           </svg>
           <div
             data-tauri-drag-region

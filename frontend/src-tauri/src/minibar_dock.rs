@@ -123,6 +123,9 @@ fn on_moved<R: Runtime>(window: &WebviewWindow<R>, position: PhysicalPosition<i3
     // pull-in distance from it, so this agrees with the rail's own state.
     let docked = gap <= SNAP_DISTANCE;
     set_docked(window, docked);
+    // A docked bar pulled down gives a little before it tears off. The page
+    // peels the tab's corners off the edge as daylight opens up under it.
+    let _ = window.emit_to(window.label(), "minibar-edge-gap", gap.max(0.0).round());
     if docked {
         settle_later(window.clone());
     }
