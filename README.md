@@ -183,6 +183,25 @@ See [`ARCHITECTURE.md`](ARCHITECTURE.md) for implementation details.
 
 </details>
 
+## Code signing policy
+
+Free code signing provided by [SignPath.io](https://about.signpath.io/), certificate
+by [SignPath Foundation](https://signpath.org/).
+
+Windows releases are built from this repository by the
+[`Signed release`](.github/workflows/release-signed.yml) workflow on
+GitHub-hosted machines, and every release is approved by hand before it is signed.
+
+Team roles:
+
+- Committers and reviewers: [leyvanah](https://github.com/leyvanah)
+- Approvers: [leyvanah](https://github.com/leyvanah)
+
+Privacy: this program will not transfer any information to other networked
+systems unless specifically requested by the user or the person installing or
+operating it. Downloading a speech or language model, or sending a transcript to
+a cloud model, happens only when you choose to do so.
+
 ## Credits and license
 
 Talkkeeper is developed by [leyvanah](https://github.com/leyvanah).
