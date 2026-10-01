@@ -458,3 +458,58 @@ fn system_gain_limits_positive_and_negative_clipping() {
     assert!((samples[1] + PEAK_LIMIT / 2.0).abs() < f32::EPSILON);
     assert_eq!(samples[2], 0.0);
 }
+
+/// A source whose device went away mid-recording, and whose replacement
+/// stream started three seconds later, comes back in line with the other.
+///
+/// While it is away the mixer runs the surviving source 600ms ahead and fills
+/// the missing one with silence. Without lining the new stream up again, its
+/// first block was placed right after the last one mixed — 600ms before the
+/// moment it was captured — and stayed that far out of step for the rest of
+/// the recording.
+#[test]
+fn a_replaced_source_comes_back_in_step() {
+    let sample_rate = 48_000u32;
+    let block = sample_rate as usize / 100; // 10 ms
+    let mut buffer = AudioMixerRingBuffer::new(sample_rate, true, true);
+
+    // Each sample carries the moment it was captured, in milliseconds, plus
+    // one so that silence (0) stays recognisable.
+    let stamped = |ms: usize| vec![(ms + 1) as f32; block];
+    let mut windows = Vec::new();
+    let mut drain = |buffer: &mut AudioMixerRingBuffer, windows: &mut Vec<(Vec<f32>, Vec<f32>)>| {
+        while let Some(window) = buffer.extract_window() {
+            windows.push(window);
+        }
+    };
+
+    for index in 0..800 {
+        let ms = index * 10;
+        let clock = (ms + 10) as f64 / 1000.0;
+        buffer.add_samples(DeviceType::Microphone, stamped(ms), clock);
+        let system_away = (200..500).contains(&index);
+        if !system_away {
+            if index == 500 {
+                buffer.restart_source(&DeviceType::System);
+            }
+            buffer.add_samples(DeviceType::System, stamped(ms), clock);
+        }
+        drain(&mut buffer, &mut windows);
+    }
+
+    let after_return: Vec<_> = windows
+        .iter()
+        .filter(|(mic, system)| mic[0] >= 5_500.0 && system.iter().all(|&s| s > 0.0))
+        .collect();
+    assert!(!after_return.is_empty(), "no mixed windows after the source came back");
+    for (mic, system) in after_return {
+        for (m, s) in mic.iter().zip(system) {
+            assert!(
+                (m - s).abs() <= 10.0,
+                "system {}ms against microphone {}ms",
+                s - 1.0,
+                m - 1.0
+            );
+        }
+    }
+}

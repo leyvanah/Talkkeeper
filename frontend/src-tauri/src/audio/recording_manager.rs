@@ -29,6 +29,10 @@ pub struct RecordingManager {
     recording_saver: RecordingSaver,
     device_monitor: Option<AudioDeviceMonitor>,
     device_event_receiver: Option<mpsc::UnboundedReceiver<DeviceEvent>>,
+    /// Microphone, system: the source was the Windows default when the
+    /// recording started, so it moves when the default does — plugging in
+    /// headphones sends the other side's voice there, not to the speakers.
+    follows_default: [bool; 2],
 }
 
 // SAFETY: RecordingManager contains types that we've marked as Send
@@ -49,6 +53,7 @@ impl RecordingManager {
             recording_saver: RecordingSaver::new(),
             device_monitor: Some(device_monitor),
             device_event_receiver: Some(device_event_receiver),
+            follows_default: [false, false],
         }
     }
 
@@ -103,6 +108,17 @@ impl RecordingManager {
         } else {
             ("No System Audio".to_string(), super::device_detection::InputDeviceKind::Unknown)
         };
+
+        #[cfg(not(target_os = "macos"))]
+        {
+            let is_default = |device: &Option<Arc<AudioDevice>>, default: Result<AudioDevice>| {
+                matches!((device, default), (Some(device), Ok(default)) if device.name == default.name)
+            };
+            self.follows_default = [
+                is_default(&microphone_device, default_input_device()),
+                is_default(&system_device, default_output_device()),
+            ];
+        }
 
         // Update recording metadata with device information
         self.recording_saver.set_device_info(
@@ -609,6 +625,39 @@ impl RecordingManager {
                 Err(e)
             }
         }
+    }
+
+    /// The device a source is capturing from now.
+    pub fn source_device(&self, device_type: &RecordingDeviceType) -> Option<Arc<AudioDevice>> {
+        match device_type {
+            RecordingDeviceType::Microphone => self.state.get_microphone_device(),
+            RecordingDeviceType::System => self.state.get_system_device(),
+            RecordingDeviceType::Mixed => None,
+        }
+    }
+
+    /// Whether a source moves with the Windows default device.
+    pub fn follows_default(&self, device_type: &RecordingDeviceType) -> bool {
+        match device_type {
+            RecordingDeviceType::Microphone => self.follows_default[0],
+            RecordingDeviceType::System => self.follows_default[1],
+            RecordingDeviceType::Mixed => false,
+        }
+    }
+
+    /// Take one source's stream out, to replace it while the recording runs.
+    pub fn take_stream(&mut self, device_type: &RecordingDeviceType) -> Option<super::stream::AudioStream> {
+        self.stream_manager.take_stream(device_type)
+    }
+
+    /// Put a replacement stream in.
+    pub fn put_stream(
+        &mut self,
+        device_type: RecordingDeviceType,
+        device: Arc<AudioDevice>,
+        stream: super::stream::AudioStream,
+    ) {
+        self.stream_manager.put_stream(device_type, device, stream);
     }
 
     /// Check if currently attempting to reconnect

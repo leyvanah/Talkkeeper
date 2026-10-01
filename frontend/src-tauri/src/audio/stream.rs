@@ -30,6 +30,9 @@ pub enum StreamBackend {
     WasapiComms {
         capture: Option<super::capture::CommsCapture>,
         task: Option<tokio::task::JoinHandle<()>>,
+        /// Set when the stream is stopped on purpose, so the capture ending
+        /// is not taken for its device going away.
+        stopping: Arc<std::sync::atomic::AtomicBool>,
     },
 }
 
@@ -194,13 +197,20 @@ impl AudioStream {
             state.clone(),
             sample_rate,
             1,
-            device_type,
+            device_type.clone(),
             recording_sender,
         );
 
+        let stopping = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let stopped_on_purpose = stopping.clone();
         let task = tokio::spawn(async move {
             while let Some(chunk) = rx.recv().await {
                 capture.process_audio_data(&chunk);
+            }
+            // The capture thread ended without being asked to: its device
+            // went away. The recording goes on and opens another.
+            if !stopped_on_purpose.load(std::sync::atomic::Ordering::SeqCst) {
+                state.report_source_lost(device_type);
             }
         });
 
@@ -214,6 +224,7 @@ impl AudioStream {
             backend: StreamBackend::WasapiComms {
                 capture: Some(comms),
                 task: Some(task),
+                stopping,
             },
             own_speech_detector: None,
         })
@@ -572,7 +583,8 @@ impl AudioStream {
                 drop(stream);
             }
             #[cfg(target_os = "windows")]
-            StreamBackend::WasapiComms { capture, task } => {
+            StreamBackend::WasapiComms { capture, task, stopping } => {
+                stopping.store(true, std::sync::atomic::Ordering::SeqCst);
                 // The capture thread first: it owns the channel's sender,
                 // so dropping it ends the forwarding task on its own rather
                 // than by abort, and no packet is lost on the way out.
@@ -718,6 +730,34 @@ impl AudioStreamManager {
             info!("All audio streams stopped successfully");
             Ok(())
         }
+    }
+
+    /// Take one source's stream out, to be replaced while the recording runs.
+    pub fn take_stream(&mut self, device_type: &DeviceType) -> Option<AudioStream> {
+        match device_type {
+            DeviceType::Microphone => self.microphone_stream.take(),
+            DeviceType::System => self.system_stream.take(),
+            DeviceType::Mixed => None,
+        }
+    }
+
+    /// Put a replacement in the place of a stream taken out.
+    pub fn put_stream(&mut self, device_type: DeviceType, device: Arc<AudioDevice>, stream: AudioStream) {
+        match device_type {
+            DeviceType::Microphone => {
+                self.state.set_microphone_device(device);
+                self.microphone_stream = Some(stream);
+            }
+            DeviceType::System => {
+                self.state.set_system_device(device);
+                self.system_stream = Some(stream);
+            }
+            DeviceType::Mixed => {
+                let _ = stream.stop();
+                return;
+            }
+        }
+        self.state.set_capture_active(device_type, true);
     }
 
     /// Get stream count

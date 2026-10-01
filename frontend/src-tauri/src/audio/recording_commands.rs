@@ -141,6 +141,21 @@ fn compact_mode_allowed(is_recording: bool, is_stopping: bool) -> bool {
     is_recording && !is_stopping
 }
 
+/// For the source watcher: the running recording's manager, briefly. `None`
+/// once the recording has stopped or is stopping.
+pub(super) fn with_recording_manager<T>(work: impl FnOnce(&mut RecordingManager) -> T) -> Option<T> {
+    if !can_enter_compact_mode() {
+        return None;
+    }
+    lock_or_recover(&RECORDING_MANAGER).as_mut().map(work)
+}
+
+/// For the source watcher: replacing a stream is kept apart from starting and
+/// stopping a recording, so a stop never finds a stream half swapped.
+pub(super) async fn recording_lifecycle() -> tokio::sync::MutexGuard<'static, ()> {
+    RECORDING_LIFECYCLE_LOCK.lock().await
+}
+
 // Global recording manager and transcription task to keep them alive during recording
 static RECORDING_MANAGER: Mutex<Option<RecordingManager>> = Mutex::new(None);
 static TRANSCRIPTION_TASK: Mutex<Option<JoinHandle<()>>> = Mutex::new(None);
@@ -469,6 +484,7 @@ pub async fn start_recording_with_meeting_name<R: Runtime>(
     // Set recording flag and reset speech detection flag
     info!("🔍 Setting IS_RECORDING to true and resetting SPEECH_DETECTED_EMITTED");
     IS_RECORDING.store(true, Ordering::SeqCst);
+    super::source_watch::start(app.clone());
 
     LIVE_TRANSCRIPTION.store(live, Ordering::SeqCst);
 
@@ -722,6 +738,7 @@ pub async fn start_recording_with_devices_and_meeting<R: Runtime>(
     // Set recording flag and reset speech detection flag
     info!("🔍 Setting IS_RECORDING to true and resetting SPEECH_DETECTED_EMITTED");
     IS_RECORDING.store(true, Ordering::SeqCst);
+    super::source_watch::start(app.clone());
 
     LIVE_TRANSCRIPTION.store(live, Ordering::SeqCst);
 

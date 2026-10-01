@@ -123,5 +123,34 @@ export function RecordingPostProcessingProvider({ children }: { children: React.
     };
   }, []);
 
+  // A device went away mid-recording and the recording went on (see
+  // audio/source_watch.rs). One toast per source, updated when the
+  // replacement opens.
+  useEffect(() => {
+    const sourceKey =(source: string) => (source === 'microphone' ? 'Microphone' : 'System');
+    const listening = [
+      listen<string>('recording-source-lost', (event) => {
+        toast.warning(t(`sourceLost${sourceKey(event.payload)}`), {
+          id: `recording-source-${event.payload}`,
+          duration: 15000,
+        });
+      }),
+      listen<{ source: string; device: string }>('recording-source-switched', (event) => {
+        const { source, device } = event.payload;
+        toast.success(t(`sourceSwitched${sourceKey(source)}`, { device }), {
+          id: `recording-source-${source}`,
+          duration: 8000,
+        });
+      }),
+    ];
+    return () => {
+      listening.forEach((pending) =>
+        void pending.then((unlisten) => unlisten()).catch(() => undefined),
+      );
+    };
+    // `t` changes with the language only.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   return <>{children}</>;
 }
