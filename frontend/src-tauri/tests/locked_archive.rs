@@ -109,6 +109,7 @@ async fn transcript_lines_are_not_stored_in_the_clear() {
         &pool,
         "Название встречи",
         &[segment],
+        &[],
         None,
         None,
     )
