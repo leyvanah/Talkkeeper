@@ -260,20 +260,22 @@ fn extract_ffmpeg_from_archive(
 
     println!("cargo:warning=📋 Found FFmpeg at: {:?}", ffmpeg_binary);
 
-    // Verify the extracted executable before it reaches binaries/
-    let actual = sha256_file(&ffmpeg_binary)?;
+    // Copy to target location
+    std::fs::copy(&ffmpeg_binary, output_path)
+        .map_err(|e| format!("Failed to copy binary to binaries/: {}", e))?;
+    let _ = std::fs::remove_dir_all(&extract_dir);
+
+    // Verify the copy itself, not the temp file: this is the file that gets run
+    // and bundled, and the temp dir may be shared (/tmp on Unix)
+    let actual = sha256_file(output_path)?;
     if actual != source.binary_sha256 {
-        let _ = std::fs::remove_dir_all(&extract_dir);
+        let _ = std::fs::remove_file(output_path);
         return Err(format!(
             "Extracted FFmpeg binary SHA-256 mismatch: expected {}, got {}",
             source.binary_sha256, actual
         ));
     }
     println!("cargo:warning=🔒 FFmpeg binary SHA-256 matches pinned value: {}", actual);
-
-    // Copy to target location
-    std::fs::copy(&ffmpeg_binary, output_path)
-        .map_err(|e| format!("Failed to copy binary to binaries/: {}", e))?;
 
     // Set executable permissions on Unix systems
     #[cfg(unix)]
@@ -287,9 +289,6 @@ fn extract_ffmpeg_from_archive(
             .map_err(|e| format!("Failed to set executable permissions: {}", e))?;
         println!("cargo:warning=🔐 Set executable permissions");
     }
-
-    // Cleanup extraction directory
-    let _ = std::fs::remove_dir_all(&extract_dir);
 
     Ok(())
 }
