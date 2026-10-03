@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useTranslations } from 'next-intl';
 import { invoke } from '@tauri-apps/api/core';
-import { BookOpen, Check, CheckCircle2, ChevronDown, Clock3, Languages, Loader2, Radio, Zap } from 'lucide-react';
+import { listen } from '@tauri-apps/api/event';
+import { AlertCircle, BookOpen, Check, CheckCircle2, ChevronDown, Clock3, Languages, Loader2, Radio, Zap } from 'lucide-react';
 import { toast } from 'sonner';
 import { Textarea } from './ui/textarea';
 import { Button } from './ui/button';
@@ -9,7 +10,7 @@ import { Label } from './ui/label';
 import { ModelManager } from './WhisperModelManager';
 import { ParakeetModelManager } from './ParakeetModelManager';
 import { ExternalSttSettings } from './ExternalSttSettings';
-import { GigaamModelManager } from './GigaamModelManager';
+import { GigaamModelManager, GIGAAM_MODEL_NAME, type GigaamModelStatus } from './GigaamModelManager';
 import type { RawModelInfo } from '@/hooks/useTranscriptionModels';
 import { isVisibleParakeetModel } from '@/lib/parakeet';
 
@@ -31,12 +32,12 @@ interface WhisperVocabularyConfig {
 }
 
 interface PostCallTranscriptConfig {
-    provider: 'live' | 'whisper' | 'parakeet';
+    provider: 'live' | 'whisper' | 'parakeet' | 'gigaam';
     model: string;
 }
 
 interface InstalledModel {
-    provider: 'whisper' | 'parakeet';
+    provider: 'whisper' | 'parakeet' | 'gigaam';
     name: string;
 }
 
@@ -50,6 +51,7 @@ export function TranscriptSettings({ transcriptModelConfig, setTranscriptModelCo
     const [uiProvider, setUiProvider] = useState<TranscriptModelProps['provider']>(transcriptModelConfig.provider);
     const [whisperManagerOpen, setWhisperManagerOpen] = useState(false);
     const [installedModels, setInstalledModels] = useState<InstalledModel[]>([]);
+    const [installedModelsLoaded, setInstalledModelsLoaded] = useState(false);
     const [isSavingLive, setIsSavingLive] = useState(false);
     const [postCallConfig, setPostCallConfig] = useState<PostCallTranscriptConfig>(DEFAULT_POST_CALL_CONFIG);
     const [isLoadingPostCall, setIsLoadingPostCall] = useState(true);
@@ -67,9 +69,10 @@ export function TranscriptSettings({ transcriptModelConfig, setTranscriptModelCo
     const postCallSectionRef = useRef<HTMLDivElement>(null);
 
     const refreshInstalledModels = useCallback(async () => {
-        const [whisperModels, parakeetModels] = await Promise.all([
+        const [whisperModels, parakeetModels, gigaam] = await Promise.all([
             invoke<RawModelInfo[]>('whisper_get_available_models').catch(() => []),
             invoke<RawModelInfo[]>('parakeet_get_available_models').catch(() => []),
+            invoke<GigaamModelStatus>('gigaam_get_model_status').catch(() => null),
         ]);
         setInstalledModels([
             ...parakeetModels
@@ -78,8 +81,18 @@ export function TranscriptSettings({ transcriptModelConfig, setTranscriptModelCo
             ...whisperModels
                 .filter((model) => model.status === 'Available')
                 .map((model) => ({ provider: 'whisper' as const, name: model.name })),
+            ...(gigaam?.installed ? [{ provider: 'gigaam' as const, name: GIGAAM_MODEL_NAME }] : []),
         ]);
+        setInstalledModelsLoaded(true);
     }, []);
+
+    // GigaAM is downloaded in its own card above; the post-call card follows it.
+    useEffect(() => {
+        const pending = listen('gigaam-model-download-complete', () => void refreshInstalledModels());
+        return () => {
+            void pending.then((unlisten) => unlisten());
+        };
+    }, [refreshInstalledModels]);
 
     useEffect(() => {
         setUiProvider(transcriptModelConfig.provider);
@@ -232,6 +245,7 @@ export function TranscriptSettings({ transcriptModelConfig, setTranscriptModelCo
 
     const installedWhisperModels = installedModels.filter((model) => model.provider === 'whisper');
     const installedParakeetModel = installedModels.find((model) => model.provider === 'parakeet');
+    const installedGigaamModel = installedModels.find((model) => model.provider === 'gigaam');
     const liveWhisperModel = installedWhisperModels.find((model) => model.name === transcriptModelConfig.model)
         || (postCallConfig.provider === 'whisper'
             ? installedWhisperModels.find((model) => model.name === postCallConfig.model)
@@ -246,6 +260,11 @@ export function TranscriptSettings({ transcriptModelConfig, setTranscriptModelCo
         : postCallConfig.model;
     const postCallWhisperModel = installedWhisperModels.find((model) => model.name === effectivePostCallModel)
         || installedWhisperModels[0];
+    // Chosen for post-call but not on disk: the enhancement falls back to another model.
+    const postCallModelMissing = !isLoadingPostCall && installedModelsLoaded && (
+        (effectivePostCallProvider === 'whisper' && !postCallWhisperModel)
+        || (effectivePostCallProvider === 'parakeet' && !installedParakeetModel)
+        || (effectivePostCallProvider === 'gigaam' && !installedGigaamModel));
     const whisperIsActive = uiProvider === 'localWhisper' || postCallConfig.provider === 'whisper';
     const openWhisperManager = () => {
         setWhisperManagerOpen(true);
@@ -511,14 +530,77 @@ export function TranscriptSettings({ transcriptModelConfig, setTranscriptModelCo
                     </div>
                 </div>
 
-                <div className="min-h-5 text-xs">
+                <div
+                    className={`space-y-3 rounded-xl border p-4 transition-colors ${installedGigaamModel && !isLoadingPostCall && !isSavingPostCall ? 'cursor-pointer hover:border-[var(--af-accent)]' : ''} ${effectivePostCallProvider === 'gigaam'
+                    ? 'border-[var(--af-accent)] bg-[var(--af-accent-soft)] ring-1 ring-blue-500/20'
+                    : 'border-[var(--af-border-strong)] bg-[var(--af-panel-2)]'}`}
+                    role={installedGigaamModel ? 'button' : undefined}
+                    tabIndex={installedGigaamModel ? 0 : undefined}
+                    aria-pressed={effectivePostCallProvider === 'gigaam'}
+                    onClick={() => {
+                        if (installedGigaamModel && !isLoadingPostCall && !isSavingPostCall) {
+                            void savePostCallConfig({ provider: 'gigaam', model: installedGigaamModel.name });
+                        }
+                    }}
+                    onKeyDown={(event) => {
+                        if (installedGigaamModel && !isLoadingPostCall && !isSavingPostCall && (event.key === 'Enter' || event.key === ' ')) {
+                            event.preventDefault();
+                            void savePostCallConfig({ provider: 'gigaam', model: installedGigaamModel.name });
+                        }
+                    }}
+                >
+                    <div className="flex flex-wrap items-start justify-between gap-3">
+                        <div className="flex min-w-0 items-start gap-3">
+                            <Languages className="mt-0.5 h-5 w-5 shrink-0 text-sky-400" />
+                            <div>
+                                <div className="flex flex-wrap items-center gap-2">
+                                    <h4 className="font-semibold">GigaAM v3</h4>
+                                    <span className="rounded-full bg-sky-500/10 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-sky-400">
+                                        {t('gigaamBadge')}
+                                    </span>
+                                </div>
+                                <p className="mt-1 text-sm text-[var(--af-text-2)]">
+                                    {t('gigaamPostCallDescription')}
+                                </p>
+                            </div>
+                        </div>
+                        {effectivePostCallProvider === 'gigaam' ? (
+                            <span className="inline-flex shrink-0 items-center gap-1.5 rounded-full border border-blue-500/40 bg-blue-500/10 px-2.5 py-1 text-xs font-medium text-blue-400">
+                                <CheckCircle2 className="h-3.5 w-3.5" /> {t('selectedForPostCall')}
+                            </span>
+                        ) : installedGigaamModel ? (
+                            <span className="rounded-full border border-[var(--af-border-strong)] px-2.5 py-1 text-xs font-medium text-[var(--af-text-2)]">
+                                {t('clickToSelect')}
+                            </span>
+                        ) : (
+                            <span className="text-xs text-[var(--af-text-3)]">{t('installGigaamAbove')}</span>
+                        )}
+                    </div>
+                </div>
+
+                <div className="min-h-5 space-y-2 text-xs">
+                    {postCallModelMissing ? (
+                        <p className="flex items-start gap-1.5 text-amber-500">
+                            <AlertCircle className="mt-0.5 h-3.5 w-3.5 shrink-0" /> {t('postCallModelMissing')}
+                        </p>
+                    ) : null}
                     {postCallError ? (
                         <span className="text-red-500">{postCallError}</span>
                     ) : postCallSaved ? (
                         <span className="inline-flex items-center gap-1 text-emerald-600"><Check className="h-3.5 w-3.5" /> {t('postCallDefaultSaved')}</span>
                     ) : postCallConfig.provider === 'live' ? (
                         <span className="text-[var(--af-text-3)]">{t('postCallFollowsLive')}</span>
-                    ) : null}
+                    ) : (
+                        <Button
+                            type="button"
+                            variant="outline"
+                            size="sm"
+                            disabled={isLoadingPostCall || isSavingPostCall}
+                            onClick={() => void savePostCallConfig(DEFAULT_POST_CALL_CONFIG)}
+                        >
+                            {t('postCallUseLive')}
+                        </Button>
+                    )}
                 </div>
 
                 <details

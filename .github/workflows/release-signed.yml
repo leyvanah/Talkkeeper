@@ -1,0 +1,213 @@
+# Builds the Windows installer from this repository and has it signed by
+# SignPath Foundation (https://signpath.org), which vouches with its own
+# certificate that the binaries were built here, from this source.
+#
+# Run it by hand only (Actions → Signed release → Run workflow). Nothing else
+# starts it: not a push, not a pull request, not a fork. The logs and artifacts
+# of a public repository are public; this job only ever sees what is already
+# public in this repository, plus the SignPath token, which stays in secrets.
+#
+# With `sign` off it is a dry run: the same build, the installer left unsigned,
+# for checking the toolchain before SignPath is set up.
+#
+# Settings it expects (repository → Settings):
+#   - environment `signing`, with the owner as a required reviewer;
+#   - secret SIGNPATH_API_TOKEN in that environment;
+#   - variables SIGNPATH_ORGANIZATION_ID, SIGNPATH_PROJECT_SLUG,
+#     SIGNPATH_SIGNING_POLICY_SLUG.
+
+name: Signed release
+
+on:
+  workflow_dispatch:
+    inputs:
+      sign:
+        description: "Send the build to SignPath (off: an unsigned dry run)"
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: signed-release
+  cancel-in-progress: false
+
+env:
+  # `next build` reports usage to Vercel unless told not to.
+  NEXT_TELEMETRY_DISABLED: "1"
+  CARGO_TERM_COLOR: never
+  # bindgen 0.69 (whisper-rs-sys, llama-cpp-sys-2) misreads headers from
+  # LLVM 19 and later; 18.1.8 is the version the project builds with.
+  LLVM_VERSION: "18.1.8"
+  VULKAN_SDK_VERSION: "1.4.357.0"
+  PNPM_VERSION: "11.25.0"
+
+jobs:
+  build:
+    name: Build and sign
+    runs-on: windows-2022
+    timeout-minutes: 240
+    environment: ${{ inputs.sign && 'signing' || 'dry-run' }}
+    permissions:
+      contents: read
+      # The SignPath action reads this job's details and its artifacts.
+      actions: read
+    defaults:
+      run:
+        shell: pwsh
+
+    steps:
+      - name: Check out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Node
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22
+
+      - name: Install pnpm
+        run: npm install --global "pnpm@$env:PNPM_VERSION"
+
+      - name: Install Rust
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+
+      - name: Install LLVM ${{ env.LLVM_VERSION }}
+        run: |
+          $installer = "$env:RUNNER_TEMP\llvm.exe"
+          Invoke-WebRequest "https://github.com/llvm/llvm-project/releases/download/llvmorg-$env:LLVM_VERSION/LLVM-$env:LLVM_VERSION-win64.exe" -OutFile $installer
+          Start-Process $installer -ArgumentList '/S', '/D=C:\LLVM18' -Wait
+          # Wins over the repository's .cargo/config.toml, which points at the
+          # default install location.
+          "LIBCLANG_PATH=C:\LLVM18\bin" >> $env:GITHUB_ENV
+
+      - name: Install the Vulkan SDK
+        run: |
+          $installer = "$env:RUNNER_TEMP\vulkansdk.exe"
+          Invoke-WebRequest "https://sdk.lunarg.com/sdk/download/$env:VULKAN_SDK_VERSION/windows/vulkansdk-windows-X64-$env:VULKAN_SDK_VERSION.exe" -OutFile $installer
+          $root = "C:\VulkanSDK\$env:VULKAN_SDK_VERSION"
+          Start-Process $installer -ArgumentList '--root', $root, '--accept-licenses', '--default-answer', '--confirm-command', 'install' -Wait
+          "VULKAN_SDK=$root" >> $env:GITHUB_ENV
+          "$root\Bin" >> $env:GITHUB_PATH
+
+      # The local model runner, twice: with Vulkan for GPUs, and plain for the
+      # machines where Vulkan does not start. The app picks whichever runs.
+      - name: Build llama-helper
+        shell: cmd
+        run: |
+          for /f "usebackq delims=" %%i in (`"%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe" -latest -property installationPath`) do set "VS=%%i"
+          call "%VS%\VC\Auxiliary\Build\vcvars64.bat" || exit /b 1
+          rem The Visual Studio generator does not build the nested vulkan-shaders-gen.
+          set "PATH=%VS%\Common7\IDE\CommonExtensions\Microsoft\CMake\Ninja;%PATH%"
+          set "CMAKE_GENERATOR=Ninja"
+          set "CARGO_TARGET_DIR=%RUNNER_TEMP%\helper-vulkan"
+          cargo build --release -p llama-helper --features vulkan || exit /b 1
+          set "CARGO_TARGET_DIR=%RUNNER_TEMP%\helper-cpu"
+          cargo build --release -p llama-helper || exit /b 1
+          copy /y "%RUNNER_TEMP%\helper-vulkan\release\llama-helper.exe" "frontend\src-tauri\binaries\llama-helper-x86_64-pc-windows-msvc.exe" || exit /b 1
+          copy /y "%RUNNER_TEMP%\helper-cpu\release\llama-helper.exe" "frontend\src-tauri\binaries\llama-helper-cpu-x86_64-pc-windows-msvc.exe" || exit /b 1
+
+      # Installed only where it is missing (see windows/installer-hooks.nsh).
+      # Microsoft's own signed redistributable, taken from Microsoft and checked.
+      - name: Fetch the Visual C++ runtime installer
+        run: |
+          $target = "frontend\src-tauri\runtime-deps\vc_redist.x64.exe"
+          Invoke-WebRequest "https://aka.ms/vs/17/release/vc_redist.x64.exe" -OutFile $target
+          $signature = Get-AuthenticodeSignature $target
+          if ($signature.Status -ne 'Valid' -or $signature.SignerCertificate.Subject -notmatch 'O=Microsoft Corporation') {
+            throw "vc_redist.x64.exe is not validly signed by Microsoft: $($signature.Status)"
+          }
+
+      - name: Install frontend dependencies
+        working-directory: frontend
+        run: pnpm install --frozen-lockfile
+
+      # The application without its installer: the programs are signed first,
+      # so the installer is built around signed programs.
+      - name: Build the application
+        working-directory: frontend
+        run: pnpm tauri build --no-bundle
+
+      - name: Collect the programs to sign
+        run: |
+          New-Item -ItemType Directory -Force unsigned | Out-Null
+          Copy-Item target\release\meetily.exe unsigned\
+          Copy-Item frontend\src-tauri\binaries\llama-helper-x86_64-pc-windows-msvc.exe unsigned\
+          Copy-Item frontend\src-tauri\binaries\llama-helper-cpu-x86_64-pc-windows-msvc.exe unsigned\
+
+      - name: Upload the programs
+        id: upload-programs
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: programs-unsigned
+          path: unsigned/
+          retention-days: 1
+          if-no-files-found: error
+
+      - name: Sign the programs
+        if: inputs.sign
+        uses: signpath/github-action-submit-signing-request@c92b958760219087e01f8d67a1669ed57afe2627 # v2
+        with:
+          api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
+          organization-id: ${{ vars.SIGNPATH_ORGANIZATION_ID }}
+          project-slug: ${{ vars.SIGNPATH_PROJECT_SLUG }}
+          signing-policy-slug: ${{ vars.SIGNPATH_SIGNING_POLICY_SLUG }}
+          artifact-configuration-slug: programs
+          github-artifact-id: ${{ steps.upload-programs.outputs.artifact-id }}
+          # Each release is approved by hand in SignPath.
+          wait-for-completion-timeout-in-seconds: 7200
+          output-artifact-directory: signed
+
+      - name: Put the signed programs in place
+        if: inputs.sign
+        run: |
+          foreach ($file in Get-ChildItem signed -Filter *.exe) {
+            if ((Get-AuthenticodeSignature $file.FullName).Status -ne 'Valid') { throw "$($file.Name) is not validly signed" }
+          }
+          Copy-Item signed\meetily.exe target\release\meetily.exe -Force
+          Copy-Item signed\llama-helper-x86_64-pc-windows-msvc.exe frontend\src-tauri\binaries\ -Force
+          Copy-Item signed\llama-helper-cpu-x86_64-pc-windows-msvc.exe frontend\src-tauri\binaries\ -Force
+
+      - name: Build the installer
+        working-directory: frontend
+        run: pnpm tauri bundle --bundles nsis
+
+      - name: Collect the installer
+        run: |
+          New-Item -ItemType Directory -Force installer | Out-Null
+          Copy-Item target\release\bundle\nsis\*-setup.exe installer\
+
+      - name: Upload the installer
+        id: upload-installer
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: ${{ inputs.sign && 'installer-unsigned' || 'installer-dry-run' }}
+          path: installer/
+          retention-days: 1
+          if-no-files-found: error
+
+      - name: Sign the installer
+        if: inputs.sign
+        uses: signpath/github-action-submit-signing-request@c92b958760219087e01f8d67a1669ed57afe2627 # v2
+        with:
+          api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
+          organization-id: ${{ vars.SIGNPATH_ORGANIZATION_ID }}
+          project-slug: ${{ vars.SIGNPATH_PROJECT_SLUG }}
+          signing-policy-slug: ${{ vars.SIGNPATH_SIGNING_POLICY_SLUG }}
+          artifact-configuration-slug: installer
+          github-artifact-id: ${{ steps.upload-installer.outputs.artifact-id }}
+          wait-for-completion-timeout-in-seconds: 7200
+          output-artifact-directory: release
+
+      - name: Upload the signed installer
+        if: inputs.sign
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: installer-signed
+          path: release/
+          retention-days: 1
+          if-no-files-found: error

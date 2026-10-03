@@ -261,7 +261,17 @@ where
     while running.load(Ordering::Relaxed) {
         std::thread::sleep(POLL_INTERVAL);
 
-        while capture.GetNextPacketSize().unwrap_or(0) > 0 {
+        loop {
+            // An endpoint that went away — a headset unplugged — fails here
+            // and goes on failing. Reading it as "nothing yet" kept the
+            // session alive and silent forever; ending it lets the stream
+            // report the source lost, and the recording open another.
+            let pending = capture
+                .GetNextPacketSize()
+                .map_err(|error| anyhow!("the capture device went away: {error}"))?;
+            if pending == 0 {
+                break;
+            }
             let mut frames = 0u32;
             let mut data = std::ptr::null_mut();
             let mut flags = 0u32;

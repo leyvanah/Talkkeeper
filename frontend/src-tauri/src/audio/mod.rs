@@ -36,6 +36,7 @@ pub mod pipeline;
 pub mod stream;
 pub mod recording_manager;
 pub mod recording_commands;
+pub mod source_watch;
 pub mod recording_preferences;
 pub mod recording_protocol;
 pub mod recording_saver;

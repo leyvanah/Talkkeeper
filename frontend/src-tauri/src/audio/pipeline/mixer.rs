@@ -202,6 +202,19 @@ impl AudioMixerRingBuffer {
         self.system_enabled = system_enabled;
     }
 
+    /// A source's stream was replaced mid-recording (its device went away).
+    /// Its next block is lined up against the other source as a first block
+    /// is: the time it was away, which the mixer covered with silence while
+    /// the other source ran ahead, is written into its timeline once, so it
+    /// does not come back early by that much.
+    pub(super) fn restart_source(&mut self, device_type: &DeviceType) {
+        match device_type {
+            DeviceType::Microphone => self.mic_timeline.reset(),
+            DeviceType::System => self.system_timeline.reset(),
+            DeviceType::Mixed => {}
+        }
+    }
+
     pub(super) fn add_samples(
         &mut self,
         device_type: DeviceType,

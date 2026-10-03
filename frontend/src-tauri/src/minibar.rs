@@ -20,8 +20,12 @@ use std::time::Duration;
 use tauri::{AppHandle, Manager, Runtime, WebviewUrl, WebviewWindowBuilder};
 
 const MINIBAR_LABEL: &str = "minibar";
-const MINIBAR_WIDTH: f64 = 420.0;
-const MINIBAR_HEIGHT: f64 = 48.0;
+/// The bar is 420 wide; the window leaves 10 on each side for the corners it
+/// spreads over the screen edge when docked (see `minibar_dock`).
+pub(crate) const MINIBAR_WIDTH: f64 = 440.0;
+pub(crate) const MINIBAR_HEIGHT: f64 = 48.0;
+/// Room below the bar for the notes when they are unrolled.
+pub(crate) const MINIBAR_NOTES_HEIGHT: f64 = 216.0;
 const IPC_CLOSE_DELAY: Duration = Duration::from_millis(500);
 
 // Serialize window lifecycle changes so a queued minimize request cannot race a
@@ -180,14 +184,18 @@ pub async fn enter_compact_mode<R: Runtime>(
                 .build()
                 .map_err(|e| format!("Failed to create compact bar: {}", e))?;
 
-        // Park it top-centre, clear of the title bars of whatever is behind it.
-        if let Ok(Some(monitor)) = window.primary_monitor() {
+        // Back where it was last left, docked if it was; the first time,
+        // top-centre, clear of the title bars of whatever is behind it.
+        if let Some(position) = crate::minibar_dock::last_position() {
+            let _ = window.set_position(position);
+        } else if let Ok(Some(monitor)) = window.primary_monitor() {
             let size = monitor.size();
             let scale = monitor.scale_factor();
             let screen_w = size.width as f64 / scale;
             let x = (screen_w - MINIBAR_WIDTH) / 2.0;
-            let _ = window.set_position(tauri::LogicalPosition::new(x.max(0.0), 12.0));
+            let _ = window.set_position(tauri::LogicalPosition::new(x.max(0.0), 40.0));
         }
+        crate::minibar_dock::attach(&window);
 
         window
     };

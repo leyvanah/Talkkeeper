@@ -634,7 +634,15 @@ impl AudioCapture {
             AudioError::StreamFailed
         };
 
-        self.state.report_error(audio_error);
+        match audio_error {
+            // The stream is over either way — a capture callback reporting
+            // this is not called again. The recording is not: the source is
+            // replaced while it runs (see `audio::source_watch`).
+            AudioError::DeviceDisconnected | AudioError::StreamFailed => {
+                self.state.report_source_lost(self.device_type.clone())
+            }
+            other => self.state.report_error(other),
+        }
     }
 }
 
@@ -1108,6 +1116,9 @@ impl AudioPipeline {
                     // System audio has user gain and chunk peak limiting applied above.
                     if let Some((mic_active, system_active)) = self.state.active_capture_sources() {
                         self.ring_buffer.set_enabled(mic_active, system_active);
+                    }
+                    if self.state.take_source_restart(&chunk.device_type, chunk.timestamp) {
+                        self.ring_buffer.restart_source(&chunk.device_type);
                     }
                     let discontinuity_start = self.ring_buffer.add_samples(
                         chunk.device_type.clone(),

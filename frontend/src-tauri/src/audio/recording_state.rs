@@ -54,9 +54,10 @@ impl AudioError {
     /// Check if error is recoverable (can attempt reconnection)
     pub fn is_recoverable(&self) -> bool {
         match self {
-            // Capture stream callbacks are terminal. No live reconnection path
-            // replaces the failed CPAL stream, so waiting for repeats would
-            // leave the UI recording while that source stays silent.
+            // A capture stream that ends is not reported here any more: it goes
+            // to `report_source_lost` and is replaced while the recording runs
+            // (see `audio::source_watch`). Anything still reported this way
+            // has no replacement path and stops the recording.
             AudioError::DeviceDisconnected => false,
             AudioError::StreamFailed => false,
             AudioError::ProcessingFailed => true,
@@ -84,6 +85,22 @@ impl AudioError {
             AudioError::BufferOverflow => "Audio buffer overflow",
             AudioError::SampleRateUnsupported => "Audio sample rate not supported",
         }
+    }
+}
+
+/// Capture sources that ended while the recording goes on, and where the
+/// streams that replaced them start. See `audio::source_watch`.
+#[derive(Default)]
+struct SourceChanges {
+    lost: [AtomicBool; 2],
+    restarted_at: Mutex<[Option<f64>; 2]>,
+}
+
+fn source_slot(device_type: &DeviceType) -> Option<usize> {
+    match device_type {
+        DeviceType::Microphone => Some(0),
+        DeviceType::System => Some(1),
+        DeviceType::Mixed => None,
     }
 }
 
@@ -133,6 +150,7 @@ pub struct RecordingState {
     capture_setup_complete: AtomicBool,
     microphone_capture_active: AtomicBool,
     system_capture_active: AtomicBool,
+    source_changes: SourceChanges,
 }
 
 impl RecordingState {
@@ -159,6 +177,7 @@ impl RecordingState {
             capture_setup_complete: AtomicBool::new(false),
             microphone_capture_active: AtomicBool::new(false),
             system_capture_active: AtomicBool::new(false),
+            source_changes: SourceChanges::default(),
         })
     }
 
@@ -174,7 +193,58 @@ impl RecordingState {
         self.capture_setup_complete.store(false, Ordering::SeqCst);
         self.microphone_capture_active.store(false, Ordering::SeqCst);
         self.system_capture_active.store(false, Ordering::SeqCst);
+        for lost in &self.source_changes.lost {
+            lost.store(false, Ordering::SeqCst);
+        }
+        *self.source_changes.restarted_at.lock().unwrap() = [None, None];
         Ok(())
+    }
+
+    /// A capture stream ended on its own — its device was unplugged, or
+    /// Windows invalidated it — while the recording goes on. The recording is
+    /// not stopped for it: the other source keeps recording, the mixer holds
+    /// this one's place with silence, and the source watcher opens a
+    /// replacement.
+    pub fn report_source_lost(&self, device_type: DeviceType) {
+        let Some(slot) = source_slot(&device_type) else {
+            return;
+        };
+        if !self.source_changes.lost[slot].swap(true, Ordering::SeqCst) {
+            log::warn!("🔌 {:?} capture ended; the recording goes on and a replacement is being opened", device_type);
+        }
+    }
+
+    /// Whether this source was lost since the last time anyone asked.
+    pub fn take_source_lost(&self, device_type: &DeviceType) -> bool {
+        source_slot(device_type)
+            .map(|slot| self.source_changes.lost[slot].swap(false, Ordering::SeqCst))
+            .unwrap_or(false)
+    }
+
+    /// A new stream for this source starts delivering at `at` seconds of the
+    /// recording. The mixer lines its first block up again, as it does at the
+    /// start of a recording, so the source does not come back shifted by the
+    /// time it was away.
+    pub fn mark_source_restarted(&self, device_type: &DeviceType, at: f64) {
+        if let Some(slot) = source_slot(device_type) {
+            self.source_changes.restarted_at.lock().unwrap()[slot] = Some(at);
+        }
+    }
+
+    /// True once for the first block of a restarted source. Blocks of the old
+    /// stream still on their way are older than the restart and do not count.
+    pub fn take_source_restart(&self, device_type: &DeviceType, timestamp: f64) -> bool {
+        let Some(slot) = source_slot(device_type) else {
+            return false;
+        };
+        let mut restarted = self.source_changes.restarted_at.lock().unwrap();
+        match restarted[slot] {
+            Some(at) if timestamp >= at => {
+                restarted[slot] = None;
+                true
+            }
+            _ => false,
+        }
     }
 
     pub fn set_capture_active(&self, device_type: DeviceType, active: bool) {
@@ -511,6 +581,7 @@ impl Default for RecordingState {
             capture_setup_complete: AtomicBool::new(false),
             microphone_capture_active: AtomicBool::new(false),
             system_capture_active: AtomicBool::new(false),
+            source_changes: SourceChanges::default(),
         }
     }
 }
