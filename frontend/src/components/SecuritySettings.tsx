@@ -159,6 +159,10 @@ export function SecuritySettings() {
           return t('errorDecryptionIncomplete')
         case 'locked':
           return t('errorLocked')
+        case 'fieldVerificationFailed':
+          return t('errorFieldVerificationFailed')
+        case 'backupDeleteFailed':
+          return t('errorBackupDeleteFailed')
         default:
           console.error('[SecuritySettings] Command failed:', problem)
           return t('errorUnknown')
@@ -355,7 +359,16 @@ export function SecuritySettings() {
                     disabled={busy}
                     onClick={() =>
                       attempt(async () => {
-                        setDbFields(await encryptFields())
+                        try {
+                          setDbFields(await encryptFields())
+                        } catch (failure) {
+                          // The pass can fail after it has committed, with the
+                          // plaintext copy still on disk; re-read so the
+                          // warning about it shows now rather than next visit.
+                          const counts = await fieldEncryption().catch(() => null)
+                          if (counts) setDbFields(counts)
+                          throw failure
+                        }
                       }, t('noticeFieldsEncrypted'))
                     }
                   >

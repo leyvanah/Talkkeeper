@@ -1461,6 +1461,8 @@
     "noticeRecordingsEncrypted": "The existing recordings are encrypted.",
     "errorDecryptionIncomplete": "Some recordings could not be decrypted, so the password was kept. Nothing was lost — see the application log.",
     "errorLocked": "The archive is locked. Enter your password and try again.",
+    "errorFieldVerificationFailed": "Not every encrypted value opened during the check, so the unencrypted copy of the database was kept. See the application log.",
+    "errorBackupDeleteFailed": "The values are encrypted, but the unencrypted copy of the database could not be deleted. Delete it with the button below.",
     "autoLockLabel": "Lock when idle",
     "autoLockHint": "The key is wiped from memory and the archive asks for the password again. Never happens during a recording.",
     "autoLockNever": "Never",
