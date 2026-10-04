@@ -365,8 +365,9 @@ export function SecuritySettings() {
                 </>
               )}
               {/* The copy taken before the first encryption is the whole archive
-                  in the clear. It stays only until the owner has seen the
-                  encrypted one read back, and this is where they let it go. */}
+                  in the clear. Encryption deletes it once every sealed value
+                  opens; one still here was left by an older version, a crash
+                  or a failed check, and this is where the owner lets it go. */}
               {dbFields?.plaintextBackup && (
                 <div className="mt-3 rounded-md border border-amber-300 bg-amber-50 p-3">
                   <p className="text-xs text-amber-800">{t('plaintextBackupWarning')}</p>

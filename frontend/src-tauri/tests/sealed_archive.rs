@@ -40,8 +40,20 @@ fn open_the_archive() {
 
 /// The tables the repositories under test touch, in their real shape.
 async fn archive() -> SqlitePool {
+    with_schema(SqlitePool::connect(":memory:").await.unwrap()).await
+}
+
+/// [`archive`] in a file in `folder`, for a test that needs the copy
+/// `VACUUM INTO` writes: from an in-memory database it goes to memory too.
+async fn archive_in(folder: &std::path::Path) -> SqlitePool {
+    let options = sqlx::sqlite::SqliteConnectOptions::new()
+        .filename(folder.join("meeting_minutes.sqlite"))
+        .create_if_missing(true);
+    with_schema(SqlitePool::connect_with(options).await.unwrap()).await
+}
+
+async fn with_schema(pool: SqlitePool) -> SqlitePool {
     open_the_archive();
-    let pool = SqlitePool::connect(":memory:").await.unwrap();
     sqlx::raw_sql(
         "CREATE TABLE meetings (id TEXT PRIMARY KEY, title TEXT NOT NULL, \
              created_at TEXT NOT NULL, updated_at TEXT NOT NULL, folder_path TEXT, \
@@ -498,6 +510,72 @@ async fn a_second_pass_has_nothing_left_to_do() {
         .unwrap()
         .unwrap();
     assert_eq!(meeting.title, "Первая");
+}
+
+#[tokio::test]
+async fn the_copy_from_before_encryption_goes_once_every_value_opens() {
+    use app_lib::security::commands::convert_database_at;
+
+    let folder = tempfile::tempdir().unwrap();
+    let pool = archive_in(folder.path()).await;
+    sqlx::raw_sql(
+        "INSERT INTO meetings (id, title, created_at, updated_at) \
+             VALUES ('m1', 'Встреча в четверг', '2026-09-01T10:00:00Z', '2026-09-01T10:00:00Z'); \
+         INSERT INTO transcripts (id, meeting_id, transcript, timestamp, speaker) \
+             VALUES ('t1', 'm1', 'Секретная фраза', '00:00', 'Анна');",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    let backup = folder.path().join("meeting_minutes.before-encryption.sqlite");
+    // A journal next to the copy, as SQLite leaves when it opens one: it is
+    // the same archive in the clear and has to go with it.
+    let journal = [
+        backup.with_extension("sqlite-wal"),
+        backup.with_extension("sqlite-shm"),
+    ];
+    for path in &journal {
+        std::fs::write(path, b"journal").unwrap();
+    }
+
+    convert_database_at(&pool, field_encryption::Direction::Encrypt, &backup)
+        .await
+        .unwrap();
+
+    assert_eq!(field_encryption::count(&pool).await.unwrap().plaintext, 0);
+    assert!(!backup.exists(), "the plaintext copy outlived a check that passed");
+    for path in &journal {
+        assert!(!path.exists(), "{path:?} outlived the copy");
+    }
+}
+
+#[tokio::test]
+async fn a_value_that_does_not_open_keeps_the_copy() {
+    use app_lib::security::commands::convert_database_at;
+
+    let folder = tempfile::tempdir().unwrap();
+    let pool = archive_in(folder.path()).await;
+    // Sealed under another column, so it carries the marker but fails
+    // authentication here — what a sealing bug would leave behind.
+    let wrong = fields::seal(fields::MEETING_TITLE, "звонить до обеда").unwrap();
+    sqlx::query(
+        "INSERT INTO clients (id, display_name, normalized_name, notes, created_at, updated_at) \
+             VALUES ('c1', 'Анна', 'анна', ?, 'n', 'n')",
+    )
+    .bind(wrong)
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    let backup = folder.path().join("meeting_minutes.before-encryption.sqlite");
+
+    let error = convert_database_at(&pool, field_encryption::Direction::Encrypt, &backup)
+        .await
+        .unwrap_err();
+
+    assert_eq!(error.code, "fieldVerificationFailed");
+    assert!(backup.exists(), "the copy went although a value does not open");
 }
 
 #[tokio::test]
