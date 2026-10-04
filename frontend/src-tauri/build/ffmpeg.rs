@@ -163,16 +163,16 @@ fn download_and_extract_ffmpeg(
 /// Get the pinned FFmpeg download for specific target triple
 ///
 /// Archive hashes equal the SHA-256 digests GitHub publishes for the release
-/// assets of Zackriya-Solutions/ffmpeg-binaries 0.0.1; the Windows archive is
-/// byte-identical to gyan.dev's ffmpeg-8.0.1-essentials_build.zip
-/// (GyanD/codexffmpeg release 8.0.1). Binary hashes are of the executable
-/// inside each archive.
+/// assets. Windows comes straight from gyan.dev's official build
+/// (GyanD/codexffmpeg release 8.0.1); the other targets still come from
+/// Zackriya-Solutions/ffmpeg-binaries 0.0.1. Binary hashes are of the
+/// executable inside each archive.
 fn get_ffmpeg_source_for_target(target: &str) -> Result<FfmpegSource, String> {
     // Platform-specific URLs
     let source = if target.contains("windows") {
-        // Windows
+        // Windows: gyan.dev essentials build
         FfmpegSource {
-            url: "https://github.com/Zackriya-Solutions/ffmpeg-binaries/releases/download/0.0.1/ffmpeg-8.0.1-essentials_build.zip",
+            url: "https://github.com/GyanD/codexffmpeg/releases/download/8.0.1/ffmpeg-8.0.1-essentials_build.zip",
             archive_sha256: "e2aaeaa0fdbc397d4794828086424d4aaa2102cef1fb6874f6ffd29c0b88b673",
             binary_sha256: "5af82a0d4fe2b9eae211b967332ea97edfc51c6b328ca35b827e73eac560dc0d",
         }
@@ -194,14 +194,14 @@ fn get_ffmpeg_source_for_target(target: &str) -> Result<FfmpegSource, String> {
         }
     } else if target.contains("linux") {
         if target.contains("aarch64") || target.contains("arm") {
-            // Linux ARM64
+            // Linux ARM64 (the archive contains FFmpeg 7.0.2, not 8.0.1)
             FfmpegSource {
                 url: "https://github.com/Zackriya-Solutions/ffmpeg-binaries/releases/download/0.0.1/ffmpeg-release-arm64-static.tar.xz",
                 archive_sha256: "f4149bb2b0784e30e99bdda85471c9b5930d3402014e934a5098b41d0f7201b1",
                 binary_sha256: "6bb182d0d75d23028db82e9e4f723ca69b853d055698486e6984ddb2c06fb8ce",
             }
         } else {
-            // Linux x86_64
+            // Linux x86_64 (the archive contains FFmpeg 7.0.2, not 8.0.1)
             FfmpegSource {
                 url: "https://github.com/Zackriya-Solutions/ffmpeg-binaries/releases/download/0.0.1/ffmpeg-release-amd64-static.tar.xz",
                 archive_sha256: "abda8d77ce8309141f83ab8edf0596834087c52467f6badf376a6a2a4c87cf67",
