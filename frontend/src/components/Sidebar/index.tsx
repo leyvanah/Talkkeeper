@@ -35,6 +35,7 @@ import { ConfirmationModal } from '../ConfirmationModel/confirmation-modal';
 import { ModelConfig } from '@/components/ModelSettingsModal';
 import { TranscriptModelProps } from '@/components/TranscriptSettings';
 import { invoke } from '@tauri-apps/api/core';
+import { deleteEach } from '@/lib/bulk-delete';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
 import { toast } from 'sonner';
 import { useRecordingState } from '@/contexts/RecordingStateContext';
@@ -433,31 +434,31 @@ const Sidebar: React.FC = () => {
   };
 
   const handleBulkDelete = async () => {
-    const ids = Array.from(selectedIds);
-    let ok = 0;
-    for (const id of ids) {
-      try {
-        await invoke('api_delete_meeting', { meetingId: id });
-        ok++;
-      } catch (error) {
-        console.error('Failed to delete meeting', id, error);
-      }
-    }
-    setMeetings(meetings.filter((m: CurrentMeeting) => !selectedIds.has(m.id)));
+    const { deleted, failed } = await deleteEach(Array.from(selectedIds), async (id) => {
+      await invoke('api_delete_meeting', { meetingId: id });
+    });
+    // Only what actually went leaves the list; a meeting that failed is still
+    // in the archive and must not look deleted.
+    const gone = new Set(deleted);
+    setMeetings(meetings.filter((m: CurrentMeeting) => !gone.has(m.id)));
     await refetchClients();
-    if (currentMeeting && selectedIds.has(currentMeeting.id)) {
+    if (currentMeeting && gone.has(currentMeeting.id)) {
       setCurrentMeeting({ id: 'intro-call', title: '+ ' + t('newCall') });
       router.push('/');
     }
-    if (ok > 0) {
-      toast.success(t('deletedCount', { count: ok }), {
+    if (deleted.length > 0) {
+      toast.success(t('deletedCount', { count: deleted.length }), {
         description: t('dataRemoved'),
       });
     }
-    if (ok < ids.length) {
-      toast.error(t('failedToDeleteCount', { count: ids.length - ok }));
+    if (failed.length > 0) {
+      toast.error(t('failedToDeleteCount', { count: failed.length }), {
+        description: t('failedToDeleteKeptSelected'),
+      });
     }
-    clearSelection();
+    // The ones that failed stay selected, so it is plain which they are.
+    setSelectedIds(new Set(failed));
+    setLastSelectedId(null);
     setBulkDeleteOpen(false);
   };
 

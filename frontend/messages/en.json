@@ -39,6 +39,7 @@
     "deleteMeetingFailed": "Failed to delete meeting",
     "deletedCount": "Deleted {count, plural, one {# meeting} other {# meetings}}",
     "failedToDeleteCount": "Failed to delete {count, plural, one {# meeting} other {# meetings}}",
+    "failedToDeleteKeptSelected": "They are still in the list and selected.",
     "titleEmptyError": "Meeting title cannot be empty",
     "titleUpdatedSuccess": "Meeting title updated successfully",
     "titleUpdateFailed": "Failed to update meeting title",
