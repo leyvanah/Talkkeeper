@@ -39,6 +39,7 @@
     "deleteMeetingFailed": "Не удалось удалить встречу",
     "deletedCount": "Удалено {count, plural, one {# встреча} few {# встречи} many {# встреч} other {# встреч}}",
     "failedToDeleteCount": "Не удалось удалить {count, plural, one {# встречу} few {# встречи} many {# встреч} other {# встреч}}",
+    "failedToDeleteKeptSelected": "Они остались в списке и выделены.",
     "titleEmptyError": "Название встречи не может быть пустым",
     "titleUpdatedSuccess": "Название встречи успешно обновлено",
     "titleUpdateFailed": "Не удалось обновить название встречи",
