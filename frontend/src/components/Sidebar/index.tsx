@@ -113,6 +113,11 @@ function formatMeetingTime(d: Date): string {
   return d.toLocaleString(undefined, { hour: 'numeric', minute: '2-digit' });
 }
 
+/** What `api_delete_meeting` reports: the meeting is gone, its audio may not be. */
+interface DeleteMeetingResult {
+  recordingRemoved?: boolean;
+}
+
 const Sidebar: React.FC = () => {
   const t = useTranslations('sidebar');
   const tc = useTranslations('common');
@@ -355,7 +360,7 @@ const Sidebar: React.FC = () => {
 
     try {
       const { invoke } = await import('@tauri-apps/api/core');
-      await invoke('api_delete_meeting', {
+      const result = await invoke<DeleteMeetingResult>('api_delete_meeting', {
         meetingId: itemId,
       });
       console.log('Meeting deleted successfully');
@@ -364,10 +369,15 @@ const Sidebar: React.FC = () => {
       // The client folder's count and "last seen" moved with it.
       await refetchClients();
 
-      // Show success toast
-      toast.success(t('meetingDeletedSuccess'), {
-        description: t('dataRemoved')
-      });
+      if (result?.recordingRemoved === false) {
+        toast.warning(t('meetingDeletedSuccess'), {
+          description: t('recordingLeftOnDisk'),
+        });
+      } else {
+        toast.success(t('meetingDeletedSuccess'), {
+          description: t('dataRemoved')
+        });
+      }
 
       // If deleting the active meeting, navigate to home
       if (currentMeeting?.id === itemId) {
@@ -434,8 +444,10 @@ const Sidebar: React.FC = () => {
   };
 
   const handleBulkDelete = async () => {
+    let recordingsLeft = 0;
     const { deleted, failed } = await deleteEach(Array.from(selectedIds), async (id) => {
-      await invoke('api_delete_meeting', { meetingId: id });
+      const result = await invoke<DeleteMeetingResult>('api_delete_meeting', { meetingId: id });
+      if (result?.recordingRemoved === false) recordingsLeft++;
     });
     // Only what actually went leaves the list; a meeting that failed is still
     // in the archive and must not look deleted.
@@ -446,7 +458,11 @@ const Sidebar: React.FC = () => {
       setCurrentMeeting({ id: 'intro-call', title: '+ ' + t('newCall') });
       router.push('/');
     }
-    if (deleted.length > 0) {
+    if (deleted.length > 0 && recordingsLeft > 0) {
+      toast.warning(t('deletedCount', { count: deleted.length }), {
+        description: t('recordingsLeftOnDiskCount', { count: recordingsLeft }),
+      });
+    } else if (deleted.length > 0) {
       toast.success(t('deletedCount', { count: deleted.length }), {
         description: t('dataRemoved'),
       });

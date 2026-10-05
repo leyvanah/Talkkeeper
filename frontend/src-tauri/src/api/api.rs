@@ -721,33 +721,62 @@ pub async fn api_delete_meeting<R: Runtime>(
         auth_token.is_some()
     );
 
-    let pool = state.db_manager.pool();
+    let recording_removed = delete_meeting_and_recording(
+        state.db_manager.pool(),
+        &meeting_id,
+        |folder| crate::audio::recording_preferences::discard_recording_folder(_app.clone(), folder),
+    )
+    .await?;
+
+    // The interface tells the owner when the audio stayed behind, instead of
+    // promising that everything is gone.
+    Ok(serde_json::json!({
+        "status": "success",
+        "message": "Meeting deleted successfully",
+        "recordingRemoved": recording_removed
+    }))
+}
+
+/// Deletes the meeting's rows, then hands its recording folder to `discard`.
+///
+/// Returns whether the recording is gone too (`true` when there was none). The
+/// folder is read before anything is deleted, and a failure to read it stops
+/// the deletion: rows deleted without knowing where the recording lives would
+/// leave the audio on disk with nothing in the application pointing at it.
+async fn delete_meeting_and_recording<F, Fut>(
+    pool: &sqlx::SqlitePool,
+    meeting_id: &str,
+    discard: F,
+) -> Result<bool, String>
+where
+    F: FnOnce(String) -> Fut,
+    Fut: std::future::Future<Output = Result<(), String>>,
+{
     let folder: Option<String> = sqlx::query_scalar("SELECT folder_path FROM meetings WHERE id = ?")
-        .bind(&meeting_id)
+        .bind(meeting_id)
         .fetch_optional(pool)
         .await
-        .unwrap_or(None)
+        .map_err(|e| {
+            log_error!("Could not read meeting {meeting_id} before deleting it: {e}");
+            format!("Failed to read the meeting before deleting it: {e}")
+        })?
         .flatten();
 
-    match MeetingsRepository::delete_meeting(pool, &meeting_id).await {
+    match MeetingsRepository::delete_meeting(pool, meeting_id).await {
         Ok(true) => {
             log_info!("Successfully deleted meeting {}", meeting_id);
-            if let Some(folder) = folder {
-                crate::audio::recording_preferences::discard_recording_folder(
-                    _app.clone(),
-                    folder,
-                )
-                .await
+            let Some(folder) = folder else {
+                return Ok(true);
+            };
+            match discard(folder).await {
+                Ok(()) => Ok(true),
                 // A recording that cannot be removed is worth saying out loud:
                 // the meeting is gone from the application and the audio is not.
-                .unwrap_or_else(|error| {
+                Err(error) => {
                     log_error!("Deleted meeting {meeting_id}, but its recording is still on disk: {error}");
-                });
+                    Ok(false)
+                }
             }
-            Ok(serde_json::json!({
-                "status": "success",
-                "message": "Meeting deleted successfully"
-            }))
         }
         Ok(false) => {
             log_warn!("Meeting not found or already deleted: {}", meeting_id);
@@ -1402,5 +1431,103 @@ pub async fn api_test_custom_openai_connection<R: Runtime>(
                 Err(format!("Connection failed: {}", e))
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::delete_meeting_and_recording;
+    use std::sync::{Arc, Mutex};
+
+    async fn archive_with(folder: Option<&str>) -> sqlx::SqlitePool {
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        crate::database::manager::MIGRATOR.run(&pool).await.unwrap();
+        sqlx::query(
+            "INSERT INTO meetings (id, title, created_at, updated_at, folder_path) \
+             VALUES ('m1', 't', '2026-10-05T10:00:00Z', '2026-10-05T10:00:00Z', ?)",
+        )
+        .bind(folder)
+        .execute(&pool)
+        .await
+        .unwrap();
+        pool
+    }
+
+    async fn meeting_is_gone(pool: &sqlx::SqlitePool) -> bool {
+        sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM meetings WHERE id = 'm1'")
+            .fetch_one(pool)
+            .await
+            .unwrap()
+            == 0
+    }
+
+    #[tokio::test]
+    async fn the_recording_goes_with_the_meeting() {
+        let pool = archive_with(Some("rec-1")).await;
+        let asked = Arc::new(Mutex::new(None));
+        let seen = asked.clone();
+
+        let removed = delete_meeting_and_recording(&pool, "m1", |folder| async move {
+            *seen.lock().unwrap() = Some(folder);
+            Ok(())
+        })
+        .await
+        .unwrap();
+
+        assert!(removed);
+        assert!(meeting_is_gone(&pool).await);
+        assert_eq!(asked.lock().unwrap().as_deref(), Some("rec-1"));
+    }
+
+    #[tokio::test]
+    async fn a_recording_left_on_disk_is_reported() {
+        let pool = archive_with(Some("rec-1")).await;
+
+        let removed = delete_meeting_and_recording(&pool, "m1", |_| async {
+            Err("the file is open in another program".to_string())
+        })
+        .await
+        .unwrap();
+
+        assert!(!removed, "a recording still on disk was reported as removed");
+        assert!(meeting_is_gone(&pool).await);
+    }
+
+    #[tokio::test]
+    async fn a_meeting_without_a_folder_has_nothing_left_behind() {
+        let pool = archive_with(None).await;
+        let called = Arc::new(Mutex::new(false));
+        let flag = called.clone();
+
+        let removed = delete_meeting_and_recording(&pool, "m1", |_| async move {
+            *flag.lock().unwrap() = true;
+            Ok(())
+        })
+        .await
+        .unwrap();
+
+        assert!(removed);
+        assert!(!*called.lock().unwrap());
+    }
+
+    #[tokio::test]
+    async fn nothing_is_deleted_when_the_folder_cannot_be_read() {
+        let pool = archive_with(Some("rec-1")).await;
+        pool.close().await;
+        let called = Arc::new(Mutex::new(false));
+        let flag = called.clone();
+
+        let result = delete_meeting_and_recording(&pool, "m1", |_| async move {
+            *flag.lock().unwrap() = true;
+            Ok(())
+        })
+        .await;
+
+        assert!(result.is_err());
+        assert!(!*called.lock().unwrap(), "the recording was touched without knowing the meeting");
     }
 }

@@ -36,6 +36,8 @@
     "meetingTitlePlaceholder": "Введите название встречи",
     "meetingDeletedSuccess": "Встреча успешно удалена",
     "dataRemoved": "Все связанные данные удалены",
+    "recordingLeftOnDisk": "Но аудиозапись удалить не удалось — она осталась в папке записей. Подробности в журнале приложения.",
+    "recordingsLeftOnDiskCount": "У {count, plural, one {# встречи} few {# встреч} many {# встреч} other {# встречи}} аудиозапись удалить не удалось — она осталась в папке записей. Подробности в журнале приложения.",
     "deleteMeetingFailed": "Не удалось удалить встречу",
     "deletedCount": "Удалено {count, plural, one {# встреча} few {# встречи} many {# встреч} other {# встреч}}",
     "failedToDeleteCount": "Не удалось удалить {count, plural, one {# встречу} few {# встречи} many {# встреч} other {# встреч}}",
