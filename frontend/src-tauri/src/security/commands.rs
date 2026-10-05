@@ -251,10 +251,11 @@ pub async fn security_field_encryption(
 
 /// Deletes the copy of the database taken before the first encryption.
 ///
-/// That copy is the whole archive in the clear, so it is the owner's to keep
-/// only for as long as they need to be sure the encrypted one reads back —
-/// the settings screen shows it and offers this. Refused while the archive is
-/// locked, like everything else that changes it.
+/// That copy is the whole archive in the clear. A sealing pass deletes it
+/// itself once the sealed values open; this is for a copy that outlived that —
+/// one left by a version from before it did, by a process that died in
+/// between, or by a check that failed. Refused while the archive is locked,
+/// like everything else that changes it.
 #[tauri::command]
 pub async fn security_delete_plaintext_backup(
     state: State<'_, crate::state::AppState>,
@@ -273,16 +274,20 @@ fn remove_database_backup() -> std::io::Result<()> {
 }
 
 fn remove_database_backup_at(backup: &std::path::Path) -> std::io::Result<()> {
+    let mut removed = false;
     for path in [
         backup.to_path_buf(),
         backup.with_extension("sqlite-wal"),
         backup.with_extension("sqlite-shm"),
     ] {
         match std::fs::remove_file(&path) {
-            Ok(()) => log::info!("Removed the pre-encryption database copy"),
+            Ok(()) => removed = true,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
             Err(error) => return Err(error),
         }
+    }
+    if removed {
+        log::info!("Removed the pre-encryption database copy");
     }
     Ok(())
 }
@@ -292,8 +297,8 @@ fn remove_database_backup_at(backup: &std::path::Path) -> std::io::Result<()> {
 ///
 /// A copy of the database is written first, once, and never overwritten.
 /// The conversion itself is one transaction, so a failure leaves the archive
-/// exactly as it was — but a copy costs a few megabytes and answers the
-/// question the owner would otherwise have to trust an answer to.
+/// exactly as it was; the copy covers a value that sealed but will not open,
+/// and goes as soon as every one has been opened.
 #[tauri::command]
 pub async fn security_encrypt_fields(
     state: State<'_, crate::state::AppState>,
@@ -313,8 +318,23 @@ async fn convert_database(
     pool: &sqlx::SqlitePool,
     direction: DatabaseDirection,
 ) -> Result<(), SecurityError> {
+    convert_database_at(pool, direction, &database_backup_path()).await
+}
+
+/// [`convert_database`] with the copy kept at `backup`, so the tests can put it
+/// in a folder of their own.
+///
+/// A sealing pass ends by opening every sealed value; once they all open, the
+/// copy has nothing left to protect against and is deleted. If one does not,
+/// the copy stays and the pass reports the failure — the settings screen then
+/// shows the copy as it always has.
+pub async fn convert_database_at(
+    pool: &sqlx::SqlitePool,
+    direction: DatabaseDirection,
+    backup: &std::path::Path,
+) -> Result<(), SecurityError> {
     if direction == DatabaseDirection::Encrypt {
-        match crate::database::field_encryption::back_up(pool, &database_backup_path()).await {
+        match crate::database::field_encryption::back_up(pool, backup).await {
             Ok(true) => log::info!("Wrote a copy of the database before encrypting it"),
             Ok(false) => log::info!("A copy of the database from before encryption already exists"),
             // Worth stopping for: the copy is the owner's way back if the
@@ -329,8 +349,11 @@ async fn convert_database(
     match crate::database::field_encryption::convert_all(pool, direction).await {
         Ok(report) => {
             log::info!("Database fields: {}", report.summary());
-            if direction == DatabaseDirection::Encrypt && report.converted > 0 {
-                compact_database(pool).await;
+            if direction == DatabaseDirection::Encrypt {
+                if report.converted > 0 {
+                    compact_database(pool).await;
+                }
+                discard_verified_backup(pool, backup).await?;
             }
             Ok(())
         }
@@ -345,6 +368,24 @@ async fn convert_database(
             ))
         }
     }
+}
+
+/// Deletes the pre-encryption copy once every sealed value opens again.
+///
+/// Also runs when the pass had nothing left to seal, which is how a copy left
+/// by a process that died between sealing and deleting goes away.
+async fn discard_verified_backup(
+    pool: &sqlx::SqlitePool,
+    backup: &std::path::Path,
+) -> Result<(), SecurityError> {
+    if let Err(error) = crate::database::field_encryption::verify_sealed(pool).await {
+        log::error!("A sealed value did not open, so the pre-encryption copy is kept: {error}");
+        return Err(SecurityError::new("fieldVerificationFailed", error.to_string()));
+    }
+    remove_database_backup_at(backup).map_err(|error| {
+        log::warn!("Could not remove the pre-encryption database copy: {error}");
+        SecurityError::new("backupDeleteFailed", error.to_string())
+    })
 }
 
 /// Rewrites the database file and empties its journal, so the plaintext the

@@ -159,6 +159,10 @@ export function SecuritySettings() {
           return t('errorDecryptionIncomplete')
         case 'locked':
           return t('errorLocked')
+        case 'fieldVerificationFailed':
+          return t('errorFieldVerificationFailed')
+        case 'backupDeleteFailed':
+          return t('errorBackupDeleteFailed')
         default:
           console.error('[SecuritySettings] Command failed:', problem)
           return t('errorUnknown')
@@ -355,7 +359,16 @@ export function SecuritySettings() {
                     disabled={busy}
                     onClick={() =>
                       attempt(async () => {
-                        setDbFields(await encryptFields())
+                        try {
+                          setDbFields(await encryptFields())
+                        } catch (failure) {
+                          // The pass can fail after it has committed, with the
+                          // plaintext copy still on disk; re-read so the
+                          // warning about it shows now rather than next visit.
+                          const counts = await fieldEncryption().catch(() => null)
+                          if (counts) setDbFields(counts)
+                          throw failure
+                        }
                       }, t('noticeFieldsEncrypted'))
                     }
                   >
@@ -365,8 +378,9 @@ export function SecuritySettings() {
                 </>
               )}
               {/* The copy taken before the first encryption is the whole archive
-                  in the clear. It stays only until the owner has seen the
-                  encrypted one read back, and this is where they let it go. */}
+                  in the clear. Encryption deletes it once every sealed value
+                  opens; one still here was left by an older version, a crash
+                  or a failed check, and this is where the owner lets it go. */}
               {dbFields?.plaintextBackup && (
                 <div className="mt-3 rounded-md border border-amber-300 bg-amber-50 p-3">
                   <p className="text-xs text-amber-800">{t('plaintextBackupWarning')}</p>

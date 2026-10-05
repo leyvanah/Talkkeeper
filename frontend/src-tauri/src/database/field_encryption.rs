@@ -319,6 +319,36 @@ pub async fn convert_all(
     Ok(report)
 }
 
+/// Opens every sealed value with the current key, writing nothing, and returns
+/// how many it opened.
+///
+/// This is what lets the copy taken before the first encryption go: the
+/// conversion already refuses to commit a value it could not seal, so the one
+/// failure left for the copy to cover is a value sealed "successfully" that
+/// will not open. Blind indexes are skipped — they cannot be opened, and the
+/// reverse pass rebuilds them from the display name anyway.
+pub async fn verify_sealed(pool: &SqlitePool) -> Result<usize, sqlx::Error> {
+    let mut opened = 0;
+    for column in columns() {
+        if matches!(column.kind, Kind::Blinded { .. }) {
+            continue;
+        }
+        let rows: Vec<Option<String>> = sqlx::query_scalar(&format!(
+            "SELECT {} FROM {}",
+            column.name, column.table
+        ))
+        .fetch_all(pool)
+        .await?;
+        for value in rows.into_iter().flatten() {
+            if field::is_sealed(&value) {
+                fields::open(column.field, &value)?;
+                opened += 1;
+            }
+        }
+    }
+    Ok(opened)
+}
+
 async fn convert_column(
     tx: &mut Transaction<'_, Sqlite>,
     column: &Column,
