@@ -77,6 +77,10 @@ pub struct TranscriptChunk {
     pub created_at: chrono::DateTime<chrono::Utc>,
 }
 
+/// The summary settings row, without its credentials. The keys and the custom
+/// OpenAI document are sealed; they are read one at a time and opened through
+/// `SettingsRepository::get_api_key` and `get_custom_openai_config`, so this
+/// row never carries a sealed value under a name that says "key".
 #[derive(Debug, Clone, FromRow, Serialize, Deserialize)]
 pub struct Setting {
     pub id: String,
@@ -85,59 +89,17 @@ pub struct Setting {
     #[sqlx(rename = "whisperModel")]
     #[serde(rename = "whisperModel")]
     pub whisper_model: String,
-    #[sqlx(rename = "groqApiKey")]
-    #[serde(rename = "groqApiKey")]
-    pub groq_api_key: Option<String>,
-    #[sqlx(rename = "openaiApiKey")]
-    #[serde(rename = "openaiApiKey")]
-    pub openai_api_key: Option<String>,
-    #[sqlx(rename = "anthropicApiKey")]
-    #[serde(rename = "anthropicApiKey")]
-    pub anthropic_api_key: Option<String>,
-    #[sqlx(rename = "ollamaApiKey")]
-    #[serde(rename = "ollamaApiKey")]
-    pub ollama_api_key: Option<String>,
-    #[sqlx(rename = "openRouterApiKey")]
-    #[serde(rename = "openRouterApiKey")]
-    pub open_router_api_key: Option<String>,
     #[sqlx(rename = "ollamaEndpoint")]
     #[serde(rename = "ollamaEndpoint")]
     pub ollama_endpoint: Option<String>,
-    /// Custom OpenAI-compatible endpoint configuration stored as JSON
-    #[sqlx(rename = "customOpenAIConfig")]
-    #[serde(rename = "customOpenAIConfig")]
-    pub custom_openai_config: Option<String>,
 }
 
-impl Setting {
-    /// Parse the custom OpenAI config from JSON string
-    pub fn get_custom_openai_config(&self) -> Option<crate::summary::CustomOpenAIConfig> {
-        self.custom_openai_config.as_ref().and_then(|json| {
-            serde_json::from_str(json).ok()
-        })
-    }
-}
-
+/// The transcription settings row, without its credentials — see [`Setting`].
 #[derive(Debug, Clone, FromRow, Serialize, Deserialize)]
 pub struct TranscriptSetting {
     pub id: String,
     pub provider: String,
     pub model: String,
-    #[sqlx(rename = "whisperApiKey")]
-    #[serde(rename = "whisperApiKey")]
-    pub whisper_api_key: Option<String>,
-    #[sqlx(rename = "deepgramApiKey")]
-    #[serde(rename = "deepgramApiKey")]
-    pub deepgram_api_key: Option<String>,
-    #[sqlx(rename = "elevenLabsApiKey")]
-    #[serde(rename = "elevenLabsApiKey")]
-    pub eleven_labs_api_key: Option<String>,
-    #[sqlx(rename = "groqApiKey")]
-    #[serde(rename = "groqApiKey")]
-    pub groq_api_key: Option<String>,
-    #[sqlx(rename = "openaiApiKey")]
-    #[serde(rename = "openaiApiKey")]
-    pub openai_api_key: Option<String>,
 }
 
 // ---------------------------------------------------------------------------
