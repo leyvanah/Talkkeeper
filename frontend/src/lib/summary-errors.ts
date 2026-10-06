@@ -18,3 +18,16 @@ export function helperExitCode(errorMessage: string | null | undefined): string 
   const status = errorMessage.slice(at + HELPER_EXITED.length);
   return status.match(/0x[0-9a-f]+|-?\d+/i)?.[0] ?? '';
 }
+
+type Translate = (key: string, values?: Record<string, string>) => string;
+
+/**
+ * What to tell the user about a failed summary: the failures we can explain
+ * in their language, anything else as the backend put it.
+ */
+export function summaryErrorText(errorMessage: string, t: Translate): string {
+  if (errorMessage.includes('Connection refused')) return t('genConnectionRefused');
+  const code = helperExitCode(errorMessage);
+  if (code !== null) return t('genHelperExited', { code: code || '?' });
+  return errorMessage;
+}

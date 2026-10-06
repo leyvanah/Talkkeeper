@@ -1,6 +1,29 @@
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
-import { helperExitCode } from '../../src/lib/summary-errors.ts';
+import { helperExitCode, summaryErrorText } from '../../src/lib/summary-errors.ts';
+
+const t = (key, values) => (values ? `${key} ${JSON.stringify(values)}` : key);
+
+describe('summaryErrorText', () => {
+  test('explains a crashed helper with its code', () => {
+    assert.equal(
+      summaryErrorText('Summary failed: llama-helper exited: exit code: 0xc0000005', t),
+      'genHelperExited {"code":"0xc0000005"}',
+    );
+  });
+
+  test('marks a missing code instead of leaving a blank', () => {
+    assert.equal(summaryErrorText('llama-helper exited: signal', t), 'genHelperExited {"code":"?"}');
+  });
+
+  test('explains a provider that is not running', () => {
+    assert.equal(summaryErrorText('error sending request: Connection refused', t), 'genConnectionRefused');
+  });
+
+  test('passes anything else through', () => {
+    assert.equal(summaryErrorText('API key not found for openai', t), 'API key not found for openai');
+  });
+});
 
 describe('helperExitCode', () => {
   test('reads the code of a helper that crashed on Windows', () => {
