@@ -192,10 +192,12 @@ the build need.
 **3. The local model runner** (`llama-helper`), built once per clone and
 whenever `llama-helper/` changes. The app takes it from
 `frontend/src-tauri/binaries/` under two names; for development the same CPU
-build serves as both (the release workflow builds the first one with Vulkan):
+build serves as both (the release workflow builds the first one with Vulkan).
+`--target-dir` keeps the result where the copy looks for it even when
+`CARGO_TARGET_DIR` is set (step 5):
 
 ```bat
-cargo build --release -p llama-helper
+cargo build --release -p llama-helper --target-dir target
 if not exist frontend\src-tauri\binaries mkdir frontend\src-tauri\binaries
 copy /y target\release\llama-helper.exe frontend\src-tauri\binaries\llama-helper-x86_64-pc-windows-msvc.exe
 copy /y target\release\llama-helper.exe frontend\src-tauri\binaries\llama-helper-cpu-x86_64-pc-windows-msvc.exe
