@@ -11,6 +11,7 @@ use app_lib::api::TranscriptSegment;
 use app_lib::database::fields;
 use app_lib::database::repositories::summary::SummaryProcessesRepository;
 use app_lib::database::repositories::transcript::TranscriptsRepository;
+use app_lib::meeting_notes::{self, Note};
 use app_lib::security::session::{self, KeySession};
 use sqlx::SqlitePool;
 
@@ -43,6 +44,11 @@ async fn archive() -> SqlitePool {
     .execute(&pool)
     .await
     .unwrap();
+    // Taken from the migration itself, so this table cannot fall behind.
+    sqlx::raw_sql(include_str!("../migrations/20251223000000_add_meeting_notes.sql"))
+        .execute(&pool)
+        .await
+        .unwrap();
     pool
 }
 
@@ -53,6 +59,7 @@ async fn every_stored_value(pool: &SqlitePool) -> String {
         "SELECT title FROM meetings",
         "SELECT transcript FROM transcripts",
         "SELECT COALESCE(result, '') FROM summary_processes",
+        "SELECT COALESCE(notes_json, '') FROM meeting_notes",
     ] {
         let rows: Vec<(String,)> = sqlx::query_as(query).fetch_all(pool).await.unwrap();
         for (value,) in rows {
@@ -119,4 +126,48 @@ async fn transcript_lines_are_not_stored_in_the_clear() {
     let stored = every_stored_value(&pool).await;
     assert!(!stored.contains("Секретная"));
     assert!(!stored.contains("Название встречи"));
+}
+
+#[tokio::test]
+async fn a_note_written_during_the_recording_is_not_stored_in_the_clear() {
+    // Today the title is refused before the notes are reached; this keeps the
+    // notes covered if the order of the writes ever changes. The note's own
+    // sealing is checked by the next test.
+    let pool = archive().await;
+    let note = Note::new("Перезвонить в четверг", Some(5.0)).unwrap();
+    let outcome = TranscriptsRepository::save_transcript(
+        &pool,
+        "Название встречи",
+        &[],
+        &[note],
+        None,
+        None,
+    )
+    .await;
+
+    assert!(outcome.is_err(), "the write must be refused");
+    assert!(!every_stored_value(&pool).await.contains("Перезвонить"));
+}
+
+#[tokio::test]
+async fn a_note_added_to_a_saved_meeting_is_not_stored_in_the_clear() {
+    let pool = archive().await;
+    // Saved before the lock: the title is whatever was sealed then.
+    sqlx::query(
+        "INSERT INTO meetings (id, title, created_at, updated_at) \
+         VALUES ('m1', 'sealed-title', '', '')",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    let note = Note::new("Перезвонить в четверг", None).unwrap();
+    let mut conn = pool.acquire().await.unwrap();
+    let error = meeting_notes::store(&mut conn, "m1", &[note])
+        .await
+        .expect_err("the write must be refused");
+    drop(conn);
+
+    assert!(fields::is_archive_locked(&error));
+    assert!(!every_stored_value(&pool).await.contains("Перезвонить"));
 }
