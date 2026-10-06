@@ -6,6 +6,7 @@ import { useSidebar } from '@/components/Sidebar/SidebarProvider';
 import { invoke as invokeTauri } from '@tauri-apps/api/core';
 import { toast } from 'sonner';
 import { isOllamaNotInstalledError } from '@/lib/utils';
+import { helperExitCode } from '@/lib/summary-errors';
 import { BuiltInModelInfo } from '@/lib/builtin-ai';
 import {
   detectAndCacheSummaryLanguage,
@@ -312,6 +313,12 @@ export function useSummaryGeneration({
           activeProcessIdRef.current = null;
           console.error('Backend returned error:', pollingResult.error);
           const errorMessage = pollingResult.error || `Summary ${isRegeneration ? 'regeneration' : 'generation'} failed`;
+          // The built-in model's helper crashing is reported in plain words,
+          // not as the pipe error it leaves in the backend.
+          const helperCode = helperExitCode(errorMessage);
+          const shownError = helperCode === null
+            ? errorMessage
+            : t('genHelperExited', { code: helperCode || '?' });
 
           // If this was a regeneration, try to restore previous summary from database
           if (isRegeneration) {
@@ -329,7 +336,7 @@ export function useSummaryGeneration({
 
                 // Show error toast with restoration message
                 toast.error(t('genRegenerateFailed'), {
-                  description: `${errorMessage}. Your previous summary has been restored.`,
+                  description: `${shownError}. Your previous summary has been restored.`,
                 });
                 return;
               }
@@ -340,7 +347,7 @@ export function useSummaryGeneration({
           }
 
           // Continue with normal error handling if not regeneration or reload failed
-          setSummaryError(errorMessage);
+          setSummaryError(shownError);
           setSummaryStatus('error');
 
           // Check if this is a "model is required" error
@@ -352,7 +359,7 @@ export function useSummaryGeneration({
           toast.error(isRegeneration ? t('genRegenerateFailed') : t('genGenerateFailed'), {
             description: errorMessage.includes('Connection refused')
               ? t('genConnectionRefused')
-              : errorMessage,
+              : shownError,
           });
 
           // Auto-open model settings modal if model is missing
