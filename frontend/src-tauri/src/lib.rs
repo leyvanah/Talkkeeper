@@ -35,6 +35,7 @@ macro_rules! perf_trace {
 // Declare audio module
 pub mod api;
 pub mod audio;
+pub mod clipboard;
 pub mod config;
 pub mod console_utils;
 pub mod crash_report;
@@ -605,6 +606,7 @@ pub fn run() {
             security::commands::security_status,
             network_policy::get_local_only_mode,
             network_policy::set_local_only_mode,
+            clipboard::copy_text_privately,
             security::commands::security_setup,
             security::commands::security_unlock,
             security::commands::security_unlock_with_recovery,
