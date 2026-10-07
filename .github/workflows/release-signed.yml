@@ -104,10 +104,13 @@ jobs:
           rem The Visual Studio generator does not build the nested vulkan-shaders-gen.
           set "PATH=%VS%\Common7\IDE\CommonExtensions\Microsoft\CMake\Ninja;%PATH%"
           set "CMAKE_GENERATOR=Ninja"
+          rem From inside llama-helper\: its .cargo\config.toml links the C runtime statically.
+          cd llama-helper || exit /b 1
           set "CARGO_TARGET_DIR=%RUNNER_TEMP%\helper-vulkan"
-          cargo build --release -p llama-helper --features vulkan || exit /b 1
+          cargo build --release --features vulkan || exit /b 1
           set "CARGO_TARGET_DIR=%RUNNER_TEMP%\helper-cpu"
-          cargo build --release -p llama-helper || exit /b 1
+          cargo build --release || exit /b 1
+          cd .. || exit /b 1
           copy /y "%RUNNER_TEMP%\helper-vulkan\release\llama-helper.exe" "frontend\src-tauri\binaries\llama-helper-x86_64-pc-windows-msvc.exe" || exit /b 1
           copy /y "%RUNNER_TEMP%\helper-cpu\release\llama-helper.exe" "frontend\src-tauri\binaries\llama-helper-cpu-x86_64-pc-windows-msvc.exe" || exit /b 1
 

@@ -1,0 +1,25 @@
+# The helper links the C and C++ runtime statically on Windows.
+#
+# Built against the dynamic runtime, it depends on whatever msvcp140.dll and
+# vcruntime140.dll the machine has in System32. Code built with MSVC 17.10 or
+# later crashes inside std::mutex on a runtime older than 14.40 (0xC0000005 in
+# LlamaBackend::init), and the installer cannot fix such a machine: the
+# registry may claim a newer runtime than the files are, and vc_redist then
+# leaves the files alone. A static runtime takes System32 out of the picture.
+#
+# Cargo reads this file only when it runs inside llama-helper/, so the app,
+# whose prebuilt libraries need the dynamic runtime, is not affected. build.rs
+# refuses a Windows build without these settings.
+
+[target.x86_64-pc-windows-msvc]
+rustflags = ["-C", "target-feature=+crt-static"]
+
+[target.aarch64-pc-windows-msvc]
+rustflags = ["-C", "target-feature=+crt-static"]
+
+[env]
+# llama-cpp-sys-2 asks CMake for /MT ...
+LLAMA_STATIC_CRT = "1"
+# ... and CMake (policy CMP0091) replaces it with /MD unless told the runtime
+# here too. llama-cpp-sys-2 passes CMAKE_* variables through to CMake.
+CMAKE_MSVC_RUNTIME_LIBRARY = "MultiThreaded"
