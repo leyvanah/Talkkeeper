@@ -1,5 +1,7 @@
 use serde::{Deserialize, Serialize};
 
+use crate::ui_language::{text, Text};
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Notification {
     pub id: Option<String>,
@@ -115,68 +117,56 @@ impl Default for NotificationTimeout {
 //
 // None of them names a meeting, a person or a file: Windows keeps every toast
 // in its notification centre, outside the archive and its password, and shows
-// it on screen to whoever is looking.
+// it on screen to whoever is looking. They are in the interface's language.
 impl Notification {
     pub fn recording_started() -> Self {
-        let body = "Recording has started. Please inform others in the meeting that you are recording.";
-
-        Notification::new("Talkkeeper", body, NotificationType::RecordingStarted)
+        Notification::new("Talkkeeper", text(Text::RecordingStarted), NotificationType::RecordingStarted)
             .with_priority(NotificationPriority::High)
             .with_timeout(NotificationTimeout::Seconds(5))
     }
 
     pub fn recording_stopped() -> Self {
-        Notification::new(
-            "Talkkeeper",
-            "Recording has been stopped and saved",
-            NotificationType::RecordingStopped
-        )
-        .with_priority(NotificationPriority::Normal)
-        .with_timeout(NotificationTimeout::Seconds(3))
+        Notification::new("Talkkeeper", text(Text::RecordingStopped), NotificationType::RecordingStopped)
+            .with_priority(NotificationPriority::Normal)
+            .with_timeout(NotificationTimeout::Seconds(3))
     }
 
     pub fn recording_paused() -> Self {
-        Notification::new(
-            "Talkkeeper",
-            "Recording has been paused",
-            NotificationType::RecordingPaused
-        )
-        .with_priority(NotificationPriority::Normal)
-        .with_timeout(NotificationTimeout::Seconds(3))
+        Notification::new("Talkkeeper", text(Text::RecordingPaused), NotificationType::RecordingPaused)
+            .with_priority(NotificationPriority::Normal)
+            .with_timeout(NotificationTimeout::Seconds(3))
     }
 
     pub fn recording_resumed() -> Self {
-        Notification::new(
-            "Talkkeeper",
-            "Recording has been resumed",
-            NotificationType::RecordingResumed
-        )
-        .with_priority(NotificationPriority::Normal)
-        .with_timeout(NotificationTimeout::Seconds(3))
+        Notification::new("Talkkeeper", text(Text::RecordingResumed), NotificationType::RecordingResumed)
+            .with_priority(NotificationPriority::Normal)
+            .with_timeout(NotificationTimeout::Seconds(3))
     }
 
     pub fn transcription_complete() -> Self {
         Notification::new(
             "Talkkeeper",
-            "Transcription has been completed",
+            text(Text::TranscriptionComplete),
             NotificationType::TranscriptionComplete,
         )
-            .with_priority(NotificationPriority::Normal)
-            .with_timeout(NotificationTimeout::Seconds(5))
+        .with_priority(NotificationPriority::Normal)
+        .with_timeout(NotificationTimeout::Seconds(5))
     }
 
     pub fn meeting_reminder(minutes_until: u64) -> Self {
-        let body = format!("Meeting starts in {} minutes", minutes_until);
-
-        Notification::new("Talkkeeper", body, NotificationType::MeetingReminder(minutes_until))
-            .with_priority(NotificationPriority::High)
-            .with_timeout(NotificationTimeout::Seconds(10))
+        Notification::new(
+            "Talkkeeper",
+            crate::ui_language::meeting_reminder(minutes_until),
+            NotificationType::MeetingReminder(minutes_until),
+        )
+        .with_priority(NotificationPriority::High)
+        .with_timeout(NotificationTimeout::Seconds(10))
     }
 
     pub fn system_error(error: impl Into<String>) -> Self {
         let error_string = error.into();
         Notification::new(
-            "Talkkeeper Error",
+            text(Text::ErrorTitle),
             error_string.clone(),
             NotificationType::SystemError(error_string)
         )
@@ -187,7 +177,7 @@ impl Notification {
     pub fn test_notification() -> Self {
         Notification::new(
             "Talkkeeper",
-            "This is a test notification to verify the system is working correctly",
+            text(Text::TestNotification),
             NotificationType::Test
         )
         .with_priority(NotificationPriority::Normal)

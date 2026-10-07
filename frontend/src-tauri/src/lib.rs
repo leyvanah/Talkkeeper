@@ -64,6 +64,7 @@ pub mod security;
 pub mod state;
 pub mod summary;
 pub mod tray;
+pub mod ui_language;
 pub mod utils;
 pub mod whisper_engine;
 
@@ -448,6 +449,9 @@ pub fn run() {
             log::info!("Application setup complete");
 
             // Initialize system tray
+            // The language the window last chose, so the tray is drawn in it
+            // before the window has loaded.
+            crate::ui_language::load();
             if let Err(e) = tray::create_tray(_app.handle()) {
                 log::error!("Failed to create system tray: {}", e);
             }
@@ -600,6 +604,7 @@ pub fn run() {
             security::commands::security_status,
             network_policy::get_local_only_mode,
             network_policy::set_local_only_mode,
+            ui_language::set_ui_language,
             security::commands::security_setup,
             security::commands::security_unlock,
             security::commands::security_unlock_with_recovery,
