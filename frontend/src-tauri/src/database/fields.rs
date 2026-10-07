@@ -81,6 +81,35 @@ pub const SPEAKER_LABEL: Field = TRANSCRIPT_SPEAKER;
 /// upstream, which never used it; its `notes_markdown` column stays empty.
 pub const MEETING_NOTES: Field = Field::new("meeting_notes", "notes_json");
 
+/// The words speech recognition is told to listen for, for every meeting and
+/// for one. The settings field asks for names, so this is a list of the people
+/// the owner talks to.
+pub const VOCABULARY_GLOBAL: Field = Field::new("transcript_settings", "whisperVocabulary");
+pub const VOCABULARY_MEETING: Field = Field::new("meeting_whisper_vocabulary", "vocabulary");
+
+/// Keys for the summary providers, one context per column.
+pub const SUMMARY_KEY_OPENAI: Field = Field::new("settings", "openaiApiKey");
+pub const SUMMARY_KEY_ANTHROPIC: Field = Field::new("settings", "anthropicApiKey");
+pub const SUMMARY_KEY_GROQ: Field = Field::new("settings", "groqApiKey");
+pub const SUMMARY_KEY_OLLAMA: Field = Field::new("settings", "ollamaApiKey");
+pub const SUMMARY_KEY_OPENROUTER: Field = Field::new("settings", "openRouterApiKey");
+/// Written by upstream versions only; sealed so a key left there is not the
+/// one credential still in the clear.
+pub const SUMMARY_KEY_GEMINI: Field = Field::new("settings", "geminiApiKey");
+/// The custom OpenAI-compatible endpoint as one JSON document, key included.
+/// Sealed whole, like the summary result, rather than picking the key out.
+pub const CUSTOM_OPENAI_CONFIG: Field = Field::new("settings", "customOpenAIConfig");
+
+/// Keys for the transcription providers, one context per column.
+pub const TRANSCRIPT_KEY_WHISPER: Field = Field::new("transcript_settings", "whisperApiKey");
+pub const TRANSCRIPT_KEY_DEEPGRAM: Field = Field::new("transcript_settings", "deepgramApiKey");
+pub const TRANSCRIPT_KEY_ELEVENLABS: Field =
+    Field::new("transcript_settings", "elevenLabsApiKey");
+pub const TRANSCRIPT_KEY_GROQ: Field = Field::new("transcript_settings", "groqApiKey");
+pub const TRANSCRIPT_KEY_OPENAI: Field = Field::new("transcript_settings", "openaiApiKey");
+/// The external speech service as one JSON document: address and token.
+pub const EXTERNAL_STT_CONFIG: Field = Field::new("transcript_settings", "externalSttConfig");
+
 /// Lookup columns. These are not sealed — they are blinded, so SQL can still
 /// match a row by exact name without being able to read the name.
 pub const CLIENT_LOOKUP: Field = Field::new("clients", "normalized_name");

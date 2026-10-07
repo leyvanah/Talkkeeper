@@ -120,3 +120,40 @@ async fn transcript_lines_are_not_stored_in_the_clear() {
     assert!(!stored.contains("Секретная"));
     assert!(!stored.contains("Название встречи"));
 }
+
+#[tokio::test]
+async fn the_vocabulary_and_a_key_are_not_stored_in_the_clear() {
+    use app_lib::database::repositories::setting::SettingsRepository;
+    use app_lib::database::repositories::vocabulary::VocabularyRepository;
+
+    let pool = archive().await;
+    sqlx::raw_sql(
+        "CREATE TABLE settings (id TEXT PRIMARY KEY, provider TEXT NOT NULL, \
+             model TEXT NOT NULL, whisperModel TEXT NOT NULL, openaiApiKey TEXT); \
+         CREATE TABLE transcript_settings (id TEXT PRIMARY KEY, provider TEXT NOT NULL, \
+             model TEXT NOT NULL, whisperVocabulary TEXT); \
+         CREATE TABLE meeting_whisper_vocabulary (meeting_id TEXT PRIMARY KEY, \
+             vocabulary TEXT NOT NULL, updated_at TEXT NOT NULL);",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    let global = VocabularyRepository::save_global(&pool, Some("Анна Петрова")).await;
+    assert!(fields::is_archive_locked(&global.unwrap_err()));
+    assert!(VocabularyRepository::save_meeting(&pool, "m1", "Пульсарова")
+        .await
+        .is_err());
+    let key = SettingsRepository::save_api_key(&pool, "openai", "openai-key-for-tests").await;
+    assert!(fields::is_archive_locked(&key.unwrap_err()));
+
+    let stored: Vec<String> = sqlx::query_scalar(
+        "SELECT COALESCE(whisperVocabulary, '') FROM transcript_settings \
+         UNION ALL SELECT vocabulary FROM meeting_whisper_vocabulary \
+         UNION ALL SELECT COALESCE(openaiApiKey, '') FROM settings",
+    )
+    .fetch_all(&pool)
+    .await
+    .unwrap();
+    assert!(stored.iter().all(String::is_empty), "written while locked: {stored:?}");
+}
