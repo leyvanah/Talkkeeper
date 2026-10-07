@@ -149,7 +149,7 @@ frontend close fallback. Those mechanisms caused zombie bars, frozen
 
 This fork is install-local on Windows and Linux. On macOS, core writable data is
 under `~/Library/Application Support/Meetily`; Tauri plugin stores use the app
-identifier directory `~/Library/Application Support/com.meetily.ai`. Both are
+identifier directory `~/Library/Application Support/io.github.leyvanah.talkkeeper`. Both are
 outside the signed `.app`, because writing inside that bundle invalidates its
 signature.
 
@@ -158,7 +158,8 @@ signature.
 | What | Where |
 |---|---|
 | Database, templates, models, file-backed settings | Windows/Linux: `<exe dir>/data/…`; macOS: `~/Library/Application Support/Meetily/…` |
-| Tauri plugin stores (recording preferences/onboarding) | macOS: `~/Library/Application Support/com.meetily.ai/…` |
+| Tauri plugin stores (recording preferences/onboarding) | Windows: `%APPDATA%\io.github.leyvanah.talkkeeper\…`; macOS: `~/Library/Application Support/io.github.leyvanah.talkkeeper/…` |
+| Window profile (WebView2; `localStorage` holds interface settings) | Windows: `%LOCALAPPDATA%\io.github.leyvanah.talkkeeper\EBWebView` |
 | Bundled diarization models | The platform app bundle's `resources/diarization/` directory |
 | **Audio recordings** | Windows: `%USERPROFILE%\Music\meetily-recordings\<meeting>`; macOS: `~/Movies/meetily-recordings/<meeting>` |
 
@@ -740,10 +741,16 @@ previous duplication allowed the tray/app and installer to silently use
 different brands. The README intentionally renders `icon-source.png` from the
 repository so GitHub uses the same canonical art.
 
-On Windows, `com.meetily.ai` is also the single shell identity: it is Tauri's
-bundle identifier, the installer shortcut AUMID, and the explicit process AUMID
-set before any windows are created. Setup and updater runs recreate Start Menu
-shortcuts (and any existing desktop shortcut) with `meetily.exe,0` as the
+On Windows, `io.github.leyvanah.talkkeeper` is also the single shell identity:
+it is Tauri's bundle identifier, the installer shortcut AUMID, and the explicit
+process AUMID set before any windows are created (`app_identity::IDENTIFIER`;
+a test keeps it equal to `tauri.conf.json`). Up to version 0.2.34 it was
+the original Meetily's `com.meetily.ai`, so the two apps shared settings
+folders and the window profile. `app_identity::migrate` copies Talkkeeper's
+settings out of the old folders on the first start and, in a release build,
+removes them when nothing in them belongs to anyone else.
+
+Setup and updater runs recreate Start Menu shortcuts (and any existing desktop shortcut) with `meetily.exe,0` as the
 explicit icon source, then call `SHChangeNotify`; application startup must not
 replace those installer-owned shortcuts with PNG-backed WScript shortcuts.
 
@@ -828,7 +835,7 @@ A signed `.app` is immutable at runtime. Writing a database, settings, models,
 or logs beneath `Talkkeeper.app/Contents/MacOS` changes the sealed bundle and makes
 `codesign --verify --deep --strict` fail after first launch. macOS therefore
 uses `~/Library/Application Support/Meetily` for core data,
-`~/Library/Application Support/com.meetily.ai` for Tauri plugin stores, and
+`~/Library/Application Support/io.github.leyvanah.talkkeeper` for Tauri plugin stores, and
 `~/Movies/meetily-recordings` (or the configured root) for recordings. Bundled
 diarization models and sidecars are read-only resources.
 

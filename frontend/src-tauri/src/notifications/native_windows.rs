@@ -31,9 +31,9 @@
 use std::path::{Path, PathBuf};
 use std::sync::Once;
 
-/// Stable AppUserModelID for this app. This must match `tauri.conf.json`'s
-/// identifier and the AUMID written to installer-created shortcuts.
-pub const APP_USER_MODEL_ID: &str = "com.meetily.ai";
+/// Stable AppUserModelID for this app: the app identifier, which is also the
+/// AUMID the installer writes to its shortcuts.
+pub const APP_USER_MODEL_ID: &str = crate::app_identity::IDENTIFIER;
 
 /// Friendly name Windows shows as the toast's source.
 const DISPLAY_NAME: &str = "Talkkeeper";
