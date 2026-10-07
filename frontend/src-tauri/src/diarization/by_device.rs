@@ -22,8 +22,10 @@ use crate::database::fields;
 pub const MIC: &str = "mic";
 pub const SYSTEM: &str = "system";
 
-/// The label a remote voice gets when nobody named it.
-const REMOTE_LABEL: &str = "Speaker 1";
+/// The label a remote voice gets when nobody named it. "By device" puts
+/// everything heard through the speakers on one side, so it is one person, and
+/// one person on the other end is "Guest" — as live and after the offline pass.
+const REMOTE_LABEL: &str = "Guest";
 /// The label the owner's microphone gets when nobody named it.
 const LOCAL_LABEL: &str = "You";
 
@@ -338,6 +340,13 @@ mod tests {
         assert_eq!(remote, None);
         // Each named line keeps its own name.
         assert_eq!(label_for(Some("Пётр"), SYSTEM, None, None), "Пётр");
+    }
+
+    #[test]
+    fn the_one_voice_on_the_speakers_is_the_guest() {
+        // As live in a one-to-one recording and after the offline pass.
+        assert_eq!(label_for(Some("Speaker 1"), SYSTEM, None, None), "Guest");
+        assert_eq!(label_for(None, SYSTEM, None, None), "Guest");
     }
 }
 

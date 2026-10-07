@@ -693,7 +693,7 @@
     "themeDark": "Dark",
     "themeAmoled": "AMOLED",
     "yourName": "Your Name",
-    "yourNameDescription": "Labels your microphone in transcripts as <b></b>. Your audio is always tagged as you; other participants are labelled separately (“Guest”, and Speaker 1/2/3 once voice diarization is enabled).",
+    "yourNameDescription": "Labels your microphone in transcripts as <b></b>. Your audio is always tagged as you; the other side is “Guest”, or “Speaker 1”, “Speaker 2”… when there are several voices.",
     "yourNameValue": "{name} (You)",
     "yourNameFallback": "Name",
     "yourNamePlaceholder": "e.g. Anna",
