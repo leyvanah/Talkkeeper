@@ -992,7 +992,7 @@
     "liveTextDescription": "Text appears on screen as you record. Turn it off to record only sound, like a dictaphone: the processor is left alone during the recording and the text is made afterwards. If recognition is busy with another recording, a new one starts this way on its own."
   },
   "person": {
-    "overviewPrompt": "Create a concise profile overview of this person based only on their meeting records. Cover recurring topics, decisions, commitments, collaboration patterns, and recent changes. Cite the relevant meeting title and date for every substantive point, and clearly distinguish recorded facts from inference. Answer in English.",
+    "overviewPrompt": "Write a concise overview of this person based only on their meeting records: which topics recur, what has changed recently, and what is still open. Cite the meeting title and date for every substantive point, and keep what the records say apart from inference. Answer in English.",
     "notAvailable": "Not available",
     "durationZero": "0 min",
     "durationMinutes": "{minutes} min",
@@ -1018,8 +1018,14 @@
     "reviewingRecords": "Reviewing meeting records and citations…",
     "regenerationFailed": "Regeneration failed: {error}",
     "buildProfileTitle": "Build a useful profile from their meeting history",
-    "buildProfileDescription": "Summarize recurring topics, commitments, collaboration patterns, and recent changes with meeting citations.",
+    "buildProfileDescription": "Recurring topics, recent changes and open questions, with meeting citations.",
     "generateOverview": "Generate overview",
+    "overviewPromptCustomize": "Your own overview request",
+    "overviewPromptCustomized": "Overview request: your own — edit",
+    "overviewPromptHint": "Kept only on this computer, with the archive (encrypted when a password is set). Without your own text the standard request is used.",
+    "overviewPromptSave": "Save request",
+    "overviewPromptReset": "Back to standard",
+    "overviewPromptSaveFailed": "Could not save the request: {error}",
     "meetingHistory": "Meeting history",
     "meetingHistorySubtitle": "Every meeting where this person has attributed messages.",
     "recordsCount": "{count, plural, one {# record} other {# records}}",
@@ -1038,7 +1044,7 @@
     "askAboutDescription": "Ask across their meeting records. Answers should cite the meeting records they use.",
     "checkingRecords": "Checking the records…",
     "couldNotAnswer": "Couldn’t answer: {error}",
-    "questionPlaceholder": "What commitments appear in their records?",
+    "questionPlaceholder": "Which topics recur in their records?",
     "enterHint": "Enter to send / Shift+Enter for a line break",
     "askAi": "Ask AI",
     "cloudNotice": "Uses your configured AI provider. Cloud providers may receive this person’s messages and visible meeting summaries to answer your question."

@@ -13,6 +13,7 @@ frontend/src-tauri/migrations/20260920000000_add_privacy_settings.sql text eol=l
 frontend/src-tauri/migrations/20260921000000_add_transcript_source_track.sql text eol=lf
 frontend/src-tauri/migrations/20260923000000_add_transcript_speaker_choice.sql text eol=lf
 frontend/src-tauri/migrations/20260926000000_add_privacy_local_names.sql text eol=lf
+frontend/src-tauri/migrations/20261007010000_add_assistant_prompts.sql text eol=lf
 
 # The Tauri CLI re-serializes this manifest with LF on every build and
 # rewrites it whenever the bytes differ, so a CRLF checkout shows up as

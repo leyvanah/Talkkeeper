@@ -244,6 +244,13 @@ fn columns() -> Vec<Column> {
             field: fields::SPEAKER_LABEL,
             kind: Kind::Joinable,
         },
+        Column {
+            table: "assistant_prompts",
+            key: "id",
+            name: "prompt",
+            field: fields::ASSISTANT_PROMPT,
+            kind: Kind::Sealed,
+        },
     ]
 }
 
@@ -482,6 +489,8 @@ mod tests {
              CREATE TABLE privacy_settings (id TEXT PRIMARY KEY, \
                  anonymize_cloud INTEGER NOT NULL DEFAULT 1, hidden_terms TEXT); \
              CREATE TABLE meeting_notes (meeting_id TEXT PRIMARY KEY, notes_json TEXT); \
+             CREATE TABLE assistant_prompts (id TEXT PRIMARY KEY, prompt TEXT NOT NULL, \
+                 updated_at TEXT NOT NULL); \
              INSERT INTO meetings VALUES ('m1', 'Встреча'); \
              INSERT INTO transcripts VALUES ('t1', 'первая реплика', 'Анна', NULL, NULL, NULL, \
                  '[{\"w\":\"первая\",\"s\":0.0,\"e\":0.4}]'); \

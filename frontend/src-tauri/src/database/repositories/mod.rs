@@ -1,3 +1,4 @@
+pub mod assistant_prompt;
 pub mod client;
 pub mod meeting;
 pub mod person;
