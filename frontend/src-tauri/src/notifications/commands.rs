@@ -319,7 +319,6 @@ pub async fn get_notification_stats(
 pub async fn show_recording_started_notification<R: Runtime>(
     app_handle: &tauri::AppHandle<R>,
     manager_state: &NotificationManagerState<R>,
-    meeting_name: Option<String>,
 ) -> Result<()> {
     log_info!("Attempting to show the recording-started notification");
 
@@ -327,7 +326,7 @@ pub async fn show_recording_started_notification<R: Runtime>(
     let manager_lock = manager_state.read().await;
     if let Some(manager) = manager_lock.as_ref() {
         log_info!("Notification manager found, showing recording started notification");
-        manager.show_recording_started(meeting_name).await
+        manager.show_recording_started().await
     } else {
         drop(manager_lock);
         log_info!("Notification manager not initialized, initializing now...");
@@ -345,7 +344,7 @@ pub async fn show_recording_started_notification<R: Runtime>(
                 // Now use the initialized manager
                 let manager_lock = manager_state.read().await;
                 if let Some(manager) = manager_lock.as_ref() {
-                    manager.show_recording_started(meeting_name).await
+                    manager.show_recording_started().await
                 } else {
                     log_error!("Manager still not available after initialization");
                     Ok(())
@@ -364,19 +363,14 @@ pub async fn show_recording_started_notification<R: Runtime>(
                     return Ok(());
                 }
 
-                // Fallback: Use Tauri's notification API directly
-                let title = "Talkkeeper";
-                let body = match meeting_name {
-                    Some(name) => format!("Recording started for meeting: {}", name),
-                    None => "Recording has started. Please inform others in the meeting that you are recording.".to_string(),
-                };
-
-                // The body can name the meeting, so only the fact is logged.
+                // Fallback: Use Tauri's notification API directly, with the
+                // same text the manager would have shown.
+                let fallback = Notification::recording_started();
                 log_info!("Using direct Tauri notification fallback for a recording start");
 
                 match app_handle.notification().builder()
-                    .title(title)
-                    .body(body)
+                    .title(&fallback.title)
+                    .body(&fallback.body)
                     .show()
                 {
                     Ok(_) => {
@@ -415,15 +409,13 @@ pub async fn show_recording_stopped_notification<R: Runtime>(
             return Ok(());
         }
 
-        // Use direct Tauri notification as fallback for stop notification
-        let title = "Talkkeeper";
-        let body = "Recording has stopped";
-
+        // Use direct Tauri notification as fallback, with the manager's text.
+        let fallback = Notification::recording_stopped();
         log_info!("Using direct Tauri notification fallback for a recording stop");
 
         match app_handle.notification().builder()
-            .title(title)
-            .body(body)
+            .title(&fallback.title)
+            .body(&fallback.body)
             .show()
         {
             Ok(_) => {
@@ -467,11 +459,10 @@ pub async fn show_recording_resumed_notification(
 /// Show transcription complete notification (internal use)
 pub async fn show_transcription_complete_notification(
     manager_state: &NotificationManagerState<Wry>,
-    file_path: Option<String>,
 ) -> Result<()> {
     let manager_lock = manager_state.read().await;
     if let Some(manager) = manager_lock.as_ref() {
-        manager.show_transcription_complete(file_path).await
+        manager.show_transcription_complete().await
     } else {
         log_error!("Cannot show transcription complete notification: manager not initialized");
         Ok(())

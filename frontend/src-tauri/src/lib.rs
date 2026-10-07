@@ -161,7 +161,6 @@ async fn start_recording<R: Runtime>(
             if let Err(e) = notifications::commands::show_recording_started_notification(
                 &app,
                 &notification_manager_state,
-                meeting_name.clone(),
             )
             .await
             {
@@ -319,9 +318,6 @@ async fn start_recording_with_devices_and_meeting<R: Runtime>(
     log_info!("🚀 CALLED start_recording_with_devices_and_meeting - Mic: {:?}, System: {:?}, Meeting: {:?}",
              mic_device_name, system_device_name, meeting_name);
 
-    // Clone meeting_name for notification use later
-    let meeting_name_for_notification = meeting_name.clone();
-
     // Call the recording module functions that support meeting names
     let recording_result = match (mic_device_name.clone(), system_device_name.clone()) {
         (None, None) => {
@@ -359,7 +355,6 @@ async fn start_recording_with_devices_and_meeting<R: Runtime>(
             if let Err(e) = notifications::commands::show_recording_started_notification(
                 &app,
                 &notification_manager_state,
-                meeting_name_for_notification.clone(),
             )
             .await
             {

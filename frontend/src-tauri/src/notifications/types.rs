@@ -111,13 +111,14 @@ impl Default for NotificationTimeout {
     }
 }
 
-// Helper functions for creating common notifications
+// Helper functions for creating common notifications.
+//
+// None of them names a meeting, a person or a file: Windows keeps every toast
+// in its notification centre, outside the archive and its password, and shows
+// it on screen to whoever is looking.
 impl Notification {
-    pub fn recording_started(meeting_name: Option<String>) -> Self {
-        let body = match meeting_name {
-            Some(name) => format!("Recording started for meeting: {}", name),
-            None => "Recording has started. Please inform others in the meeting that you are recording.".to_string(),
-        };
+    pub fn recording_started() -> Self {
+        let body = "Recording has started. Please inform others in the meeting that you are recording.";
 
         Notification::new("Talkkeeper", body, NotificationType::RecordingStarted)
             .with_priority(NotificationPriority::High)
@@ -154,22 +155,18 @@ impl Notification {
         .with_timeout(NotificationTimeout::Seconds(3))
     }
 
-    pub fn transcription_complete(file_path: Option<String>) -> Self {
-        let body = match file_path {
-            Some(path) => format!("Transcription completed and saved to: {}", path),
-            None => "Transcription has been completed".to_string(),
-        };
-
-        Notification::new("Talkkeeper", body, NotificationType::TranscriptionComplete)
+    pub fn transcription_complete() -> Self {
+        Notification::new(
+            "Talkkeeper",
+            "Transcription has been completed",
+            NotificationType::TranscriptionComplete,
+        )
             .with_priority(NotificationPriority::Normal)
             .with_timeout(NotificationTimeout::Seconds(5))
     }
 
-    pub fn meeting_reminder(minutes_until: u64, meeting_title: Option<String>) -> Self {
-        let body = match meeting_title {
-            Some(title) => format!("Meeting '{}' starts in {} minutes", title, minutes_until),
-            None => format!("Meeting starts in {} minutes", minutes_until),
-        };
+    pub fn meeting_reminder(minutes_until: u64) -> Self {
+        let body = format!("Meeting starts in {} minutes", minutes_until);
 
         Notification::new("Talkkeeper", body, NotificationType::MeetingReminder(minutes_until))
             .with_priority(NotificationPriority::High)

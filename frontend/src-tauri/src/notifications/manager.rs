@@ -98,7 +98,7 @@ impl<R: Runtime> NotificationManager<R> {
     }
 
     /// Show a recording started notification
-    pub async fn show_recording_started(&self, meeting_name: Option<String>) -> Result<()> {
+    pub async fn show_recording_started(&self) -> Result<()> {
         let settings = self.settings.read().await;
         log_info!("🔔 Checking notification settings - show_recording_started: {}", settings.notification_preferences.show_recording_started);
 
@@ -108,7 +108,7 @@ impl<R: Runtime> NotificationManager<R> {
         }
 
         log_info!("✅ Recording started notification is enabled, showing notification");
-        let notification = Notification::recording_started(meeting_name);
+        let notification = Notification::recording_started();
         self.show_notification(notification).await
     }
 
@@ -146,18 +146,18 @@ impl<R: Runtime> NotificationManager<R> {
     }
 
     /// Show a transcription complete notification
-    pub async fn show_transcription_complete(&self, file_path: Option<String>) -> Result<()> {
+    pub async fn show_transcription_complete(&self) -> Result<()> {
         let settings = self.settings.read().await;
         if !settings.notification_preferences.show_transcription_complete {
             return Ok(());
         }
 
-        let notification = Notification::transcription_complete(file_path);
+        let notification = Notification::transcription_complete();
         self.show_notification(notification).await
     }
 
     /// Show a meeting reminder notification
-    pub async fn show_meeting_reminder(&self, minutes_until: u64, meeting_title: Option<String>) -> Result<()> {
+    pub async fn show_meeting_reminder(&self, minutes_until: u64) -> Result<()> {
         let settings = self.settings.read().await;
         if !settings.notification_preferences.show_meeting_reminders {
             return Ok(());
@@ -168,7 +168,7 @@ impl<R: Runtime> NotificationManager<R> {
             return Ok(());
         }
 
-        let notification = Notification::meeting_reminder(minutes_until, meeting_title);
+        let notification = Notification::meeting_reminder(minutes_until);
         self.show_notification(notification).await
     }
 
