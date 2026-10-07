@@ -10,4 +10,8 @@ runtime-deps/
 # Staged CPU/Vulkan/CUDA app binaries for the universal NSIS package
 installer-variants/*
 !installer-variants/.gitkeep
+# FFmpeg's license and build notes, taken from its pinned archive by build/ffmpeg.rs
+licenses/ffmpeg/LICENSE.txt
+licenses/ffmpeg/BUILD.txt
+licenses/ffmpeg/*.partial
 
