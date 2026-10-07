@@ -40,7 +40,15 @@ env:
   # bindgen 0.69 (whisper-rs-sys, llama-cpp-sys-2) misreads headers from
   # LLVM 19 and later; 18.1.8 is the version the project builds with.
   LLVM_VERSION: "18.1.8"
+  # The installers below run on the build machine before anything is built,
+  # so each is pinned: a file that is not this exact one is never started.
+  # LLVM-18.1.8-win64.exe: as listed in winget-pkgs (LLVM.LLVM 18.1.8) and
+  # hashed after download; GitHub shows no digest for this release's assets.
+  LLVM_SHA256: "94af030060d88cc17e9f00ef1663ebdc1126b35e16bebdfa1e807984b70abd8f"
   VULKAN_SDK_VERSION: "1.4.357.0"
+  # vulkansdk-windows-X64-1.4.357.0.exe: as published by LunarG
+  # (vulkan.lunarg.com/sdk/sha/…) and hashed after download.
+  VULKAN_SDK_SHA256: "81f474711e9042f4cd22b31b2f7a8870db2e428b21586fb43dd80150be97310d"
   PNPM_VERSION: "11.25.0"
 
 jobs:
@@ -80,6 +88,8 @@ jobs:
         run: |
           $installer = "$env:RUNNER_TEMP\llvm.exe"
           Invoke-WebRequest "https://github.com/llvm/llvm-project/releases/download/llvmorg-$env:LLVM_VERSION/LLVM-$env:LLVM_VERSION-win64.exe" -OutFile $installer
+          $actual = (Get-FileHash $installer -Algorithm SHA256).Hash.ToLower()
+          if ($actual -ne $env:LLVM_SHA256) { throw "LLVM installer SHA-256 mismatch: expected $env:LLVM_SHA256, got $actual" }
           Start-Process $installer -ArgumentList '/S', '/D=C:\LLVM18' -Wait
           # Wins over the repository's .cargo/config.toml, which points at the
           # default install location.
@@ -89,6 +99,8 @@ jobs:
         run: |
           $installer = "$env:RUNNER_TEMP\vulkansdk.exe"
           Invoke-WebRequest "https://sdk.lunarg.com/sdk/download/$env:VULKAN_SDK_VERSION/windows/vulkansdk-windows-X64-$env:VULKAN_SDK_VERSION.exe" -OutFile $installer
+          $actual = (Get-FileHash $installer -Algorithm SHA256).Hash.ToLower()
+          if ($actual -ne $env:VULKAN_SDK_SHA256) { throw "Vulkan SDK installer SHA-256 mismatch: expected $env:VULKAN_SDK_SHA256, got $actual" }
           $root = "C:\VulkanSDK\$env:VULKAN_SDK_VERSION"
           Start-Process $installer -ArgumentList '--root', $root, '--accept-licenses', '--default-answer', '--confirm-command', 'install' -Wait
           "VULKAN_SDK=$root" >> $env:GITHUB_ENV

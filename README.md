@@ -179,6 +179,9 @@ workflow, written out for a clean Windows machine and a fresh clone.
 - Rust, stable MSVC toolchain (`rustup default stable`).
 - **LLVM 18.1.8**, exactly: `LLVM-18.1.8-win64.exe` from the
   [LLVM releases](https://github.com/llvm/llvm-project/releases/tag/llvmorg-18.1.8).
+  The installer is not code-signed; check it before running it:
+  `certutil -hashfile LLVM-18.1.8-win64.exe SHA256` must print
+  `94af030060d88cc17e9f00ef1663ebdc1126b35e16bebdfa1e807984b70abd8f`.
   LLVM 19 and later break the generated whisper.cpp bindings. The build looks
   in `C:\Program Files\LLVM\bin`; if LLVM is elsewhere, set `LIBCLANG_PATH` to
   its `bin` folder.
