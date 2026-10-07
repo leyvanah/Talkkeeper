@@ -648,6 +648,7 @@
     "genRegenerateFailed": "Failed to regenerate summary",
     "genGenerateFailed": "Failed to generate summary",
     "genConnectionRefused": "Could not connect to LLM service. Please ensure Ollama or your configured LLM provider is running.",
+    "genHelperExited": "The built-in AI model crashed (code {code}), so no summary was made. If this keeps happening, reinstall Talkkeeper or choose Ollama in the summary settings.",
     "genEmptyContent": "Summary generation completed but returned empty content.",
     "genEmptySummary": "Empty summary generated",
     "genUnknownError": "Unknown error",
