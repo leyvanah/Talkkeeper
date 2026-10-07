@@ -5,7 +5,8 @@ opening the repo with no prior context. It deliberately focuses on the things
 that are **not** obvious from reading the code — the traps, the "why is it like
 this", and the places where a reasonable-looking change silently does nothing.
 
-For build commands see [`frontend/build-cuda-env.bat`](frontend/build-cuda-env.bat).
+For building from a clean clone see [`README.md`](README.md#build); for the CUDA
+build helper see [`frontend/build-cuda-env.bat`](frontend/build-cuda-env.bat).
 
 ---
 
@@ -496,7 +497,8 @@ so this fork doesn't consume someone else's bandwidth.
 
 ## 7. Building
 
-`frontend/build-cuda-env.bat` sets up MSVC + LLVM + the reassembled CUDA toolkit
+`frontend/build-cuda-env.bat` sets up MSVC + LLVM 18 + the CUDA toolkit from
+`CUDA_PATH` (it stops with an error if a tool is missing)
 and has four modes:
 
 | Mode | Purpose |
