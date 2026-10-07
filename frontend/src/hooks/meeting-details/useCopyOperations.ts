@@ -5,6 +5,8 @@ import { BlockNoteSummaryViewRef } from '@/components/AISummary/BlockNoteSummary
 import { toast } from 'sonner';
 import { invoke as invokeTauri } from '@tauri-apps/api/core';
 import { exportSummaryAs, ExportFormat } from '@/lib/exportSummary';
+import { speakerLabel } from '@/lib/speaker-label';
+import { useSpeakerWords } from '@/hooks/useSpeakerWords';
 
 export type MeetingExportContent = 'transcript' | 'summary' | 'both';
 export type MeetingExportFormat = ExportFormat | 'clipboard';
@@ -68,6 +70,21 @@ export function useCopyOperations({
 }: UseCopyOperationsProps) {
   const t = useTranslations('meetingDetails');
   const locale = useLocale();
+  const speakerWords = useSpeakerWords();
+
+  // Who said a line, as text that leaves the app: the owner by name (no
+  // "(You)", which means nothing to a later reader), the capture labels in the
+  // interface's words, given names as given.
+  const exportedSpeaker = useCallback(
+    (speaker: string | undefined): string => {
+      if (!speaker?.trim()) return '';
+      const userName = typeof window !== 'undefined'
+        ? localStorage.getItem('meetily_user_name')?.trim() || ''
+        : '';
+      return speakerLabel(speaker, userName, speakerWords, 'export');
+    },
+    [speakerWords],
+  );
 
   // Helper function to fetch ALL transcripts for copying (not just paginated data)
   const fetchAllTranscripts = useCallback(async (meetingId: string): Promise<Transcript[]> => {
@@ -133,13 +150,17 @@ export function useCopyOperations({
 
     const header = `# ${t('docTranscriptTitle')}: ${meeting.id} - ${meetingTitle ?? meeting.title}\n\n`;
     const date = `## ${t('docDateLabel')}: ${new Date(meeting.created_at).toLocaleDateString(locale)}\n\n`;
+    // With who said each line, like the export to the clipboard.
     const fullTranscript = allTranscripts
-      .map(t => `${formatTime(t.audio_start_time, t.timestamp)} ${t.text}  `)
+      .map((line) => {
+        const speaker = exportedSpeaker(line.speaker);
+        return `${formatTime(line.audio_start_time, line.timestamp)}${speaker ? ` ${speaker}:` : ''} ${line.text}  `;
+      })
       .join('\n');
 
     await navigator.clipboard.writeText(header + date + fullTranscript);
     toast.success(t('transcriptCopied'));
-  }, [meeting, meetingTitle, fetchAllTranscripts]);
+  }, [meeting, meetingTitle, fetchAllTranscripts, exportedSpeaker, t, locale]);
 
   // Copy summary to clipboard
   const handleCopySummary = useCallback(async () => {
@@ -268,7 +289,8 @@ export function useCopyOperations({
 
     const body = allTranscripts
       .map((transcript) => {
-        const speaker = transcript.speaker ? ` **${transcript.speaker}:**` : '';
+        const name = exportedSpeaker(transcript.speaker);
+        const speaker = name ? ` **${name}:**` : '';
         return `${formatTime(transcript.audio_start_time, transcript.timestamp)}${speaker} ${transcript.text}`;
       })
       .join('\n\n');
@@ -277,7 +299,7 @@ export function useCopyOperations({
     });
 
     return `# ${t('docTranscriptTitle')}: ${meetingTitle}\n\n**${t('docMeetingIdLabel')}:** ${meeting.id}\n**${t('docDateLabel')}:** ${date}\n\n---\n\n${body}`;
-  }, [fetchAllTranscripts, meeting.id, meeting.created_at, meetingTitle, locale, t]);
+  }, [fetchAllTranscripts, meeting.id, meeting.created_at, meetingTitle, locale, t, exportedSpeaker]);
 
   // Export summary to a file (Markdown, PDF, or DOCX)
   const handleExportSummary = useCallback(async (format: ExportFormat) => {
