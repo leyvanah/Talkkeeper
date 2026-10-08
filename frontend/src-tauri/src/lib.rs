@@ -483,11 +483,6 @@ pub fn run() {
                 }
             });
 
-            // Portable build: one-time, non-destructive migration of any legacy
-            // data from the OS app-data dir into the install-local root. Runs
-            // BEFORE model/DB init so migrated models + history are picked up.
-            crate::paths::migrate_legacy_data(&_app.handle());
-
             // Read the keystore before anything can ask for the key, and start
             // watching for the archive being left open unattended.
             crate::network_policy::load();
@@ -834,13 +829,8 @@ pub fn run() {
             // System audio capture commands
             // Screen Recording permission commands
             audio::permissions::trigger_system_audio_permission_command,
-            // Database import commands
+            // First-launch database commands
             database::commands::check_first_launch,
-            database::commands::select_legacy_database_path,
-            database::commands::detect_legacy_database,
-            database::commands::check_default_legacy_database,
-            database::commands::check_homebrew_database,
-            database::commands::import_and_initialize_database,
             database::commands::initialize_fresh_database,
             // Database and Models path commands
             database::commands::get_database_directory,

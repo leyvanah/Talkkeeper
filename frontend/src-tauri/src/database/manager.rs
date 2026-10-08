@@ -19,7 +19,10 @@ pub struct DatabaseManager {
 }
 
 impl DatabaseManager {
-    pub async fn new(tauri_db_path: &str, backend_db_path: &str) -> Result<Self> {
+    /// Opens the archive at `tauri_db_path`, creating an empty one if there is
+    /// none. Never fills a new archive from another database found nearby: a
+    /// copy of someone else's install would arrive unasked and unencrypted.
+    pub async fn new(tauri_db_path: &str) -> Result<Self> {
         if let Some(parent_dir) = Path::new(tauri_db_path).parent() {
             if !parent_dir.exists() {
                 fs::create_dir_all(parent_dir).map_err(|e| sqlx::Error::Io(e))?;
@@ -27,17 +30,8 @@ impl DatabaseManager {
         }
 
         if !Path::new(tauri_db_path).exists() {
-            if Path::new(backend_db_path).exists() {
-                log::info!(
-                    "Copying database from {} to {}",
-                    backend_db_path,
-                    tauri_db_path
-                );
-                fs::copy(backend_db_path, tauri_db_path).map_err(|e| sqlx::Error::Io(e))?;
-            } else {
-                log::info!("Creating database at {}", tauri_db_path);
-                Sqlite::create_database(tauri_db_path).await?;
-            }
+            log::info!("Creating database at {}", tauri_db_path);
+            Sqlite::create_database(tauri_db_path).await?;
         }
 
         let migration_pool = SqlitePool::connect_with(Self::connect_options(tauri_db_path)?).await?;
@@ -215,21 +209,15 @@ impl DatabaseManager {
             .join("meeting_minutes.sqlite")
             .to_string_lossy()
             .to_string();
-        // Legacy backend DB path (for auto-migration if exists)
-        let backend_db_path = app_data_dir
-            .join("meeting_minutes.db")
-            .to_string_lossy()
-            .to_string();
 
         // WAL file paths for defensive cleanup
         let wal_path = app_data_dir.join("meeting_minutes.sqlite-wal");
         let shm_path = app_data_dir.join("meeting_minutes.sqlite-shm");
 
         log::info!("Tauri DB path: {}", tauri_db_path);
-        log::info!("Legacy backend DB path: {}", backend_db_path);
 
         // Try to open database with defensive WAL handling
-        match Self::new(&tauri_db_path, &backend_db_path).await {
+        match Self::new(&tauri_db_path).await {
             Ok(db_manager) => {
                 log::info!("Database opened successfully");
                 Ok(db_manager)
@@ -269,7 +257,7 @@ impl DatabaseManager {
 
                     // Retry connection without WAL files
                     log::info!("Retrying database connection after WAL cleanup...");
-                    match Self::new(&tauri_db_path, &backend_db_path).await {
+                    match Self::new(&tauri_db_path).await {
                         Ok(db_manager) => {
                             log::info!("Database opened successfully after WAL recovery");
                             Ok(db_manager)
@@ -299,32 +287,6 @@ impl DatabaseManager {
         let tauri_db_path = app_data_dir.join("meeting_minutes.sqlite");
 
         Ok(!tauri_db_path.exists())
-    }
-
-    /// Import a legacy database from the specified path and initialize
-    pub async fn import_legacy_database(
-        app_handle: &tauri::AppHandle,
-        legacy_db_path: &str,
-    ) -> Result<Self> {
-        let _ = app_handle; // retained for signature compatibility
-        let app_data_dir = crate::paths::install_data_root();
-
-        if !app_data_dir.exists() {
-            fs::create_dir_all(&app_data_dir).map_err(|e| sqlx::Error::Io(e))?;
-        }
-
-        // Copy legacy database to app data directory as meeting_minutes.db
-        let target_legacy_path = app_data_dir.join("meeting_minutes.db");
-        log::info!(
-            "Copying legacy database from {} to {}",
-            legacy_db_path,
-            target_legacy_path.display()
-        );
-
-        fs::copy(legacy_db_path, &target_legacy_path).map_err(|e| sqlx::Error::Io(e))?;
-
-        // Now use the standard initialization which will detect and migrate the legacy db
-        Self::new_from_app_handle(app_handle).await
     }
 
     pub fn pool(&self) -> &SqlitePool {
@@ -413,6 +375,40 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(secure_delete, 1);
+    }
+
+    #[tokio::test]
+    async fn a_new_archive_does_not_take_in_a_database_lying_beside_it() {
+        // The old backend's file name, in the same folder, with a meeting in
+        // it. Upstream builds copied it into a new archive without asking —
+        // in the clear, whoever's it was.
+        let dir = tempfile::tempdir().unwrap();
+        let other = dir.path().join("meeting_minutes.db");
+        let pool = SqlitePool::connect_with(
+            DatabaseManager::connect_options(other.to_str().unwrap())
+                .unwrap()
+                .create_if_missing(true),
+        )
+        .await
+        .unwrap();
+        MIGRATOR.run(&pool).await.unwrap();
+        sqlx::query(
+            "INSERT INTO meetings (id, title, created_at, updated_at) \
+             VALUES ('m1', 'Чужая встреча', 'n', 'n')",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        pool.close().await;
+
+        let archive = dir.path().join("meeting_minutes.sqlite");
+        let manager = DatabaseManager::new(archive.to_str().unwrap()).await.unwrap();
+        let (meetings,): (i64,) = sqlx::query_as("SELECT COUNT(*) FROM meetings")
+            .fetch_one(manager.pool())
+            .await
+            .unwrap();
+        assert_eq!(meetings, 0, "the new archive started from the other database");
+        manager.pool().close().await;
     }
 
     #[test]
