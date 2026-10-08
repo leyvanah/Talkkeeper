@@ -3,6 +3,7 @@ import { useTranslations } from 'next-intl';
 import { ModelConfig } from '@/components/ModelSettingsModal';
 import { invoke as invokeTauri } from '@tauri-apps/api/core';
 import { toast } from 'sonner';
+import { toastFailure } from '@/lib/failure';
 
 interface UseModelConfigurationProps {
   serverAddress: string | null;
@@ -144,13 +145,8 @@ export function useModelConfiguration({ serverAddress }: UseModelConfigurationPr
 
       toast.success(t('summarySettingsSaved'));
     } catch (error) {
-      console.error('Failed to save model config:', error);
-      toast.error(t('summarySettingsSaveFailed'), { description: String(error) });
-      if (error instanceof Error) {
-        setError(error.message);
-      } else {
-        setError(t('saveModelConfigFailedUnknown'));
-      }
+      toastFailure(t('summarySettingsSaveFailed'), 'model-config-save', error);
+      setError(t('summarySettingsSaveFailed'));
     }
   }, [modelConfig, t]);
 

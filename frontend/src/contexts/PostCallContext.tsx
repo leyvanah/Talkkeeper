@@ -44,6 +44,7 @@ import {
   type ModelChoice,
   type RequestedModel,
 } from '@/lib/enhancement-model';
+import { toastFailure } from '@/lib/failure';
 
 export type Stage = 'queued' | 'prompt' | 'enhancing' | 'diarizing' | 'error' | 'done';
 export type FailedStage = 'enhancing' | 'diarizing';
@@ -203,8 +204,15 @@ export function PostCallProvider({ children }: { children: React.ReactNode }) {
   const fail = useCallback((meetingId: string, stage: FailedStage, cause: unknown, title: string) => {
     const error = describeFailure(cause);
     update(meetingId, { stage: 'error', error, failedStage: stage });
-    toast.error(title, { description: error });
-  }, [describeFailure, update]);
+    // The timeout is ours to explain; any other cause goes to the log only.
+    const stalled = cause instanceof Error && cause.message === ENHANCEMENT_STALLED;
+    toastFailure(
+      title,
+      `post-call-${stage}`,
+      cause,
+      stalled ? { description: t('postCallTimedOut') } : undefined,
+    );
+  }, [describeFailure, t, update]);
 
   /** Tell the speakers apart, where the capture channels do not already. */
   const identifySpeakers = useCallback(async (meetingId: string, count: number | null) => {
