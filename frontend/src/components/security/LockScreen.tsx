@@ -218,7 +218,6 @@ export function LockScreen() {
               autoFocus
             />
             <NewPasswordFields
-              idPrefix="reset-password"
               password={newPassword}
               repeat={newPasswordRepeat}
               onPasswordChange={setNewPassword}

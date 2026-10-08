@@ -258,7 +258,6 @@ export function SecuritySettings() {
             }}
           >
             <NewPasswordFields
-              idPrefix="setup-password"
               password={newPassword}
               repeat={confirmPassword}
               onPasswordChange={setNewPassword}
@@ -547,7 +546,6 @@ export function SecuritySettings() {
                   aria-label={t('currentPasswordPlaceholder')}
                 />
                 <NewPasswordFields
-                  idPrefix="replacement-password"
                   password={replacementPassword}
                   repeat={replacementRepeat}
                   onPasswordChange={setReplacementPassword}

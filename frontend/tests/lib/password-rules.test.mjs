@@ -22,10 +22,14 @@ describe('checkNewPassword', () => {
     assert.equal(checkNewPassword('correct horse', '').mismatch, false);
   });
 
-  test('a repeat that is still the beginning of the password is not a mismatch yet', () => {
-    const check = checkNewPassword('correct horse', 'correct');
-    assert.equal(check.mismatch, false);
+  test('a repeat cut short is a mismatch, not silence', () => {
+    const check = checkNewPassword('correct horse', 'correct hors');
+    assert.equal(check.mismatch, true);
     assert.equal(check.ok, false);
+  });
+
+  test('editing the password after the repeat is a mismatch', () => {
+    assert.equal(checkNewPassword('correct horses', 'correct horse').mismatch, true);
   });
 
   test('a typo in the repeat is a mismatch', () => {

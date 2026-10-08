@@ -16,7 +16,7 @@ export const MIN_PASSWORD_LENGTH = 8
 export interface NewPasswordCheck {
   /** Something is typed, but fewer characters than the minimum. */
   tooShort: boolean
-  /** The repeat differs from the password in a way more typing cannot fix. */
+  /** Something is typed in the repeat, and it differs from the password. */
   mismatch: boolean
   /** Both fields are filled in and every rule is met. */
   ok: boolean
@@ -33,10 +33,10 @@ function length(text: string): number {
 
 export function checkNewPassword(password: string, repeat: string): NewPasswordCheck {
   const tooShort = password.length > 0 && length(password) < MIN_PASSWORD_LENGTH
-  // While the repeat is still the beginning of the password, the owner is most
-  // likely still typing it: saying "do not match" after the first character
-  // would only be noise.
-  const mismatch = repeat.length > 0 && repeat !== password && !password.startsWith(repeat)
+  // Said as soon as the repeat differs, even while it is still the beginning of
+  // the password: a repeat cut short by one character is the commonest typo,
+  // and staying quiet about it leaves a disabled button with no reason given.
+  const mismatch = repeat.length > 0 && repeat !== password
   const ok = password.length > 0 && !tooShort && repeat === password
   return { tooShort, mismatch, ok }
 }

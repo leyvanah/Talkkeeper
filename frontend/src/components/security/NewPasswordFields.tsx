@@ -9,7 +9,7 @@
  * `checkNewPassword`; this only draws the fields and says what is missing.
  */
 
-import { forwardRef, useState } from 'react'
+import { forwardRef, useId, useState } from 'react'
 import { useTranslations } from 'next-intl'
 import { Eye, EyeOff } from 'lucide-react'
 import { Input } from '@/components/ui/input'
@@ -57,36 +57,35 @@ const PasswordInput = forwardRef<
   )
 })
 
-export const NewPasswordFields = forwardRef<
-  HTMLInputElement,
-  {
-    password: string
-    repeat: string
-    onPasswordChange: (value: string) => void
-    onRepeatChange: (value: string) => void
-    disabled?: boolean
-    /** Distinguishes the hint ids when two of these are on one screen. */
-    idPrefix: string
-  }
->(function NewPasswordFields(
-  { password, repeat, onPasswordChange, onRepeatChange, disabled, idPrefix },
-  ref,
-) {
+export function NewPasswordFields({
+  password,
+  repeat,
+  onPasswordChange,
+  onRepeatChange,
+  disabled,
+}: {
+  password: string
+  repeat: string
+  onPasswordChange: (value: string) => void
+  onRepeatChange: (value: string) => void
+  disabled?: boolean
+}) {
   const t = useTranslations('security')
   const check = checkNewPassword(password, repeat)
-  const lengthHint = `${idPrefix}-length`
-  const matchHint = `${idPrefix}-match`
+  const id = useId()
+  const lengthHint = `${id}-length`
+  const matchHint = `${id}-match`
+  const showLength = password.length === 0 || check.tooShort
 
   return (
     <div className="space-y-3">
       <PasswordInput
-        ref={ref}
         value={password}
         onChange={onPasswordChange}
         placeholder={t('newPasswordPlaceholder')}
         disabled={disabled}
         invalid={check.tooShort}
-        describedBy={lengthHint}
+        describedBy={showLength ? lengthHint : undefined}
       />
       <PasswordInput
         value={repeat}
@@ -94,12 +93,12 @@ export const NewPasswordFields = forwardRef<
         placeholder={t('confirmPasswordPlaceholder')}
         disabled={disabled}
         invalid={check.mismatch}
-        describedBy={matchHint}
+        describedBy={check.mismatch ? matchHint : undefined}
       />
       {/* The minimum is said before anything is typed, not after a refusal;
           it turns to a warning only once a short password is actually there. */}
       <div className="space-y-1 text-xs" aria-live="polite">
-        {(password.length === 0 || check.tooShort) && (
+        {showLength && (
           <p
             id={lengthHint}
             className={check.tooShort ? 'text-amber-600' : 'text-[var(--af-text-2)]'}
@@ -115,4 +114,4 @@ export const NewPasswordFields = forwardRef<
       </div>
     </div>
   )
-})
+}
