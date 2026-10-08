@@ -25,6 +25,7 @@ import {
   Clock,
 } from 'lucide-react';
 import { Summary, Transcript } from '@/types';
+import { isEmptySectionPlaceholder } from '@/lib/summary-placeholder';
 
 type Bucket = 'summary' | 'actions' | 'topics' | 'insights';
 
@@ -89,7 +90,8 @@ function parseMarkdownBuckets(md: string): Record<Bucket, string[]> {
     const h = headingOf(line);
     if (h) { current = classify(h); continue; }
     const item = line.replace(/^[-*+]\s+/, '').replace(/^\d+[.)]\s+/, '').replace(/^#+\s*/, '').trim();
-    if (item) out[current].push(item);
+    // An empty section holds the model's "nothing here" line, not an item.
+    if (item && !isEmptySectionPlaceholder(item)) out[current].push(item);
   }
   return out;
 }
@@ -100,7 +102,9 @@ function bucketizeSections(summary: any): Record<Bucket, string[]> {
   const skip = new Set(['markdown', 'summary_json', '_section_order', 'MeetingName']);
   for (const [key, section] of Object.entries(summary)) {
     if (skip.has(key) || !section || !Array.isArray((section as any).blocks)) continue;
-    const items = (section as any).blocks.map((b: any) => (b?.content ?? '').trim()).filter(Boolean);
+    const items = (section as any).blocks
+      .map((b: any) => (b?.content ?? '').trim())
+      .filter((text: string) => text && !isEmptySectionPlaceholder(text));
     if (items.length === 0) continue;
     const label = `${key} ${(section as any).title ?? ''}`;
     if (RE.actions.test(label)) out.actions.push(...items);
@@ -222,7 +226,9 @@ function parseActionTable(rows: string[]): ParsedAction[] {
           .filter((c, idx) => c && idx !== ownerIdx && idx !== dueIdx && idx !== timeIdx)
           .sort((a, b) => b.length - a.length)[0] ?? '';
     }
-    if (!task) continue;
+    // A table row standing in for "no action items": the placeholder in the
+    // task column, and "not specified" in the others.
+    if (!task || isEmptySectionPlaceholder(task)) continue;
     items.push({
       owner: owner || null,
       due: due || null,
