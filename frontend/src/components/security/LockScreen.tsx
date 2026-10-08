@@ -14,6 +14,8 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { asSecurityError, useSecurity } from '@/contexts/SecurityContext'
 import { RecoveryCodeInput } from './RecoveryCodeInput'
+import { NewPasswordFields } from './NewPasswordFields'
+import { MIN_PASSWORD_LENGTH, checkNewPassword } from '@/lib/password-rules'
 
 /** Which of the two ways in the owner is currently using. */
 type Mode = 'password' | 'recovery'
@@ -27,6 +29,7 @@ export function LockScreen() {
   const [reveal, setReveal] = useState(false)
   const [recoveryCode, setRecoveryCode] = useState('')
   const [newPassword, setNewPassword] = useState('')
+  const [newPasswordRepeat, setNewPasswordRepeat] = useState('')
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [waitSeconds, setWaitSeconds] = useState(status?.waitSeconds ?? 0)
@@ -70,7 +73,7 @@ export function LockScreen() {
           setWaitSeconds(failure.waitSeconds ?? 0)
           return t('errorTooManyAttempts', { seconds: failure.waitSeconds ?? 0 })
         case 'passwordTooShort':
-          return t('errorPasswordTooShort', { minimum: failure.minimum ?? 8 })
+          return t('errorPasswordTooShort', { minimum: failure.minimum ?? MIN_PASSWORD_LENGTH })
         case 'noRecoveryCode':
           return t('errorNoRecoveryCode')
         case 'keystoreCorrupt':
@@ -107,9 +110,11 @@ export function LockScreen() {
     }
   }
 
+  const newPasswordCheck = checkNewPassword(newPassword, newPasswordRepeat)
+
   const submitRecovery = async (event: React.FormEvent) => {
     event.preventDefault()
-    if (busy || waitSeconds > 0) return
+    if (busy || waitSeconds > 0 || !recoveryCode || !newPasswordCheck.ok) return
 
     setBusy(true)
     setError(null)
@@ -119,6 +124,7 @@ export function LockScreen() {
       await resetPassword(recoveryCode, newPassword)
       setRecoveryCode('')
       setNewPassword('')
+      setNewPasswordRepeat('')
     } catch (failure) {
       setError(describe(failure))
     } finally {
@@ -203,24 +209,25 @@ export function LockScreen() {
           </form>
         ) : (
           <form onSubmit={submitRecovery} className="space-y-4">
+            {/* Mounted by the switch to this mode, so the owner can start
+                typing the code off the sheet straight away. */}
             <RecoveryCodeInput
               value={recoveryCode}
               onChange={setRecoveryCode}
               disabled={busy || blocked}
+              autoFocus
             />
-            <Input
-              type="password"
-              value={newPassword}
-              onChange={(event) => setNewPassword(event.target.value)}
-              placeholder={t('newPasswordPlaceholder')}
-              autoComplete="new-password"
+            <NewPasswordFields
+              password={newPassword}
+              repeat={newPasswordRepeat}
+              onPasswordChange={setNewPassword}
+              onRepeatChange={setNewPasswordRepeat}
               disabled={busy || blocked}
-              aria-label={t('newPasswordPlaceholder')}
             />
             <Button
               type="submit"
               className="w-full"
-              disabled={busy || blocked || !recoveryCode || !newPassword}
+              disabled={busy || blocked || !recoveryCode || !newPasswordCheck.ok}
             >
               {busy ? t('unlocking') : t('recoveryUnlockAction')}
             </Button>
