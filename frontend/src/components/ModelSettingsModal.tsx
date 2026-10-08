@@ -11,10 +11,13 @@ import { useConfig } from '@/contexts/ConfigContext';
 import {
   Select,
   SelectContent,
+  SelectGroup,
   SelectItem,
+  SelectLabel,
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select';
+import { isCloudProvider, sendsOffThisComputer } from '@/lib/cloud-providers';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Switch } from '@/components/ui/switch';
@@ -158,6 +161,26 @@ export function ModelSettingsModal({
   const [customTopP, setCustomTopP] = useState<string>(modelConfig.topP?.toString() || '');
   const [isCustomOpenAIAdvancedOpen, setIsCustomOpenAIAdvancedOpen] = useState<boolean>(false);
   const [isTestingConnection, setIsTestingConnection] = useState<boolean>(false);
+
+  // "This computer only" (Settings → Protection). Unknown until read; cloud
+  // providers are offered only once it is known to be off.
+  const [localOnly, setLocalOnly] = useState<boolean | null>(null);
+  useEffect(() => {
+    invoke<boolean>('get_local_only_mode')
+      .then(setLocalOnly)
+      .catch((failure) => {
+        console.error('[ModelSettings] Could not read local-only mode:', failure);
+        setLocalOnly(true);
+      });
+  }, []);
+  const cloudBlocked = localOnly !== false;
+  const currentEndpoint =
+    modelConfig.provider === 'ollama'
+      ? ollamaEndpoint
+      : modelConfig.provider === 'custom-openai'
+        ? customOpenAIEndpoint
+        : null;
+  const leavesThisComputer = sendsOffThisComputer(modelConfig.provider, currentEndpoint);
 
   // Combobox state
   const [modelComboboxOpen, setModelComboboxOpen] = useState<boolean>(false);
@@ -878,13 +901,23 @@ export function ModelSettingsModal({
                 <SelectValue placeholder={t('selectProvider')} />
               </SelectTrigger>
               <SelectContent className="max-h-64 overflow-y-auto">
-                <SelectItem value="builtin-ai">{t('providerBuiltinAiLong')}</SelectItem>
-                <SelectItem value="claude">Claude</SelectItem>
-                <SelectItem value="custom-openai">{t('providerCustomOpenAI')}</SelectItem>
-                <SelectItem value="groq">Groq</SelectItem>
-                <SelectItem value="ollama">Ollama</SelectItem>
-                <SelectItem value="openai">OpenAI</SelectItem>
-                <SelectItem value="openrouter">OpenRouter</SelectItem>
+                <SelectGroup>
+                  <SelectLabel>{t('providerGroupLocal')}</SelectLabel>
+                  <SelectItem value="builtin-ai">{t('providerBuiltinAiLong')}</SelectItem>
+                  <SelectItem value="ollama">Ollama</SelectItem>
+                  <SelectItem value="custom-openai">{t('providerCustomOpenAI')}</SelectItem>
+                </SelectGroup>
+                <SelectGroup>
+                  <SelectLabel>
+                    {cloudBlocked ? t('providerGroupCloudBlocked') : t('providerGroupCloud')}
+                  </SelectLabel>
+                  {/* Still shown while blocked, so the owner sees what exists
+                      and why it cannot be picked. */}
+                  <SelectItem value="claude" disabled={cloudBlocked}>Claude</SelectItem>
+                  <SelectItem value="groq" disabled={cloudBlocked}>Groq</SelectItem>
+                  <SelectItem value="openai" disabled={cloudBlocked}>OpenAI</SelectItem>
+                  <SelectItem value="openrouter" disabled={cloudBlocked}>OpenRouter</SelectItem>
+                </SelectGroup>
               </SelectContent>
             </Select>
 
@@ -946,6 +979,18 @@ export function ModelSettingsModal({
               </Popover>
             )}
           </div>
+          {/* Where the meeting text goes with this choice, said plainly. */}
+          {leavesThisComputer && localOnly !== null && (
+            <p className="mt-2 text-xs text-amber-600" role="note">
+              {isCloudProvider(modelConfig.provider)
+                ? localOnly
+                  ? t('cloudProviderBlocked')
+                  : t('cloudProviderNotice')
+                : localOnly
+                  ? t('remoteEndpointBlocked')
+                  : t('remoteEndpointNotice')}
+            </p>
+          )}
         </div>
 
         {/* Custom OpenAI Configuration Section */}
