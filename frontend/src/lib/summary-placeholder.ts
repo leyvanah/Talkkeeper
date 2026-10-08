@@ -7,12 +7,16 @@
  * the report is written in English and then translated, and a dash survives
  * translation where a sentence comes back reworded in every language.
  * Summaries made before that asked for "None noted in this section.", and
- * small models still answer with a bare "None" or "N/A" now and then; those
- * are recognised too.
+ * small models still answer with a bare "None", "N/A" or "No action items
+ * identified." now and then; those are recognised too.
  */
 
 /** What the prompt asks for in an empty section. Keep in step with the Rust prompt. */
 export const EMPTY_SECTION_MARKER = '—'
+
+/** "No action items were identified" and the like, said of the whole section. */
+const NO_ITEMS =
+  /^no (?:action items?|tasks?|(?:key )?topics?|(?:key )?decisions?|items?)(?: (?:were|was|have been))?(?: (?:identified|noted|assigned|recorded|mentioned|discussed))?(?: in this (?:section|meeting))?$/
 
 /** Whole-line answers that mean "nothing here", compared without case or punctuation. */
 const NOTHING_HERE = new Set([
@@ -20,7 +24,6 @@ const NOTHING_HERE = new Set([
   'none noted',
   'none',
   'n/a',
-  'na',
   'нет',
   'н/а',
 ])
@@ -33,5 +36,5 @@ export function isEmptySectionPlaceholder(text: string): boolean {
   // Only dashes (the marker, or a model's take on it) and nothing else.
   if (/^[-–—\s]*$/.test(bare)) return true
   const words = bare.replace(/[.!]+$/, '').trim().toLowerCase()
-  return NOTHING_HERE.has(words)
+  return NOTHING_HERE.has(words) || NO_ITEMS.test(words)
 }

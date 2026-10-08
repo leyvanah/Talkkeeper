@@ -29,6 +29,17 @@ describe('isEmptySectionPlaceholder', () => {
     }
   });
 
+  test('an English sentence saying the whole section is empty', () => {
+    for (const line of [
+      'No action items identified.',
+      'No action items were assigned in this meeting.',
+      'No tasks.',
+      'No key topics were discussed',
+    ]) {
+      assert.equal(isEmptySectionPlaceholder(line), true, line);
+    }
+  });
+
   test('a real item is kept, even one that starts with a dash or mentions none', () => {
     for (const line of [
       '- Send the draft to the team by Friday',
@@ -36,6 +47,8 @@ describe('isEmptySectionPlaceholder', () => {
       '— Discuss the budget',
       'None of the options suited the owner',
       'Нет возражений по плану',
+      'NA',
+      'No tasks for the team until Monday',
     ]) {
       assert.equal(isEmptySectionPlaceholder(line), false, line);
     }
