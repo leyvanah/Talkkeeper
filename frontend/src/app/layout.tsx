@@ -19,6 +19,7 @@ import { applyAppTheme, getSavedAppTheme } from '@/lib/app-theme'
 import { LocaleProvider, getLocaleMessages } from '@/contexts/LocaleContext'
 import { SecurityProvider, useSecurity } from '@/contexts/SecurityContext'
 import { LockScreen } from '@/components/security/LockScreen'
+import { RecoveryUsedDialog } from '@/components/security/RecoveryUsedDialog'
 import { TooltipProvider } from '@/components/ui/tooltip'
 import { RecordingStateProvider } from '@/contexts/RecordingStateContext'
 import { OllamaDownloadProvider } from '@/contexts/OllamaDownloadContext'
@@ -102,7 +103,12 @@ function ArchiveGate({ children }: { children: React.ReactNode }) {
       </>
     )
   }
-  return <>{children}</>
+  return (
+    <>
+      {children}
+      <RecoveryUsedDialog />
+    </>
+  )
 }
 
 // export { metadata } from './metadata'
