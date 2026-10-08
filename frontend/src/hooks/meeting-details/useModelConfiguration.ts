@@ -146,7 +146,6 @@ export function useModelConfiguration({ serverAddress }: UseModelConfigurationPr
       toast.success(t('summarySettingsSaved'));
     } catch (error) {
       toastFailure(t('summarySettingsSaveFailed'), 'model-config-save', error);
-      setError(t('summarySettingsSaveFailed'));
     }
   }, [modelConfig, t]);
 

@@ -156,7 +156,7 @@ export function TranscriptPanel({
         | 'transcriptSplitFailed'
         | 'transcriptMergeFailed',
     ) => (error: unknown) => {
-      toastFailure(t(key), `transcript-${key}`, error);
+      toastFailure(t(key), key, error);
       throw error;
     };
     return {
