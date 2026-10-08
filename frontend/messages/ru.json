@@ -1498,6 +1498,7 @@
     "errorTooManyAttempts": "Слишком много попыток. Подождите {seconds} с.",
     "errorPasswordTooShort": "Пароль должен быть не короче {minimum} символов.",
     "errorPasswordsDoNotMatch": "Пароли не совпадают.",
+    "passwordMinimumHint": "Не короче {minimum} символов.",
     "errorNoRecoveryCode": "Для этого архива код восстановления не выпускался.",
     "errorRecordingInProgress": "Нельзя закрыть архив во время записи.",
     "errorJobInProgress": "Нельзя закрыть архив, пока идёт саммари, распознавание или импорт. Дождитесь окончания или отмените задачу.",

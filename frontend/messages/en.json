@@ -1498,6 +1498,7 @@
     "errorTooManyAttempts": "Too many attempts. Wait {seconds} s.",
     "errorPasswordTooShort": "The password must be at least {minimum} characters.",
     "errorPasswordsDoNotMatch": "The passwords do not match.",
+    "passwordMinimumHint": "At least {minimum} characters.",
     "errorNoRecoveryCode": "No recovery code was issued for this archive.",
     "errorRecordingInProgress": "The archive cannot be locked while recording.",
     "errorJobInProgress": "The archive cannot be locked while a summary, transcription or import is running. Wait for it to finish or cancel it.",

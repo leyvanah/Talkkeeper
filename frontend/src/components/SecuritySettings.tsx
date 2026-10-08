@@ -32,9 +32,18 @@ import {
 import { RecoveryCodeCard } from '@/components/security/RecoveryCodeCard'
 import { CloudPrivacyCard } from '@/components/security/CloudPrivacyCard'
 import { LocalOnlyCard } from '@/components/security/LocalOnlyCard'
+import { NewPasswordFields } from '@/components/security/NewPasswordFields'
+import { MIN_PASSWORD_LENGTH, checkNewPassword } from '@/lib/password-rules'
 
 /** Idle timeouts offered, in minutes. `0` stands for "never". */
 const AUTO_LOCK_CHOICES = [0, 5, 15, 30, 60] as const
+
+/**
+ * Where an outcome is shown. Most go under the whole panel; a form far down it
+ * shows its own beside itself, so the owner does not scroll to learn whether
+ * the password changed.
+ */
+type MessagePlace = 'panel' | 'changePassword'
 
 export function SecuritySettings() {
   const t = useTranslations('security')
@@ -60,6 +69,7 @@ export function SecuritySettings() {
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [notice, setNotice] = useState<string | null>(null)
+  const [messagePlace, setMessagePlace] = useState<MessagePlace>('panel')
   /** Set while a freshly issued recovery code is being shown. */
   const [freshCode, setFreshCode] = useState<string | null>(null)
   /** How the recordings on disk stand; null until counted. */
@@ -79,6 +89,7 @@ export function SecuritySettings() {
   // Changing an existing password.
   const [currentPassword, setCurrentPassword] = useState('')
   const [replacementPassword, setReplacementPassword] = useState('')
+  const [replacementRepeat, setReplacementRepeat] = useState('')
 
   // Proving intent for the recovery code, and for removing protection.
   const [confirmingPassword, setConfirmingPassword] = useState('')
@@ -139,7 +150,7 @@ export function SecuritySettings() {
         case 'wrongPassword':
           return t('errorWrongPassword')
         case 'passwordTooShort':
-          return t('errorPasswordTooShort', { minimum: problem.minimum ?? 8 })
+          return t('errorPasswordTooShort', { minimum: problem.minimum ?? MIN_PASSWORD_LENGTH })
         case 'tooManyAttempts':
           return t('errorTooManyAttempts', { seconds: problem.waitSeconds ?? 0 })
         case 'recordingInProgress':
@@ -173,10 +184,15 @@ export function SecuritySettings() {
   )
 
   /** Runs an action, showing whichever of the two outcomes happened. */
-  const attempt = async (action: () => Promise<void>, success?: string) => {
+  const attempt = async (
+    action: () => Promise<void>,
+    success?: string,
+    place: MessagePlace = 'panel',
+  ) => {
     setBusy(true)
     setError(null)
     setNotice(null)
+    setMessagePlace(place)
     try {
       await action()
       if (success) setNotice(success)
@@ -206,6 +222,8 @@ export function SecuritySettings() {
   }
 
   const configured = status.state !== 'unconfigured'
+  const setupCheck = checkNewPassword(newPassword, confirmPassword)
+  const replacementCheck = checkNewPassword(replacementPassword, replacementRepeat)
 
   return (
     <div className="space-y-6">
@@ -230,10 +248,7 @@ export function SecuritySettings() {
             className="mt-6 space-y-4"
             onSubmit={(event) => {
               event.preventDefault()
-              if (newPassword !== confirmPassword) {
-                setError(t('errorPasswordsDoNotMatch'))
-                return
-              }
+              if (!setupCheck.ok) return
               attempt(async () => {
                 const code = await setup(newPassword, wantRecovery)
                 setNewPassword('')
@@ -242,23 +257,13 @@ export function SecuritySettings() {
               }, wantRecovery ? undefined : t('noticeProtectionOn'))
             }}
           >
-            <Input
-              type="password"
-              value={newPassword}
-              onChange={(event) => setNewPassword(event.target.value)}
-              placeholder={t('newPasswordPlaceholder')}
-              autoComplete="new-password"
+            <NewPasswordFields
+              idPrefix="setup-password"
+              password={newPassword}
+              repeat={confirmPassword}
+              onPasswordChange={setNewPassword}
+              onRepeatChange={setConfirmPassword}
               disabled={busy}
-              aria-label={t('newPasswordPlaceholder')}
-            />
-            <Input
-              type="password"
-              value={confirmPassword}
-              onChange={(event) => setConfirmPassword(event.target.value)}
-              placeholder={t('confirmPasswordPlaceholder')}
-              autoComplete="new-password"
-              disabled={busy}
-              aria-label={t('confirmPasswordPlaceholder')}
             />
 
             <label className="flex cursor-pointer items-start gap-2.5 text-sm text-gray-700">
@@ -277,7 +282,7 @@ export function SecuritySettings() {
               </span>
             </label>
 
-            <Button type="submit" disabled={busy || !newPassword || !confirmPassword}>
+            <Button type="submit" disabled={busy || !setupCheck.ok}>
               {busy ? t('working') : t('enableProtection')}
             </Button>
           </form>
@@ -519,11 +524,17 @@ export function SecuritySettings() {
                 className="space-y-3"
                 onSubmit={(event) => {
                   event.preventDefault()
-                  attempt(async () => {
-                    await changePassword(currentPassword, replacementPassword)
-                    setCurrentPassword('')
-                    setReplacementPassword('')
-                  }, t('noticePasswordChanged'))
+                  if (!currentPassword || !replacementCheck.ok) return
+                  attempt(
+                    async () => {
+                      await changePassword(currentPassword, replacementPassword)
+                      setCurrentPassword('')
+                      setReplacementPassword('')
+                      setReplacementRepeat('')
+                    },
+                    t('noticePasswordChanged'),
+                    'changePassword',
+                  )
                 }}
               >
                 <Input
@@ -535,23 +546,30 @@ export function SecuritySettings() {
                   disabled={busy}
                   aria-label={t('currentPasswordPlaceholder')}
                 />
-                <Input
-                  type="password"
-                  value={replacementPassword}
-                  onChange={(event) => setReplacementPassword(event.target.value)}
-                  placeholder={t('newPasswordPlaceholder')}
-                  autoComplete="new-password"
+                <NewPasswordFields
+                  idPrefix="replacement-password"
+                  password={replacementPassword}
+                  repeat={replacementRepeat}
+                  onPasswordChange={setReplacementPassword}
+                  onRepeatChange={setReplacementRepeat}
                   disabled={busy}
-                  aria-label={t('newPasswordPlaceholder')}
                 />
                 <p className="text-xs text-gray-500">{t('changePasswordKeepsRecovery')}</p>
                 <Button
                   type="submit"
                   variant="outline"
-                  disabled={busy || !currentPassword || !replacementPassword}
+                  disabled={busy || !currentPassword || !replacementCheck.ok}
                 >
                   {t('changePasswordAction')}
                 </Button>
+                {messagePlace === 'changePassword' && error && (
+                  <p role="alert" className="text-sm text-red-500">
+                    {error}
+                  </p>
+                )}
+                {messagePlace === 'changePassword' && notice && (
+                  <p className="text-sm text-emerald-500">{notice}</p>
+                )}
               </form>
             </div>
 
@@ -662,12 +680,14 @@ export function SecuritySettings() {
           </div>
         )}
 
-        {error && (
+        {messagePlace === 'panel' && error && (
           <p role="alert" className="mt-4 text-sm text-red-500">
             {error}
           </p>
         )}
-        {notice && <p className="mt-4 text-sm text-emerald-500">{notice}</p>}
+        {messagePlace === 'panel' && notice && (
+          <p className="mt-4 text-sm text-emerald-500">{notice}</p>
+        )}
       </div>
 
       <LocalOnlyCard />
