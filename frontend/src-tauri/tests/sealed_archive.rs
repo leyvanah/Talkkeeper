@@ -17,6 +17,9 @@ use std::sync::Arc;
 use app_lib::api::TranscriptSegment;
 use app_lib::database::field_encryption;
 use app_lib::database::fields;
+use app_lib::database::repositories::assistant_prompt::{
+    AssistantPromptsRepository, PERSON_OVERVIEW,
+};
 use app_lib::database::repositories::client::ClientsRepository;
 use app_lib::database::repositories::meeting::MeetingsRepository;
 use app_lib::database::repositories::person::PeopleRepository;
@@ -106,6 +109,10 @@ async fn with_schema(pool: SqlitePool) -> SqlitePool {
         .await
         .unwrap();
     sqlx::raw_sql(include_str!("../migrations/20251223000000_add_meeting_notes.sql"))
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::raw_sql(include_str!("../migrations/20261007010000_add_assistant_prompts.sql"))
         .execute(&pool)
         .await
         .unwrap();
@@ -620,6 +627,27 @@ async fn the_crash_journal_holds_no_words() {
     assert!(raw.lines().all(|line| line.starts_with("tkf1:")));
     assert!(!raw.contains("секретная"));
     assert!(!raw.contains("бюджете"));
+}
+
+#[tokio::test]
+async fn the_owners_overview_request_is_sealed() {
+    let pool = archive().await;
+    AssistantPromptsRepository::set(&pool, PERSON_OVERVIEW, Some("Что повторяется у Квазарова"))
+        .await
+        .unwrap();
+
+    let stored: String = sqlx::query_scalar("SELECT prompt FROM assistant_prompts")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert!(!stored.contains("Квазаров"), "the request is readable in the database");
+    assert_eq!(
+        AssistantPromptsRepository::get(&pool, PERSON_OVERVIEW)
+            .await
+            .unwrap()
+            .as_deref(),
+        Some("Что повторяется у Квазарова")
+    );
 }
 
 /// The vocabulary and every credential column, read back as raw SQL.

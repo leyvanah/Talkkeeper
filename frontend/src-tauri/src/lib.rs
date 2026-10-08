@@ -800,6 +800,8 @@ pub fn run() {
             summary::template_commands::api_is_custom_template,
             live_assistant::ask_live_assistant,
             live_assistant::ask_person,
+            database::repositories::assistant_prompt::get_person_overview_prompt,
+            database::repositories::assistant_prompt::set_person_overview_prompt,
             live_assistant::ollama_embed,
             // Built-in AI commands
             summary::summary_engine::commands::builtin_ai_list_models,
