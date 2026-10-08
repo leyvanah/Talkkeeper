@@ -209,10 +209,13 @@ export function LockScreen() {
           </form>
         ) : (
           <form onSubmit={submitRecovery} className="space-y-4">
+            {/* Mounted by the switch to this mode, so the owner can start
+                typing the code off the sheet straight away. */}
             <RecoveryCodeInput
               value={recoveryCode}
               onChange={setRecoveryCode}
               disabled={busy || blocked}
+              autoFocus
             />
             <NewPasswordFields
               idPrefix="reset-password"
