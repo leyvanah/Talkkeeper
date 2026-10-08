@@ -133,6 +133,8 @@ jobs:
       - name: Fetch the Visual C++ runtime installer
         run: |
           $target = "frontend\src-tauri\runtime-deps\vc_redist.x64.exe"
+          # Git-ignored, so a fresh checkout does not have it yet.
+          New-Item -ItemType Directory -Force (Split-Path $target) | Out-Null
           Invoke-WebRequest "https://aka.ms/vs/17/release/vc_redist.x64.exe" -OutFile $target
           $signature = Get-AuthenticodeSignature $target
           if ($signature.Status -ne 'Valid' -or $signature.SignerCertificate.Subject -notmatch 'O=Microsoft Corporation') {
