@@ -5,6 +5,7 @@ import { BlockNoteSummaryViewRef } from '@/components/AISummary/BlockNoteSummary
 import { toast } from 'sonner';
 import { invoke as invokeTauri } from '@tauri-apps/api/core';
 import { exportSummaryAs, ExportFormat } from '@/lib/exportSummary';
+import { copyText } from '@/lib/private-clipboard';
 
 export type MeetingExportContent = 'transcript' | 'summary' | 'both';
 export type MeetingExportFormat = ExportFormat | 'clipboard';
@@ -137,7 +138,7 @@ export function useCopyOperations({
       .map(t => `${formatTime(t.audio_start_time, t.timestamp)} ${t.text}  `)
       .join('\n');
 
-    await navigator.clipboard.writeText(header + date + fullTranscript);
+    await copyText(header + date + fullTranscript);
     toast.success(t('transcriptCopied'));
   }, [meeting, meetingTitle, fetchAllTranscripts]);
 
@@ -209,7 +210,7 @@ export function useCopyOperations({
       const metadata = `**${t('docMeetingIdLabel')}:** ${meeting.id}\n**${t('docDateLabel')}:** ${stamp(new Date(meeting.created_at))}\n**${t('docCopiedOnLabel')}:** ${stamp(new Date())}\n\n---\n\n`;
 
       const fullMarkdown = header + metadata + summaryMarkdown;
-      await navigator.clipboard.writeText(fullMarkdown);
+      await copyText(fullMarkdown);
 
       console.log('✅ Successfully copied to clipboard!');
       toast.success(t('summaryCopied'));
@@ -322,7 +323,7 @@ export function useCopyOperations({
       const baseName = `${String(meetingTitle || meeting?.title || 'meeting')}-${content}`;
 
       if (format === 'clipboard') {
-        await navigator.clipboard.writeText(markdown);
+        await copyText(markdown);
         toast.success(t('exportCopiedToClipboard', {
           what:
             content === 'both'
