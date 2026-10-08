@@ -3,7 +3,7 @@
 import { useEffect, useState } from "react"
 import { useTranslations } from "next-intl"
 import { invoke } from "@tauri-apps/api/core"
-import { Github, Shield, Cpu, Heart } from "lucide-react"
+import { Github, Shield, Cpu, Heart, FileText } from "lucide-react"
 
 /**
  * About panel for Talkkeeper. Shows version, a short description,
@@ -86,6 +86,14 @@ export function AboutSettings() {
         >
           <Shield className="w-4 h-4 text-gray-700" />
           <span className="text-sm text-gray-800">{t('privacyPolicy')}</span>
+        </button>
+        {/* The same notices are installed in `licenses\` next to the app. */}
+        <button
+          onClick={() => openUrl(`${REPO_URL}/blob/main/frontend/src-tauri/licenses/THIRD-PARTY-NOTICES.md`)}
+          className="flex items-center gap-3 w-full text-left px-3 py-2 rounded-md border border-gray-200 hover:border-blue-400 hover:bg-blue-50 transition-colors"
+        >
+          <FileText className="w-4 h-4 text-gray-700" />
+          <span className="text-sm text-gray-800">{t('thirdPartyLicenses')}</span>
         </button>
       </div>
 

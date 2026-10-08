@@ -288,3 +288,19 @@ by Zackriya Solutions. Thanks to both projects.
 
 MIT licensed — see [`LICENSE.md`](LICENSE.md). The original copyright notices are
 retained.
+
+### Third-party components
+
+The installer also carries programs and models under their own licenses; the
+installed app keeps their notices in `licenses\` in the program folder.
+
+| Component | License |
+|---|---|
+| FFmpeg 8.0.1 (`ffmpeg.exe`, gyan.dev build) | GPL-3.0 — license, build description and source: [`licenses/ffmpeg/`](frontend/src-tauri/licenses/ffmpeg/SOURCE.md) |
+| llama.cpp, whisper.cpp, ggml | MIT |
+| ONNX Runtime | MIT |
+| pyannote segmentation-3.0 | MIT |
+| WeSpeaker ResNet34, VBx transform (speaker models) | CC BY 4.0 |
+| Visual C++ Redistributable, DirectML; CUDA runtime and cuBLAS in the CUDA build | Microsoft / NVIDIA redistributable terms |
+
+Details and attributions: [`THIRD-PARTY-NOTICES.md`](frontend/src-tauri/licenses/THIRD-PARTY-NOTICES.md).
