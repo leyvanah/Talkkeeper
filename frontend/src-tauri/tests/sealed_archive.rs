@@ -71,8 +71,8 @@ async fn with_schema(pool: SqlitePool) -> SqlitePool {
          CREATE TABLE summary_processes (meeting_id TEXT PRIMARY KEY, result TEXT, \n             result_backup TEXT); \
          CREATE TABLE transcript_chunks (meeting_id TEXT PRIMARY KEY, meeting_name TEXT, \n             transcript_text TEXT NOT NULL DEFAULT ''); \
          CREATE TABLE people (id TEXT PRIMARY KEY, display_name TEXT NOT NULL, \
-             normalized_name TEXT NOT NULL UNIQUE, notes TEXT, created_at TEXT NOT NULL, \
-             updated_at TEXT NOT NULL); \
+             normalized_name TEXT NOT NULL, notes TEXT, created_at TEXT NOT NULL, \
+             updated_at TEXT NOT NULL, client_id TEXT, UNIQUE (client_id, normalized_name)); \
          CREATE TABLE person_speakers (person_id TEXT NOT NULL, meeting_id TEXT NOT NULL, \
              speaker_label TEXT NOT NULL, UNIQUE(meeting_id, speaker_label)); \
          CREATE TABLE meeting_speaker_roles (meeting_id TEXT NOT NULL, \
@@ -620,6 +620,60 @@ async fn the_crash_journal_holds_no_words() {
     assert!(raw.lines().all(|line| line.starts_with("tkf1:")));
     assert!(!raw.contains("секретная"));
     assert!(!raw.contains("бюджете"));
+}
+
+#[tokio::test]
+async fn one_name_at_two_clients_is_two_sealed_people() {
+    // Linking runs on sealed speaker labels and a blind name index; with a key
+    // the two clients' "Тест А" must still come out as two people, and the
+    // name must not be readable in either row.
+    let pool = archive().await;
+    let first = ClientsRepository::create(&pool, "Клиент 1").await.unwrap();
+    let second = ClientsRepository::create(&pool, "Клиент 2").await.unwrap();
+    let mut meetings = Vec::new();
+    for title in ["Первая", "Вторая"] {
+        let id = TranscriptsRepository::save_transcript(
+            &pool,
+            title,
+            &[segment("s1", "реплика", "Тест А", 0.0)],
+            &[],
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+        meetings.push(id);
+    }
+
+    ClientsRepository::assign_meeting(&pool, &meetings[0], Some(&first.id))
+        .await
+        .unwrap();
+    ClientsRepository::assign_meeting(&pool, &meetings[1], Some(&second.id))
+        .await
+        .unwrap();
+
+    let people: Vec<(String, String)> =
+        sqlx::query_as("SELECT id, display_name FROM people ORDER BY client_id")
+            .fetch_all(&pool)
+            .await
+            .unwrap();
+    assert_eq!(people.len(), 2);
+    for (id, stored) in &people {
+        assert!(!stored.contains("Тест"), "a person's name is readable");
+        let profile = PeopleRepository::get_profile(&pool, id).await.unwrap();
+        assert_eq!(profile.display_name, "Тест А");
+        assert_eq!(profile.meeting_count, 1);
+    }
+
+    // Brought under the first client, the second meeting joins that person.
+    ClientsRepository::assign_meeting(&pool, &meetings[1], Some(&first.id))
+        .await
+        .unwrap();
+    let people: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM people")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(people, 1);
 }
 
 /// The vocabulary and every credential column, read back as raw SQL.

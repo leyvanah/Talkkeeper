@@ -12,6 +12,10 @@ const PEOPLE_MIGRATION_LF_CHECKSUM: &str =
     "3722B8A73598E02E31D989430BF2E756539BA575BC4C4A7D981BEE4FB218E549AB36C93071EAA73C006E14CF6CF58B1B";
 const PEOPLE_MIGRATION_CRLF_CHECKSUM: &str =
     "75A90F5D84A2D6E6FE0AF8ABC583FEE66A10816AA39916AE2CB73AA728BD5F9FAB199C62CFEDD1F5D1083D795BD09B57";
+/// The later migration that rebuilds `people` with a client. Once it has run,
+/// the table no longer has the shape the people migration created, and that
+/// is not a reason to refuse the checksum repair.
+const PEOPLE_BY_CLIENT_VERSION: i64 = 20261007000000;
 
 #[derive(Clone)]
 pub struct DatabaseManager {
@@ -143,6 +147,21 @@ impl DatabaseManager {
                 )"#,
             ),
         ];
+        let people_rebuilt: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM _sqlx_migrations WHERE version = ? AND success = 1",
+        )
+        .bind(PEOPLE_BY_CLIENT_VERSION)
+        .fetch_one(&mut *transaction)
+        .await?;
+        let checked = |name: &str| !(people_rebuilt > 0 && name == "people");
+        let schema_objects: Vec<_> = schema_objects
+            .into_iter()
+            .filter(|(_, name, _)| checked(name))
+            .collect();
+        let expected_schema: Vec<_> = expected_schema
+            .into_iter()
+            .filter(|(_, name, _)| checked(name))
+            .collect();
         let schema_matches = schema_objects.len() == expected_schema.len()
             && schema_objects.iter().zip(expected_schema).all(
                 |((object_type, name, sql), (expected_type, expected_name, expected_sql))| {
@@ -375,6 +394,140 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(secure_delete, 1);
+    }
+
+    /// The archive as it stood before people belonged to a client, with one
+    /// profile glued across two clients and a meeting with none.
+    async fn archive_before_people_had_clients() -> SqlitePool {
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        for migration in MIGRATOR.iter() {
+            if migration.version < PEOPLE_BY_CLIENT_VERSION {
+                sqlx::raw_sql(&*migration.sql).execute(&pool).await.unwrap();
+            }
+        }
+        sqlx::raw_sql(
+            "INSERT INTO clients (id, display_name, normalized_name, created_at, updated_at) \
+                 VALUES ('c1', 'Клиент 1', 'клиент 1', 'n', 'n'), \
+                        ('c2', 'Клиент 2', 'клиент 2', 'n', 'n'); \
+             INSERT INTO meetings (id, title, created_at, updated_at, client_id) VALUES \
+                 ('m1', 'Первая', '2026-09-01', 'n', 'c1'), \
+                 ('m2', 'Вторая', '2026-09-02', 'n', 'c1'), \
+                 ('m3', 'Третья', '2026-09-03', 'n', 'c2'), \
+                 ('m4', 'Без клиента', '2026-09-04', 'n', NULL); \
+             INSERT INTO people (id, display_name, normalized_name, notes, created_at, updated_at) \
+                 VALUES ('p-glued', 'Тест А', 'тест а', 'заметка', 'n', 'n'), \
+                        ('p-loose', 'Гость А', 'гость а', NULL, 'n', 'n'), \
+                        ('p-noted', 'Старый', 'старый', 'тоже заметка', 'n', 'n'); \
+             INSERT INTO person_speakers VALUES \
+                 ('p-glued', 'm1', 'Тест А'), ('p-glued', 'm2', 'Тест А'), \
+                 ('p-glued', 'm3', 'Тест А'), ('p-glued', 'm4', 'Тест А'), \
+                 ('p-loose', 'm4', 'Гость А'), ('p-noted', 'm4', 'Старый');",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        pool
+    }
+
+    #[tokio::test]
+    async fn a_profile_glued_across_clients_is_split_and_keeps_its_notes_once() {
+        let pool = archive_before_people_had_clients().await;
+        sqlx::raw_sql(include_str!(
+            "../../migrations/20261007000000_people_belong_to_a_client.sql"
+        ))
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let people: Vec<(String, String, Option<String>, Option<String>)> = sqlx::query_as(
+            "SELECT id, display_name, notes, client_id FROM people ORDER BY client_id, id",
+        )
+        .fetch_all(&pool)
+        .await
+        .unwrap();
+        let links: Vec<(String, String)> = sqlx::query_as(
+            "SELECT person_id, meeting_id FROM person_speakers ORDER BY meeting_id",
+        )
+        .fetch_all(&pool)
+        .await
+        .unwrap();
+
+        // The client with more meetings keeps the profile, its id and the notes.
+        let home = people.iter().find(|p| p.0 == "p-glued").unwrap();
+        assert_eq!(home.2.as_deref(), Some("заметка"));
+        assert_eq!(home.3.as_deref(), Some("c1"));
+        // The other client gets a profile of its own, same name, no notes.
+        let split = people
+            .iter()
+            .find(|p| p.3.as_deref() == Some("c2"))
+            .expect("a profile for the second client");
+        assert_ne!(split.0, "p-glued");
+        assert_eq!(split.1, "Тест А");
+        assert_eq!(split.2, None);
+
+        assert_eq!(
+            links,
+            vec![
+                ("p-glued".to_string(), "m1".to_string()),
+                ("p-glued".to_string(), "m2".to_string()),
+                (split.0.clone(), "m3".to_string()),
+            ],
+            "the meeting without a client keeps no links"
+        );
+
+        // A profile only the clientless meeting had: gone without notes, kept
+        // with them.
+        assert!(people.iter().all(|p| p.0 != "p-loose"));
+        let noted = people.iter().find(|p| p.0 == "p-noted").unwrap();
+        assert_eq!(noted.2.as_deref(), Some("тоже заметка"));
+        assert_eq!(noted.3, None);
+
+        // Foreign keys are back on, and nothing points at a missing person.
+        let (foreign_keys,): (i64,) = sqlx::query_as("PRAGMA foreign_keys")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(foreign_keys, 1);
+        let broken = sqlx::query("PRAGMA foreign_key_check")
+            .fetch_all(&pool)
+            .await
+            .unwrap();
+        assert!(broken.is_empty());
+    }
+
+    #[tokio::test]
+    async fn the_same_name_may_now_exist_once_per_client() {
+        let pool = archive_before_people_had_clients().await;
+        sqlx::raw_sql(include_str!(
+            "../../migrations/20261007000000_people_belong_to_a_client.sql"
+        ))
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        // A second "тест а" for the first client is still refused...
+        let duplicate = sqlx::query(
+            "INSERT INTO people (id, display_name, normalized_name, created_at, updated_at, client_id) \
+             VALUES ('p-dup', 'Тест А', 'тест а', 'n', 'n', 'c1')",
+        )
+        .execute(&pool)
+        .await;
+        assert!(duplicate.is_err());
+        // ...and deleting a person still takes their links with them.
+        sqlx::query("DELETE FROM people WHERE id = 'p-glued'")
+            .execute(&pool)
+            .await
+            .unwrap();
+        let left: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM person_speakers WHERE person_id = 'p-glued'")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(left, 0);
     }
 
     #[tokio::test]
