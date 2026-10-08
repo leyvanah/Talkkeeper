@@ -168,16 +168,92 @@ you are using it.
 <details>
 <summary>Build instructions (Windows)</summary>
 
-Requirements: Rust (stable MSVC), Node.js 22, pnpm, Visual Studio 2022 Build
-Tools with C++, CMake and Git. The first build compiles whisper.cpp and ONNX
-Runtime bindings and can take half an hour.
+These are the steps of the [`Signed release`](.github/workflows/release-signed.yml)
+workflow, written out for a clean Windows machine and a fresh clone.
 
-```powershell
-cd frontend
-pnpm install
-pnpm run tauri:dev:cpu     # development
-pnpm run tauri:build:cpu   # NSIS installer
+**1. Tools**, installed once:
+
+- Git.
+- Visual Studio 2022 Build Tools with *Desktop development with C++* (MSVC,
+  Windows SDK, C++ CMake tools for Windows).
+- Rust, stable MSVC toolchain (`rustup default stable`).
+- **LLVM 18.1.8**, exactly: `LLVM-18.1.8-win64.exe` from the
+  [LLVM releases](https://github.com/llvm/llvm-project/releases/tag/llvmorg-18.1.8).
+  The installer is not code-signed; check it before running it:
+  `certutil -hashfile LLVM-18.1.8-win64.exe SHA256` must print
+  `94af030060d88cc17e9f00ef1663ebdc1126b35e16bebdfa1e807984b70abd8f`.
+  LLVM 19 and later break the generated whisper.cpp bindings. The build looks
+  in `C:\Program Files\LLVM\bin`; if LLVM is elsewhere, set `LIBCLANG_PATH` to
+  its `bin` folder.
+- Node.js 22 and pnpm 11.25.0, the version pinned in
+  `frontend/package.json`: `npm install --global pnpm@11.25.0`.
+
+**2. Shell.** Run everything below in the *x64 Native Tools Command Prompt for
+VS 2022*: it puts MSVC, CMake and Ninja on `PATH`, which the native parts of
+the build need.
+
+**3. The local model runner** (`llama-helper`), built once per clone and
+whenever `llama-helper/` changes. The app takes it from
+`frontend/src-tauri/binaries/` under two names; for development the same CPU
+build serves as both (the release workflow builds the first one with Vulkan).
+Build it from inside `llama-helper/`: only there cargo picks up
+`llama-helper/.cargo/config.toml`, which links the C runtime statically, and
+the build stops without it. `--target-dir` keeps the result where the copy
+looks for it even when `CARGO_TARGET_DIR` is set (step 5):
+
+```bat
+pushd llama-helper && cargo build --release --target-dir ..\target && popd
+if not exist frontend\src-tauri\binaries mkdir frontend\src-tauri\binaries
+copy /y target\release\llama-helper.exe frontend\src-tauri\binaries\llama-helper-x86_64-pc-windows-msvc.exe
+copy /y target\release\llama-helper.exe frontend\src-tauri\binaries\llama-helper-cpu-x86_64-pc-windows-msvc.exe
 ```
+
+ffmpeg needs no step: the build downloads it and checks its SHA-256.
+
+**4. The Visual C++ runtime installer.** The installer carries Microsoft's
+`vc_redist.x64.exe` and runs it where the runtime is missing. The build expects
+it in `frontend/src-tauri/runtime-deps/` and stops without it. Download it from
+Microsoft and check the signature:
+
+```bat
+powershell -NoProfile -Command "$f='frontend\src-tauri\runtime-deps\vc_redist.x64.exe'; New-Item -ItemType Directory -Force (Split-Path $f) | Out-Null; Invoke-WebRequest https://aka.ms/vs/17/release/vc_redist.x64.exe -OutFile $f; Get-AuthenticodeSignature $f | Format-List Status,SignerCertificate"
+```
+
+`Status` must be `Valid` and the certificate subject must name
+`O=Microsoft Corporation`.
+
+**5. Build and run.** The first build compiles whisper.cpp, llama.cpp and the
+ONNX Runtime bindings: 15–30 minutes and about 20 GB in `target\` (set
+`CARGO_TARGET_DIR` to put it on another disk).
+
+```bat
+cd frontend
+pnpm install --frozen-lockfile
+pnpm tauri:dev:cpu
+```
+
+If the first window shows `ChunkLoadError`, press Ctrl+R in it: the dev server
+was still compiling the page.
+
+**6. Tests.**
+
+```bat
+cd frontend
+pnpm test
+cd src-tauri
+cargo test
+```
+
+With 16 GB of memory, linking test binaries in parallel can run out of memory
+(`os error 1455`, `LNK1318`); `cargo test -j 1` avoids it.
+
+**Installer:** `pnpm tauri:build:cpu` in `frontend` builds the NSIS installer
+into `target\release\bundle\nsis\`. A locally built installer contains the
+build folder's absolute path; publish only installers from the workflow.
+
+GPU builds: `pnpm tauri:dev:vulkan` needs the Vulkan SDK;
+[`frontend/build-cuda-env.bat`](frontend/build-cuda-env.bat) sets up a CUDA
+build from `CUDA_PATH`.
 
 See [`ARCHITECTURE.md`](ARCHITECTURE.md) for implementation details.
 
@@ -212,3 +288,19 @@ by Zackriya Solutions. Thanks to both projects.
 
 MIT licensed — see [`LICENSE.md`](LICENSE.md). The original copyright notices are
 retained.
+
+### Third-party components
+
+The installer also carries programs and models under their own licenses; the
+installed app keeps their notices in `licenses\` in the program folder.
+
+| Component | License |
+|---|---|
+| FFmpeg 8.0.1 (`ffmpeg.exe`, gyan.dev build) | GPL-3.0 — license, build description and source: [`licenses/ffmpeg/`](frontend/src-tauri/licenses/ffmpeg/SOURCE.md) |
+| llama.cpp, whisper.cpp, ggml | MIT |
+| ONNX Runtime | MIT |
+| pyannote segmentation-3.0 | MIT |
+| WeSpeaker ResNet34, VBx transform (speaker models) | CC BY 4.0 |
+| Visual C++ Redistributable, DirectML; CUDA runtime and cuBLAS in the CUDA build | Microsoft / NVIDIA redistributable terms |
+
+Details and attributions: [`THIRD-PARTY-NOTICES.md`](frontend/src-tauri/licenses/THIRD-PARTY-NOTICES.md).

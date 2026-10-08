@@ -40,7 +40,15 @@ env:
   # bindgen 0.69 (whisper-rs-sys, llama-cpp-sys-2) misreads headers from
   # LLVM 19 and later; 18.1.8 is the version the project builds with.
   LLVM_VERSION: "18.1.8"
+  # The installers below run on the build machine before anything is built,
+  # so each is pinned: a file that is not this exact one is never started.
+  # LLVM-18.1.8-win64.exe: as listed in winget-pkgs (LLVM.LLVM 18.1.8) and
+  # hashed after download; GitHub shows no digest for this release's assets.
+  LLVM_SHA256: "94af030060d88cc17e9f00ef1663ebdc1126b35e16bebdfa1e807984b70abd8f"
   VULKAN_SDK_VERSION: "1.4.357.0"
+  # vulkansdk-windows-X64-1.4.357.0.exe: as published by LunarG
+  # (vulkan.lunarg.com/sdk/sha/…) and hashed after download.
+  VULKAN_SDK_SHA256: "81f474711e9042f4cd22b31b2f7a8870db2e428b21586fb43dd80150be97310d"
   PNPM_VERSION: "11.25.0"
 
 jobs:
@@ -80,6 +88,8 @@ jobs:
         run: |
           $installer = "$env:RUNNER_TEMP\llvm.exe"
           Invoke-WebRequest "https://github.com/llvm/llvm-project/releases/download/llvmorg-$env:LLVM_VERSION/LLVM-$env:LLVM_VERSION-win64.exe" -OutFile $installer
+          $actual = (Get-FileHash $installer -Algorithm SHA256).Hash.ToLower()
+          if ($actual -ne $env:LLVM_SHA256) { throw "LLVM installer SHA-256 mismatch: expected $env:LLVM_SHA256, got $actual" }
           Start-Process $installer -ArgumentList '/S', '/D=C:\LLVM18' -Wait
           # Wins over the repository's .cargo/config.toml, which points at the
           # default install location.
@@ -89,6 +99,8 @@ jobs:
         run: |
           $installer = "$env:RUNNER_TEMP\vulkansdk.exe"
           Invoke-WebRequest "https://sdk.lunarg.com/sdk/download/$env:VULKAN_SDK_VERSION/windows/vulkansdk-windows-X64-$env:VULKAN_SDK_VERSION.exe" -OutFile $installer
+          $actual = (Get-FileHash $installer -Algorithm SHA256).Hash.ToLower()
+          if ($actual -ne $env:VULKAN_SDK_SHA256) { throw "Vulkan SDK installer SHA-256 mismatch: expected $env:VULKAN_SDK_SHA256, got $actual" }
           $root = "C:\VulkanSDK\$env:VULKAN_SDK_VERSION"
           Start-Process $installer -ArgumentList '--root', $root, '--accept-licenses', '--default-answer', '--confirm-command', 'install' -Wait
           "VULKAN_SDK=$root" >> $env:GITHUB_ENV
@@ -104,10 +116,15 @@ jobs:
           rem The Visual Studio generator does not build the nested vulkan-shaders-gen.
           set "PATH=%VS%\Common7\IDE\CommonExtensions\Microsoft\CMake\Ninja;%PATH%"
           set "CMAKE_GENERATOR=Ninja"
+          rem From inside llama-helper\: its .cargo\config.toml links the C runtime statically.
+          cd llama-helper || exit /b 1
           set "CARGO_TARGET_DIR=%RUNNER_TEMP%\helper-vulkan"
-          cargo build --release -p llama-helper --features vulkan || exit /b 1
+          cargo build --release --features vulkan || exit /b 1
           set "CARGO_TARGET_DIR=%RUNNER_TEMP%\helper-cpu"
-          cargo build --release -p llama-helper || exit /b 1
+          cargo build --release || exit /b 1
+          cd .. || exit /b 1
+          rem Git-ignored, so a fresh checkout does not have it yet.
+          if not exist "frontend\src-tauri\binaries" mkdir "frontend\src-tauri\binaries" || exit /b 1
           copy /y "%RUNNER_TEMP%\helper-vulkan\release\llama-helper.exe" "frontend\src-tauri\binaries\llama-helper-x86_64-pc-windows-msvc.exe" || exit /b 1
           copy /y "%RUNNER_TEMP%\helper-cpu\release\llama-helper.exe" "frontend\src-tauri\binaries\llama-helper-cpu-x86_64-pc-windows-msvc.exe" || exit /b 1
 
@@ -116,6 +133,8 @@ jobs:
       - name: Fetch the Visual C++ runtime installer
         run: |
           $target = "frontend\src-tauri\runtime-deps\vc_redist.x64.exe"
+          # Git-ignored, so a fresh checkout does not have it yet.
+          New-Item -ItemType Directory -Force (Split-Path $target) | Out-Null
           Invoke-WebRequest "https://aka.ms/vs/17/release/vc_redist.x64.exe" -OutFile $target
           $signature = Get-AuthenticodeSignature $target
           if ($signature.Status -ne 'Valid' -or $signature.SignerCertificate.Subject -notmatch 'O=Microsoft Corporation') {

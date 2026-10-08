@@ -457,6 +457,27 @@ mod tests {
     }
 
     #[test]
+    fn the_code_used_for_a_reset_keeps_working_until_replaced() {
+        // What the window warns about after a reset: the sheet that was just
+        // taken out of the drawer still opens the archive. It is retired only
+        // by issuing a new one, never silently, so the owner is not left
+        // holding a dead printout before the new code is written down.
+        let (mut keystore, code, dek) = make();
+        keystore.reset_password_with_recovery(&code, "brand new one").unwrap();
+        assert_eq!(keystore.unlock_with_recovery(&code).unwrap().as_ref(), dek.as_ref());
+
+        let replacement = keystore.regenerate_recovery("brand new one").unwrap();
+        assert!(matches!(
+            keystore.unlock_with_recovery(&code).unwrap_err(),
+            KeystoreError::WrongRecoveryCode
+        ));
+        assert_eq!(
+            keystore.unlock_with_recovery(&replacement).unwrap().as_ref(),
+            dek.as_ref()
+        );
+    }
+
+    #[test]
     fn a_new_recovery_code_retires_the_old_one() {
         let (mut keystore, old_code, dek) = make();
         let new_code = keystore.regenerate_recovery("correct horse").unwrap();

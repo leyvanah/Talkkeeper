@@ -74,6 +74,18 @@ fn english_markdown_after_normalization_result(
     }
 }
 
+/// The error when not one chunk of a long transcript was summarized. It keeps
+/// the last chunk's error: the reason is usually the same for all of them (a
+/// crashed local model, a provider that is down), and the UI explains some of
+/// those reasons by their text.
+fn no_chunks_summarized(last_chunk_error: Option<&str>) -> String {
+    let failed = "Multi-level summarization failed: No chunks were processed successfully.";
+    match last_chunk_error {
+        Some(error) => format!("{failed} Last error: {error}"),
+        None => failed.to_string(),
+    }
+}
+
 /// Maps a BCP-47 tag to the English language name used inside LLM prompts.
 ///
 /// LLMs respond far more reliably to "in Spanish" than to "in es". Regional
@@ -386,6 +398,7 @@ pub async fn generate_meeting_summary(
             info!("Split transcript into {} chunks", num_chunks);
 
             let mut chunk_summaries = Vec::new();
+            let mut last_chunk_error = None;
             let system_prompt_chunk = "You are an expert meeting summarizer.";
 
             for (i, chunk) in chunks.iter().enumerate() {
@@ -428,15 +441,13 @@ pub async fn generate_meeting_summary(
                             return Err(e);
                         }
                         error!("Failed processing chunk {}/{}: {}", i + 1, num_chunks, e);
+                        last_chunk_error = Some(e);
                     }
                 }
             }
 
             if chunk_summaries.is_empty() {
-                return Err(
-                    "Multi-level summarization failed: No chunks were processed successfully."
-                        .to_string(),
-                );
+                return Err(no_chunks_summarized(last_chunk_error.as_deref()));
             }
 
             successful_chunk_count = chunk_summaries.len() as i64;
@@ -781,6 +792,13 @@ mod tests {
             resolve_final_language_action(Some("fr"), Some("ja")),
             FinalLanguageAction::Translate("French")
         );
+    }
+
+    #[test]
+    fn a_long_summary_that_fails_everywhere_keeps_the_reason() {
+        let error = no_chunks_summarized(Some("llama-helper exited: exit code: 0xc0000005"));
+        assert!(error.starts_with("Multi-level summarization failed"), "{error}");
+        assert!(error.ends_with("llama-helper exited: exit code: 0xc0000005"), "{error}");
     }
 
     #[test]

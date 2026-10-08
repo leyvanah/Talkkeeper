@@ -20,9 +20,11 @@ use app_lib::database::fields;
 use app_lib::database::repositories::client::ClientsRepository;
 use app_lib::database::repositories::meeting::MeetingsRepository;
 use app_lib::database::repositories::person::PeopleRepository;
+use app_lib::database::repositories::setting::SettingsRepository;
 use app_lib::database::repositories::speaker_role::{Role, Side, SpeakerRolesRepository};
 use app_lib::database::repositories::transcript::TranscriptsRepository;
 use app_lib::database::repositories::transcript_edit::TranscriptEditsRepository;
+use app_lib::database::repositories::vocabulary::VocabularyRepository;
 use app_lib::security::envelope::generate_dek;
 use app_lib::security::session::{self, KeySession};
 use sqlx::SqlitePool;
@@ -79,11 +81,25 @@ async fn with_schema(pool: SqlitePool) -> SqlitePool {
          CREATE TABLE clients (id TEXT PRIMARY KEY, \
              display_name TEXT NOT NULL CHECK (length(trim(display_name)) > 0), \
              normalized_name TEXT NOT NULL CHECK (length(normalized_name) > 0), \
-             notes TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);",
+             notes TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL); \
+         CREATE TABLE settings (id TEXT PRIMARY KEY, provider TEXT NOT NULL, \
+             model TEXT NOT NULL, whisperModel TEXT NOT NULL, groqApiKey TEXT, \
+             openaiApiKey TEXT, anthropicApiKey TEXT, ollamaApiKey TEXT, \
+             openRouterApiKey TEXT, geminiApiKey TEXT, ollamaEndpoint TEXT, \
+             customOpenAIConfig TEXT); \
+         CREATE TABLE transcript_settings (id TEXT PRIMARY KEY, provider TEXT NOT NULL, \
+             model TEXT NOT NULL, whisperApiKey TEXT, deepgramApiKey TEXT, \
+             elevenLabsApiKey TEXT, groqApiKey TEXT, openaiApiKey TEXT);",
     )
     .execute(&pool)
     .await
     .unwrap();
+    for migration in [
+        include_str!("../migrations/20260822000000_add_whisper_vocabulary.sql"),
+        include_str!("../migrations/20260905000000_add_external_stt_config.sql"),
+    ] {
+        sqlx::raw_sql(migration).execute(&pool).await.unwrap();
+    }
     // Taken from the migration itself, so this table cannot fall behind.
     sqlx::raw_sql(include_str!("../migrations/20260920000000_add_privacy_settings.sql"))
         .execute(&pool)
@@ -658,4 +674,177 @@ async fn one_name_at_two_clients_is_two_sealed_people() {
         .await
         .unwrap();
     assert_eq!(people, 1);
+}
+
+/// The vocabulary and every credential column, read back as raw SQL.
+async fn every_stored_setting(pool: &SqlitePool) -> String {
+    let mut dump = String::new();
+    for query in [
+        "SELECT COALESCE(whisperVocabulary, '') || COALESCE(externalSttConfig, '') \
+             || COALESCE(deepgramApiKey, '') FROM transcript_settings",
+        "SELECT vocabulary FROM meeting_whisper_vocabulary",
+        "SELECT COALESCE(openaiApiKey, '') || COALESCE(customOpenAIConfig, '') FROM settings",
+    ] {
+        let values: Vec<String> = sqlx::query_scalar(query).fetch_all(pool).await.unwrap();
+        dump.push_str(&values.join("\n"));
+        dump.push('\n');
+    }
+    dump
+}
+
+#[tokio::test]
+async fn the_vocabulary_and_the_keys_are_not_in_the_database_file() {
+    let pool = archive().await;
+    sqlx::query(
+        "INSERT INTO meetings (id, title, created_at, updated_at) \
+         VALUES ('m1', 'Встреча', 'n', 'n')",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    VocabularyRepository::save_global(&pool, Some("Анна Петрова\nКвазаров"))
+        .await
+        .unwrap();
+    VocabularyRepository::save_meeting(&pool, "m1", "Пульсарова")
+        .await
+        .unwrap();
+    SettingsRepository::save_api_key(&pool, "openai", "openai-key-for-tests")
+        .await
+        .unwrap();
+    SettingsRepository::save_transcript_api_key(&pool, "deepgram", "deepgram-key-for-tests")
+        .await
+        .unwrap();
+    SettingsRepository::save_custom_openai_config(
+        &pool,
+        &app_lib::summary::CustomOpenAIConfig {
+            endpoint: "http://localhost:8000/v1".to_string(),
+            api_key: Some("custom-key-for-tests".to_string()),
+            model: "local-model".to_string(),
+            max_tokens: None,
+            temperature: None,
+            top_p: None,
+        },
+    )
+    .await
+    .unwrap();
+    SettingsRepository::save_external_stt_config(&pool, Some(r#"{"token":"stt-token-for-tests"}"#))
+        .await
+        .unwrap();
+
+    let stored = every_stored_setting(&pool).await;
+    for secret in [
+        "Петрова",
+        "Квазаров",
+        "Пульсарова",
+        "openai-key",
+        "deepgram-key",
+        "custom-key",
+        "stt-token",
+    ] {
+        assert!(!stored.contains(secret), "{secret:?} is in the database in the clear");
+    }
+
+    // Everything reads back the way it was written.
+    assert_eq!(
+        VocabularyRepository::get_effective(&pool, Some("m1"))
+            .await
+            .unwrap()
+            .as_deref(),
+        Some("Пульсарова, Анна Петрова, Квазаров")
+    );
+    assert_eq!(
+        SettingsRepository::get_api_key(&pool, "openai").await.unwrap().as_deref(),
+        Some("openai-key-for-tests")
+    );
+    assert_eq!(
+        SettingsRepository::get_transcript_api_key(&pool, "deepgram")
+            .await
+            .unwrap()
+            .as_deref(),
+        Some("deepgram-key-for-tests")
+    );
+    let custom = SettingsRepository::get_custom_openai_config(&pool)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(custom.api_key.as_deref(), Some("custom-key-for-tests"));
+    assert_eq!(
+        SettingsRepository::get_external_stt_config(&pool)
+            .await
+            .unwrap()
+            .as_deref(),
+        Some(r#"{"token":"stt-token-for-tests"}"#)
+    );
+
+    // Adding a term opens what is there, merges and seals the result again.
+    VocabularyRepository::add_global(&pool, "Туманностина").await.unwrap();
+    assert!(!every_stored_setting(&pool).await.contains("Туманностина"));
+    assert_eq!(
+        VocabularyRepository::get_global(&pool).await.unwrap().as_deref(),
+        Some("Анна Петрова\nКвазаров\nТуманностина")
+    );
+
+    // The settings row itself no longer carries a key, sealed or not.
+    let config = SettingsRepository::get_model_config(&pool)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(!format!("{config:?}").contains("tkf1:"));
+}
+
+#[tokio::test]
+async fn settings_written_before_this_convert_and_convert_back() {
+    // The vocabulary and the keys as a version that did not seal them left
+    // them: plaintext in the columns.
+    let pool = archive().await;
+    sqlx::raw_sql(
+        "INSERT INTO meetings (id, title, created_at, updated_at) \
+             VALUES ('m1', 'Встреча', 'n', 'n'); \
+         INSERT INTO transcript_settings (id, provider, model, whisperVocabulary, \
+             deepgramApiKey, externalSttConfig) \
+             VALUES ('1', 'parakeet', 'm', 'Анна Петрова', 'deepgram-key-for-tests', \
+             '{\"token\":\"stt-token-for-tests\"}'); \
+         INSERT INTO meeting_whisper_vocabulary (meeting_id, vocabulary, updated_at) \
+             VALUES ('m1', 'Пульсарова', 'n'); \
+         INSERT INTO settings (id, provider, model, whisperModel, openaiApiKey) \
+             VALUES ('1', 'openai', 'm', 'w', 'openai-key-for-tests');",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    let before = field_encryption::count(&pool).await.unwrap();
+    assert_eq!(before.sealed, 0);
+    // Five settings values and the meeting's title.
+    assert_eq!(before.plaintext, 6);
+
+    field_encryption::convert_all(&pool, field_encryption::Direction::Encrypt)
+        .await
+        .unwrap();
+    assert_eq!(field_encryption::count(&pool).await.unwrap().plaintext, 0);
+    let stored = every_stored_setting(&pool).await;
+    for secret in ["Петрова", "Пульсарова", "openai-key", "deepgram-key", "stt-token"] {
+        assert!(!stored.contains(secret), "{secret:?} survived the conversion");
+    }
+    assert_eq!(
+        VocabularyRepository::get_effective(&pool, Some("m1"))
+            .await
+            .unwrap()
+            .as_deref(),
+        Some("Пульсарова, Анна Петрова")
+    );
+    assert_eq!(
+        SettingsRepository::get_api_key(&pool, "openai").await.unwrap().as_deref(),
+        Some("openai-key-for-tests")
+    );
+
+    // Removing the password brings them back as they were.
+    field_encryption::convert_all(&pool, field_encryption::Direction::Decrypt)
+        .await
+        .unwrap();
+    let stored = every_stored_setting(&pool).await;
+    for secret in ["Анна Петрова", "Пульсарова", "openai-key-for-tests", "stt-token-for-tests"] {
+        assert!(stored.contains(secret), "{secret:?} did not come back");
+    }
 }

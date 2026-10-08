@@ -84,7 +84,8 @@
             "templates/*.json",
             "resources/diarization/*",
             "runtime-deps/*",
-            "installer-variants/*"
+            "installer-variants/*",
+            "licenses/**/*"
         ],
         "externalBin": [
             "binaries/llama-helper",
