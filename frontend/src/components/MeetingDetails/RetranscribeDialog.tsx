@@ -25,6 +25,7 @@ import { useRetranscription, ENHANCEMENT_STALLED } from '@/contexts/Retranscript
 import { useRouter } from 'next/navigation';
 import { LANGUAGES } from '@/constants/languages';
 import { useTranscriptionModels, ModelOption } from '@/hooks/useTranscriptionModels';
+import { toastFailure } from '@/lib/failure';
 
 interface RetranscribeDialogProps {
   open: boolean;
@@ -184,13 +185,16 @@ export function RetranscribeDialog({
       onCompleteRef.current?.();
       onOpenChangeRef.current(false);
     } catch (err: any) {
-      const errorMsg = err?.message === ENHANCEMENT_STALLED
-        ? t('retranscribeStalled')
-        : (typeof err === 'string' ? err : (err?.message || String(err)));
-      setError(errorMsg);
+      const stalled = err?.message === ENHANCEMENT_STALLED;
+      setError(stalled ? t('retranscribeStalled') : t('retranscribeFailed'));
       // The dialog steps aside as soon as the work starts, so by the time this
       // fails there may be nothing on screen to read the message off.
-      toast.error(t('retranscribeFailed'), { description: errorMsg });
+      toastFailure(
+        t('retranscribeFailed'),
+        'retranscribe',
+        err,
+        stalled ? { description: t('retranscribeStalled') } : undefined,
+      );
     }
   };
 
@@ -212,7 +216,7 @@ export function RetranscribeDialog({
       setSavedMeetingVocabulary('');
       toast.success(t('retranscribeVocabularyCleared'));
     } catch (clearError) {
-      toast.error(typeof clearError === 'string' ? clearError : String(clearError));
+      toastFailure(t('retranscribeVocabularyClearFailed'), 'meeting-vocabulary-clear', clearError);
     } finally {
       setIsClearingMeetingVocabulary(false);
     }

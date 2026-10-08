@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { convertFileSrc } from '@tauri-apps/api/core';
+import { failureText } from '@/lib/failure-text';
 
 /**
  * Plays a stored recording.
@@ -136,7 +137,8 @@ export const useAudioPlayer = (audioPath: string | null) => {
       await element.play();
       setError(null);
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : 'Could not play the recording');
+      // Shown as a phrase by the player; the text itself goes to the log.
+      setError(failureText(cause));
     }
   }, []);
 

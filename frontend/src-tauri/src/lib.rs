@@ -597,6 +597,7 @@ pub fn run() {
             }
         })
         .invoke_handler(tauri::generate_handler![
+            logging::log_frontend_failure,
             security::commands::security_status,
             network_policy::get_local_only_mode,
             network_policy::set_local_only_mode,

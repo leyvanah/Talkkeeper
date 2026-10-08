@@ -12,7 +12,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import { useTranslations } from 'next-intl';
-import { toast } from 'sonner';
+import { toastFailure } from '@/lib/failure';
 
 export interface MeetingNote {
   id: string;
@@ -135,7 +135,7 @@ export function useSavedMeetingNotes(meetingId: string | undefined): NotesSource
       .then((stored) => !cancelled && setNotes(stored))
       .catch((failure) => {
         console.error('[Notes] Could not read the meeting notes:', failure);
-        if (!cancelled) toast.error(t('loadFailed'), { description: String(failure) });
+        if (!cancelled) toastFailure(t('loadFailed'), 'meeting-notes-load', failure);
       })
       .finally(() => {
         if (cancelled) return;

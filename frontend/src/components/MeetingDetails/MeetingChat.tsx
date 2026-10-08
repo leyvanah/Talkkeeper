@@ -16,6 +16,7 @@ import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { MessageSquare, Send } from 'lucide-react';
 import { Transcript } from '@/types';
+import { logFailure } from '@/lib/failure';
 
 const MAX_CONTEXT_CHARS = 6000;
 
@@ -52,7 +53,8 @@ export function MeetingChat({ transcripts }: { transcripts: Transcript[] }) {
       const answer = await invoke<string>('ask_live_assistant', { question: q, transcriptContext, persona: null });
       setHistory((prev) => prev.map((x) => (x.id === id ? { ...x, answer, status: 'done' } : x)));
     } catch (err) {
-      const msg = typeof err === 'string' ? err : (err as any)?.message || t('askRequestFailed');
+      logFailure('meeting-chat', err);
+      const msg = t('askRequestFailed');
       setHistory((prev) => prev.map((x) => (x.id === id ? { ...x, answer: `⚠️ ${msg}`, status: 'error' } : x)));
     } finally {
       setBusy(false);
