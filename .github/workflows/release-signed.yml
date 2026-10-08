@@ -123,6 +123,8 @@ jobs:
           set "CARGO_TARGET_DIR=%RUNNER_TEMP%\helper-cpu"
           cargo build --release || exit /b 1
           cd .. || exit /b 1
+          rem Git-ignored, so a fresh checkout does not have it yet.
+          if not exist "frontend\src-tauri\binaries" mkdir "frontend\src-tauri\binaries" || exit /b 1
           copy /y "%RUNNER_TEMP%\helper-vulkan\release\llama-helper.exe" "frontend\src-tauri\binaries\llama-helper-x86_64-pc-windows-msvc.exe" || exit /b 1
           copy /y "%RUNNER_TEMP%\helper-cpu\release\llama-helper.exe" "frontend\src-tauri\binaries\llama-helper-cpu-x86_64-pc-windows-msvc.exe" || exit /b 1
 
