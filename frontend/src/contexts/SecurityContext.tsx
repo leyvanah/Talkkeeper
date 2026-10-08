@@ -19,6 +19,12 @@ import React, {
 } from 'react'
 import { invoke } from '@tauri-apps/api/core'
 import { listen } from '@tauri-apps/api/event'
+import {
+  NO_RECOVERY_NOTICE,
+  nextRecoveryNotice,
+  type RecoveryEvent,
+  type RecoveryNotice,
+} from '@/lib/recovery-notice'
 
 /** What the window should be showing. */
 export type LockState = 'unconfigured' | 'locked' | 'unlocked'
@@ -107,6 +113,13 @@ interface SecurityContextValue {
   quickEnable: (password: string) => Promise<void>
   /** Turns quick unlock off, back to password only. */
   quickDisable: () => Promise<void>
+  /**
+   * Whether the recovery code was used to get in during this run, and whether
+   * the reminder that it still works is on screen.
+   */
+  recoveryNotice: RecoveryNotice
+  /** Closes that reminder; the security screen keeps a line about it. */
+  dismissRecoveryNotice: () => void
 }
 
 const SecurityContext = createContext<SecurityContextValue | null>(null)
@@ -117,6 +130,11 @@ const TOUCH_INTERVAL_MS = 30_000
 export function SecurityProvider({ children }: { children: React.ReactNode }) {
   const [status, setStatus] = useState<SecurityStatus | null>(null)
   const [loading, setLoading] = useState(true)
+  const [recoveryNotice, setRecoveryNotice] = useState<RecoveryNotice>(NO_RECOVERY_NOTICE)
+
+  const noteRecovery = useCallback((event: RecoveryEvent) => {
+    setRecoveryNotice((notice) => nextRecoveryNotice(notice, event))
+  }, [])
 
   const refresh = useCallback(async () => {
     try {
@@ -186,7 +204,10 @@ export function SecurityProvider({ children }: { children: React.ReactNode }) {
       loading,
       refresh,
       unlock: (password) => run<void>('security_unlock', { password }),
-      unlockWithRecovery: (code) => run<void>('security_unlock_with_recovery', { code }),
+      unlockWithRecovery: async (code) => {
+        await run<void>('security_unlock_with_recovery', { code })
+        noteRecovery('unlockedWithCode')
+      },
       lock: () => run<void>('security_lock'),
       setup: async (password, withRecovery) => {
         const response = await run<{ recoveryCode: string | null }>('security_setup', {
@@ -197,16 +218,22 @@ export function SecurityProvider({ children }: { children: React.ReactNode }) {
       },
       changePassword: (currentPassword, newPassword) =>
         run<void>('security_change_password', { currentPassword, newPassword }),
-      resetPassword: (recoveryCode, newPassword) =>
-        run<void>('security_reset_password', { recoveryCode, newPassword }),
+      resetPassword: async (recoveryCode, newPassword) => {
+        await run<void>('security_reset_password', { recoveryCode, newPassword })
+        noteRecovery('unlockedWithCode')
+      },
       regenerateRecovery: async (password) => {
         const response = await run<{ recoveryCode: string | null }>(
           'security_regenerate_recovery',
           { password },
         )
+        noteRecovery('codeReissued')
         return response.recoveryCode
       },
-      removeRecovery: (password) => run<void>('security_remove_recovery', { password }),
+      removeRecovery: async (password) => {
+        await run<void>('security_remove_recovery', { password })
+        noteRecovery('codeRemoved')
+      },
       setAutoLock: (minutes) => run<void>('security_set_auto_lock', { minutes }),
       // Neither of these changes the lock state, so neither re-reads it.
       recordingEncryption: () => invoke<RecordingEncryption>('security_recording_encryption'),
@@ -219,8 +246,10 @@ export function SecurityProvider({ children }: { children: React.ReactNode }) {
       quickUnlock: (prompt) => run<void>('security_quick_unlock', { prompt }),
       quickEnable: (password) => run<void>('security_quick_enable', { password }),
       quickDisable: () => run<void>('security_quick_disable'),
+      recoveryNotice,
+      dismissRecoveryNotice: () => noteRecovery('dismissed'),
     }
-  }, [status, loading, refresh])
+  }, [status, loading, refresh, recoveryNotice, noteRecovery])
 
   return <SecurityContext.Provider value={value}>{children}</SecurityContext.Provider>
 }

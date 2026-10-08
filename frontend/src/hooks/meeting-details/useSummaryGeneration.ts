@@ -6,6 +6,7 @@ import { useSidebar } from '@/components/Sidebar/SidebarProvider';
 import { invoke as invokeTauri } from '@tauri-apps/api/core';
 import { toast } from 'sonner';
 import { isOllamaNotInstalledError } from '@/lib/utils';
+import { summaryErrorText } from '@/lib/summary-errors';
 import { BuiltInModelInfo } from '@/lib/builtin-ai';
 import {
   detectAndCacheSummaryLanguage,
@@ -157,10 +158,18 @@ export function useSummaryGeneration({
             return;
           }
           if (stage === 'error') {
-            activeProcessIdRef.current = null;
             setSummaryStatus('error');
-            setSummaryError(message || t('genFailedGeneric'));
+            // Our own run is being polled, and the poll reads the same failure
+            // from the database and handles it whole: the toast, the previous
+            // summary back after a failed regeneration, model settings. Only a
+            // run nobody polls is reported from here.
+            if (isOurRun) return;
+            if (completionHandledRef.current) return;
+            completionHandledRef.current = true;
+            const shownError = summaryErrorText(message || t('genFailedGeneric'), t);
+            setSummaryError(shownError);
             stopSummaryPollingRef.current(meeting.id);
+            toast.error(t('genGenerateFailed'), { description: shownError });
           }
         });
         if (disposed) {
@@ -309,9 +318,14 @@ export function useSummaryGeneration({
 
         // Handle errors
         if (pollingResult.status === 'error' || pollingResult.status === 'failed') {
+          if (completionHandledRef.current) return;
+          completionHandledRef.current = true;
           activeProcessIdRef.current = null;
           console.error('Backend returned error:', pollingResult.error);
           const errorMessage = pollingResult.error || `Summary ${isRegeneration ? 'regeneration' : 'generation'} failed`;
+          // The built-in model's helper crashing, among others, is reported in
+          // plain words rather than as the backend's error text.
+          const shownError = summaryErrorText(errorMessage, t);
 
           // If this was a regeneration, try to restore previous summary from database
           if (isRegeneration) {
@@ -329,7 +343,7 @@ export function useSummaryGeneration({
 
                 // Show error toast with restoration message
                 toast.error(t('genRegenerateFailed'), {
-                  description: `${errorMessage}. Your previous summary has been restored.`,
+                  description: `${shownError.replace(/\.$/, '')}. Your previous summary has been restored.`,
                 });
                 return;
               }
@@ -340,7 +354,7 @@ export function useSummaryGeneration({
           }
 
           // Continue with normal error handling if not regeneration or reload failed
-          setSummaryError(errorMessage);
+          setSummaryError(shownError);
           setSummaryStatus('error');
 
           // Check if this is a "model is required" error
@@ -350,9 +364,7 @@ export function useSummaryGeneration({
 
           // Show error toast
           toast.error(isRegeneration ? t('genRegenerateFailed') : t('genGenerateFailed'), {
-            description: errorMessage.includes('Connection refused')
-              ? t('genConnectionRefused')
-              : errorMessage,
+            description: shownError,
           });
 
           // Auto-open model settings modal if model is missing

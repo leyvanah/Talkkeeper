@@ -92,7 +92,7 @@ enum Kind {
 /// the tests all read from, so a column added to [`fields`] and forgotten here
 /// would show up as a plaintext count that never reaches zero.
 fn columns() -> Vec<Column> {
-    vec![
+    let mut columns = vec![
         Column {
             table: "meetings",
             key: "id",
@@ -245,13 +245,50 @@ fn columns() -> Vec<Column> {
             kind: Kind::Joinable,
         },
         Column {
+            table: "meeting_whisper_vocabulary",
+            key: "meeting_id",
+            name: "vocabulary",
+            field: fields::VOCABULARY_MEETING,
+            kind: Kind::Sealed,
+        },
+        Column {
             table: "assistant_prompts",
             key: "id",
             name: "prompt",
             field: fields::ASSISTANT_PROMPT,
             kind: Kind::Sealed,
         },
-    ]
+    ];
+
+    // The two settings tables hold one row each, under the id '1', and every
+    // field here is named after its own table and column.
+    columns.extend(
+        [
+            fields::VOCABULARY_GLOBAL,
+            fields::EXTERNAL_STT_CONFIG,
+            fields::TRANSCRIPT_KEY_WHISPER,
+            fields::TRANSCRIPT_KEY_DEEPGRAM,
+            fields::TRANSCRIPT_KEY_ELEVENLABS,
+            fields::TRANSCRIPT_KEY_GROQ,
+            fields::TRANSCRIPT_KEY_OPENAI,
+            fields::SUMMARY_KEY_OPENAI,
+            fields::SUMMARY_KEY_ANTHROPIC,
+            fields::SUMMARY_KEY_GROQ,
+            fields::SUMMARY_KEY_OLLAMA,
+            fields::SUMMARY_KEY_OPENROUTER,
+            fields::SUMMARY_KEY_GEMINI,
+            fields::CUSTOM_OPENAI_CONFIG,
+        ]
+        .into_iter()
+        .map(|field| Column {
+            table: field.table,
+            key: "id",
+            name: field.column,
+            field,
+            kind: Kind::Sealed,
+        }),
+    );
+    columns
 }
 
 /// Counts values that are protected and values that are not.
@@ -491,6 +528,14 @@ mod tests {
              CREATE TABLE meeting_notes (meeting_id TEXT PRIMARY KEY, notes_json TEXT); \
              CREATE TABLE assistant_prompts (id TEXT PRIMARY KEY, prompt TEXT NOT NULL, \
                  updated_at TEXT NOT NULL); \
+             CREATE TABLE meeting_whisper_vocabulary (meeting_id TEXT PRIMARY KEY, \
+                 vocabulary TEXT NOT NULL); \
+             CREATE TABLE settings (id TEXT PRIMARY KEY, openaiApiKey TEXT, \
+                 anthropicApiKey TEXT, groqApiKey TEXT, ollamaApiKey TEXT, \
+                 openRouterApiKey TEXT, geminiApiKey TEXT, customOpenAIConfig TEXT); \
+             CREATE TABLE transcript_settings (id TEXT PRIMARY KEY, whisperVocabulary TEXT, \
+                 externalSttConfig TEXT, whisperApiKey TEXT, deepgramApiKey TEXT, \
+                 elevenLabsApiKey TEXT, groqApiKey TEXT, openaiApiKey TEXT); \
              INSERT INTO meetings VALUES ('m1', 'Встреча'); \
              INSERT INTO transcripts VALUES ('t1', 'первая реплика', 'Анна', NULL, NULL, NULL, \
                  '[{\"w\":\"первая\",\"s\":0.0,\"e\":0.4}]'); \
@@ -528,6 +573,18 @@ mod tests {
         // Six names and lines, one line's word timings, plus the two lookup
         // columns.
         assert_eq!(counts.plaintext, 9);
+    }
+
+    #[tokio::test]
+    async fn every_listed_column_is_in_the_real_schema() {
+        // The schema above is written by hand. This is what notices a listed
+        // column that the migrations never created or later renamed: the
+        // pass would fail on it the day the owner sets a password.
+        let pool = SqlitePool::connect("sqlite::memory:").await.unwrap();
+        crate::database::manager::MIGRATOR.run(&pool).await.unwrap();
+        count(&pool).await.unwrap();
+        convert_all(&pool, Direction::Encrypt).await.unwrap();
+        verify_sealed(&pool).await.unwrap();
     }
 
     #[tokio::test]
