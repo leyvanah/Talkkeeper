@@ -31,6 +31,7 @@ import {
   UserRound,
 } from 'lucide-react';
 import type { PersonProfile } from '@/types';
+import { logFailure } from '@/lib/failure';
 
 // The overview prompt is localized too, so the model answers in the UI language.
 type Translate = (key: string, values?: Record<string, string | number>) => string;
@@ -165,8 +166,8 @@ function PersonProfileContent() {
       })
       .catch((error) => {
         if (cancelled) return;
-        console.error('Failed to load person profile:', error);
-        setLoadError(error instanceof Error ? error.message : String(error));
+        logFailure('person-profile-load', error);
+        setLoadError(t('loadFailedDetail'));
       })
       .finally(() => {
         if (!cancelled) setLoading(false);
@@ -188,8 +189,8 @@ function PersonProfileContent() {
       setNotesSaved(true);
       window.setTimeout(() => setNotesSaved(false), 1800);
     } catch (error) {
-      console.error('Failed to save person notes:', error);
-      setNotesError(error instanceof Error ? error.message : String(error));
+      logFailure('person-notes-save', error);
+      setNotesError(t('notesSaveFailed'));
     } finally {
       setSavingNotes(false);
     }
@@ -206,8 +207,8 @@ function PersonProfileContent() {
       });
       setOverview(answer);
     } catch (error) {
-      console.error('Failed to generate person overview:', error);
-      setOverviewError(error instanceof Error ? error.message : String(error));
+      logFailure('person-overview', error);
+      setOverviewError(t('overviewFailed'));
     } finally {
       setOverviewLoading(false);
     }
@@ -228,8 +229,8 @@ function PersonProfileContent() {
         message.id === id ? { ...message, answer, status: 'complete' } : message
       )));
     } catch (error) {
-      console.error('Failed to ask about person:', error);
-      const message = error instanceof Error ? error.message : String(error);
+      logFailure('person-ask', error);
+      const message = t('askFailed');
       setHistory((current) => current.map((item) => (
         item.id === id ? { ...item, answer: message, status: 'error' } : item
       )));
@@ -334,7 +335,7 @@ function PersonProfileContent() {
                     <div className="prose prose-sm max-w-none leading-relaxed text-[var(--af-text-2)] dark:prose-invert prose-headings:text-[var(--af-text)] prose-strong:text-[var(--af-text)] prose-p:my-2 prose-ul:my-2">
                       <ReactMarkdown remarkPlugins={[remarkGfm]}>{overview}</ReactMarkdown>
                     </div>
-                    {overviewError && <p className="mt-4 rounded-lg bg-red-500/10 px-3 py-2 text-xs text-red-400">{t('regenerationFailed', { error: overviewError })}</p>}
+                    {overviewError && <p className="mt-4 rounded-lg bg-red-500/10 px-3 py-2 text-xs text-red-400">{t('overviewRegenerateFailed')}</p>}
                   </>
                 ) : (
                   <div className="rounded-xl border border-dashed border-[var(--af-border-strong)] px-5 py-8 text-center">
