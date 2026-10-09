@@ -1109,7 +1109,7 @@
     "importTryAgain": "Try Again",
     "importComplete": "{count, plural, one {Import complete! # segment created.} other {Import complete! # segments created.}}",
     "importFailed": "Import failed",
-    "importFileUnreadable": "This file could not be read as audio. The format may be unsupported, or the file is damaged.",
+    "importFileUnreadable": "This file cannot be imported: its format is not supported, it is larger than 20 GB, or it is damaged.",
     "importFailedDetail": "The recording could not be imported; the details are in the application log.",
     "importCancelled": "Import cancelled",
     "importLanguageApplyFailedTitle": "Could not apply default summary language",
