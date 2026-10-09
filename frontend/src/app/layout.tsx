@@ -41,7 +41,6 @@ import CrashReportDialog from '@/components/CrashReportDialog'
 import { getPendingCrashReport, type PendingCrashReport } from '@/services/crashReportService'
 import { Button } from '@/components/ui/button'
 import { logFailure } from '@/lib/failure'
-import { failureText } from '@/lib/failure-text'
 
 
 const sourceSans3 = Source_Sans_3({
@@ -130,7 +129,7 @@ export default function RootLayout({
   const [showOnboarding, setShowOnboarding] = useState(false)
   const [onboardingCompleted, setOnboardingCompleted] = useState(false)
   const [startupResolved, setStartupResolved] = useState(false)
-  const [startupError, setStartupError] = useState<string | null>(null)
+  const [startupError, setStartupError] = useState(false)
   const [startupAttempt, setStartupAttempt] = useState(0)
   const [pendingCrashReport, setPendingCrashReport] = useState<PendingCrashReport | null>(null)
 
@@ -149,7 +148,7 @@ export default function RootLayout({
 
     const initializeStartup = async () => {
       setStartupResolved(false)
-      setStartupError(null)
+      setStartupError(false)
       try {
         const status = await invoke<{ completed: boolean } | null>('get_onboarding_status')
         if (cancelled) return
@@ -167,7 +166,7 @@ export default function RootLayout({
       } catch (error) {
         logFailure('startup-check', error)
         if (cancelled) return
-        setStartupError(failureText(error))
+        setStartupError(true)
       } finally {
         if (!cancelled) setStartupResolved(true)
       }

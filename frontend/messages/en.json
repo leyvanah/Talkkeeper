@@ -967,7 +967,7 @@
     "externalSttSaved": "Saved",
     "externalSttTest": "Test connection",
     "externalSttTestOk": "The service answered in {ms} ms",
-    "externalSttTestFailed": "The service did not answer. Check the address and that the service is running; the details are in the application log.",
+    "externalSttTestFailed": "The service did not answer. Check the address and that the service is running; if it is not on this computer, whether \"This computer only\" is on in Security. The details are in the application log.",
     "externalSttLoadFailed": "Could not load the external service settings",
     "externalSttSaveFailed": "Could not save the external service settings",
     "gigaamBadge": "Best for Russian",
