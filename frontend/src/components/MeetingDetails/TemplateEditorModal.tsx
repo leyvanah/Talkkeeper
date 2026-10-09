@@ -3,6 +3,7 @@
 import { useState } from 'react';
 import { useTranslations } from 'next-intl';
 import { toast } from 'sonner';
+import { toastFailure } from '@/lib/failure';
 
 type Format = 'paragraph' | 'list' | 'table' | 'string';
 
@@ -86,7 +87,7 @@ export function TemplateEditorModal({
       reset();
       onClose();
     } catch (e) {
-      toast.error(typeof e === 'string' ? e : t('templateSaveFailed'));
+      toastFailure(t('templateSaveFailed'), 'template-save', e);
     } finally {
       setSaving(false);
     }
@@ -97,9 +98,12 @@ export function TemplateEditorModal({
       await onDelete(id);
       toast.success(t('templateDeleted', { name: tname }));
     } catch (e) {
-      const msg = typeof e === 'string' ? e : t('templateDeleteFailed');
       // Built-in templates aren't deletable and the backend returns "not found"
-      toast.error(msg.includes('not found') ? t('templateBuiltInNotDeletable') : msg);
+      if (typeof e === 'string' && e.includes('not found')) {
+        toast.error(t('templateBuiltInNotDeletable'));
+      } else {
+        toastFailure(t('templateDeleteFailed'), 'template-delete', e);
+      }
     }
   };
 

@@ -7,6 +7,7 @@ import { toast } from 'sonner';
 import { Unlink, UserRound } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Dialog, DialogContent, DialogTitle } from '@/components/ui/dialog';
+import { toastFailure } from '@/lib/failure';
 
 interface SpeakerRenameDialogProps {
   open: boolean;
@@ -97,9 +98,7 @@ export function SpeakerRenameDialog({
         removedName: result.removedName,
       });
     } catch (e) {
-      toast.error(t('speakerRenameFailed'), {
-        description: e instanceof Error ? e.message : String(e),
-      });
+      toastFailure(t('speakerRenameFailed'), 'speaker-rename', e);
     } finally {
       setSaving(false);
     }

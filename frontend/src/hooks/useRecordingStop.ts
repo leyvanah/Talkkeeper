@@ -14,6 +14,7 @@ import {
 } from '@/lib/summary-language-preferences';
 import { clearPendingRecordingClient, getPendingRecordingClient } from '@/lib/recording-client';
 import { useTranslations } from 'next-intl';
+import { toastFailure } from '@/lib/failure';
 
 type SummaryStatus = 'idle' | 'processing' | 'summarizing' | 'regenerating' | 'completed' | 'error';
 
@@ -355,9 +356,7 @@ export function useRecordingStop(
         } catch (saveError) {
           console.error('Failed to save meeting to database:', saveError);
           setStatus(RecordingStatus.ERROR, saveError instanceof Error ? saveError.message : 'Unknown error');
-          toast.error(t('saveMeetingFailedTitle'), {
-            description: saveError instanceof Error ? saveError.message : t('unknownErrorShort')
-          });
+          toastFailure(t('saveMeetingFailedTitle'), 'meeting-save', saveError);
           throw saveError;
         }
       } else {

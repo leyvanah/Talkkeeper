@@ -25,6 +25,7 @@ import { toast } from 'sonner';
 import { useRouter } from 'next/navigation';
 import { NotesEditor } from '@/components/Notes/NotesEditor';
 import { useRecordingNotes } from '@/hooks/useMeetingNotes';
+import { toastFailure } from '@/lib/failure';
 
 /** Whether the notes beside a recording are open; a habit, kept per machine. */
 const NOTES_OPEN_KEY = 'recording_notes_open';
@@ -194,9 +195,7 @@ export default function Home() {
         }
       }
     } catch (error) {
-      toast.error(t('recoveryFailedTitle'), {
-        description: error instanceof Error ? error.message : t('unknownError'),
-      });
+      toastFailure(t('recoveryFailedTitle'), 'transcript-recovery', error);
       throw error;
     }
   };

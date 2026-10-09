@@ -151,6 +151,39 @@ fn truncate_for_log(message: &str) -> String {
     format!("{} …[cut]", kept.replace(['\n', '\r'], " "))
 }
 
+/// Longest error text the window may hand over. A backend error is a sentence
+/// or two; anything longer is not worth keeping and may be carrying content.
+const MAX_FRONTEND_DETAIL_CHARS: usize = 500;
+
+/// The line written for a failure the window reported. The action is a fixed
+/// name chosen in the code (`speaker-rename`), kept to a safe alphabet so a
+/// caller cannot smuggle text into it; the detail is the original error text,
+/// which the owner was shown only as a phrase in their own language.
+fn frontend_failure_line(action: &str, detail: &str) -> String {
+    let action: String = action
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
+        .take(64)
+        .collect();
+    let detail = detail.replace(['\n', '\r'], " ");
+    let detail = if detail.chars().count() > MAX_FRONTEND_DETAIL_CHARS {
+        let kept: String = detail.chars().take(MAX_FRONTEND_DETAIL_CHARS).collect();
+        format!("{kept} …[cut]")
+    } else {
+        detail
+    };
+    format!("[ui] {action} failed: {detail}")
+}
+
+/// Puts a failure from the window into the application log: the window shows
+/// the owner a phrase of its own, and the original text would otherwise be
+/// lost with the developer console nobody has open. Local only — it writes
+/// to the same file as every other record.
+#[tauri::command]
+pub fn log_frontend_failure(action: String, detail: String) {
+    log::error!("{}", frontend_failure_line(&action, &detail));
+}
+
 /// Installs the logger. Falls back to stderr alone when the file cannot be
 /// opened — a missing log is worth a warning, never a failed start.
 ///
@@ -192,6 +225,27 @@ pub fn init(log_dir: PathBuf) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_frontend_failure_keeps_the_action_name_and_the_text() {
+        let line = frontend_failure_line("speaker-rename", "Database is locked");
+        assert_eq!(line, "[ui] speaker-rename failed: Database is locked");
+    }
+
+    #[test]
+    fn a_frontend_failure_cannot_put_text_in_the_action_name() {
+        let line = frontend_failure_line("rename: Anna said hello\nnext", "x");
+        assert_eq!(line, "[ui] renameAnnasaidhellonext failed: x");
+    }
+
+    #[test]
+    fn a_long_frontend_failure_is_cut_and_stays_on_one_line() {
+        let long = format!("first\n{}", "y".repeat(MAX_FRONTEND_DETAIL_CHARS * 2));
+        let line = frontend_failure_line("save", &long);
+        assert!(line.ends_with("…[cut]"));
+        assert!(!line.contains('\n'));
+        assert!(line.chars().count() < MAX_FRONTEND_DETAIL_CHARS + 40);
+    }
 
     #[test]
     fn a_long_message_is_cut_and_says_so() {

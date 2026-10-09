@@ -22,6 +22,7 @@ import {
 } from '@/components/ui/dropdown-menu';
 import { TranscriptSegmentData } from '@/types';
 import { Playhead } from '@/lib/playhead';
+import { logFailure } from '@/lib/failure';
 
 export interface RecordingPlayerHandle {
   /** Move the playhead, as clicking a line in the transcript does. */
@@ -147,7 +148,7 @@ export const RecordingPlayer = forwardRef<RecordingPlayerHandle, RecordingPlayer
     }, [playhead, currentTime, isPlaying]);
 
     useEffect(() => {
-      if (error) console.warn('Recording playback failed:', error);
+      if (error) logFailure('playback', error);
     }, [error]);
 
     // Nothing to play: a meeting saved without audio, or a folder since moved.
@@ -232,11 +233,10 @@ export const RecordingPlayer = forwardRef<RecordingPlayerHandle, RecordingPlayer
           </DropdownMenu>
         </div>
 
-        {/* The reason is technical and English, so it lives in the tooltip;
-            the reader gets the fact, and whoever is asked to look gets the
-            reason without opening a console. */}
+        {/* The reason is technical and English, so it goes to the
+            application log; the reader gets the fact. */}
         {error && (
-          <p className="mt-1 text-xs text-red-400" title={error}>
+          <p className="mt-1 text-xs text-red-400">
             {t('playerError')}
           </p>
         )}
