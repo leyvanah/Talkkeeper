@@ -40,6 +40,8 @@ import GlobalSearchDialog from '@/components/GlobalSearchDialog'
 import CrashReportDialog from '@/components/CrashReportDialog'
 import { getPendingCrashReport, type PendingCrashReport } from '@/services/crashReportService'
 import { Button } from '@/components/ui/button'
+import { logFailure } from '@/lib/failure'
+import { failureText } from '@/lib/failure-text'
 
 
 const sourceSans3 = Source_Sans_3({
@@ -163,9 +165,9 @@ export default function RootLayout({
           if (!cancelled) setPendingCrashReport(report)
         }
       } catch (error) {
-        console.error('[Layout] Failed to resolve startup state:', error)
+        logFailure('startup-check', error)
         if (cancelled) return
-        setStartupError('Talkkeeper could not verify local startup and crash-report state.')
+        setStartupError(failureText(error))
       } finally {
         if (!cancelled) setStartupResolved(true)
       }
@@ -405,7 +407,7 @@ export default function RootLayout({
             <BareWindowBar />
             <div className="max-w-md rounded-xl border border-[var(--af-border)] bg-[var(--af-panel)] p-6 text-center shadow-xl">
               <h1 className="text-lg font-semibold text-[var(--af-text)]">{getLocaleMessages().app.startupCheckFailed}</h1>
-              <p className="mt-2 text-sm text-[var(--af-text-2)]">{startupError}</p>
+              <p className="mt-2 text-sm text-[var(--af-text-2)]">{getLocaleMessages().app.startupCheckFailedDetail}</p>
               <Button className="mt-5" onClick={() => setStartupAttempt((value) => value + 1)}>
                 {getLocaleMessages().app.retry}
               </Button>

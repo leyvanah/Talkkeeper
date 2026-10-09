@@ -30,6 +30,8 @@ import {
 } from '@/components/ui/command';
 import { cn, isOllamaNotInstalledError } from '@/lib/utils';
 import { toast } from 'sonner';
+import { logFailure, toastFailure } from '@/lib/failure';
+import { failureText } from '@/lib/failure-text';
 
 export interface ModelConfig {
   provider: 'ollama' | 'groq' | 'claude' | 'openai' | 'openrouter' | 'builtin-ai' | 'custom-openai';
@@ -422,10 +424,9 @@ export function ModelSettingsModal({
 
     // Validate URL if provided
     if (trimmedEndpoint && !validateOllamaEndpoint(trimmedEndpoint)) {
-      const errorMsg = t('invalidOllamaEndpoint');
-      setError(errorMsg);
+      setError(t('invalidOllamaEndpoint'));
       if (!silent) {
-        toast.error(errorMsg);
+        toast.error(t('invalidOllamaEndpoint'));
       }
       return;
     }
@@ -445,20 +446,16 @@ export function ModelSettingsModal({
       // Successfully fetched models, Ollama is installed
       setOllamaNotInstalled(false);
     } catch (err) {
-      const errorMsg = err instanceof Error ? err.message : t('loadOllamaModelsFailed');
-      setError(errorMsg);
+      setError(t('loadOllamaModelsFailed'));
 
       // Check if error indicates Ollama is not installed
-      if (isOllamaNotInstalledError(errorMsg)) {
-        setOllamaNotInstalled(true);
-      } else {
-        setOllamaNotInstalled(false);
-      }
+      setOllamaNotInstalled(isOllamaNotInstalledError(failureText(err)));
 
       if (!silent) {
-        toast.error(errorMsg);
+        toastFailure(t('loadOllamaModelsFailed'), 'ollama-models-load', err);
+      } else {
+        logFailure('ollama-models-load', err);
       }
-      console.error('Error loading models:', err);
     } finally {
       setIsLoadingOllama(false);
     }
@@ -498,10 +495,8 @@ export function ModelSettingsModal({
       const data = (await invoke('get_openrouter_models')) as OpenRouterModel[];
       setOpenRouterModels(data);
     } catch (err) {
-      console.error('Error loading OpenRouter models:', err);
-      setOpenRouterError(
-        err instanceof Error ? err.message : t('loadOpenRouterModelsFailed')
-      );
+      logFailure('openrouter-models-load', err);
+      setOpenRouterError(t('loadOpenRouterModelsFailed'));
     } finally {
       setIsLoadingOpenRouter(false);
     }
@@ -688,8 +683,7 @@ export function ModelSettingsModal({
       });
       toast.success(result.message || t('connectionSuccessful'));
     } catch (err) {
-      const errorMsg = err instanceof Error ? err.message : String(err);
-      toast.error(errorMsg);
+      toastFailure(t('connectionFailed'), 'custom-openai-test', err);
     } finally {
       setIsTestingConnection(false);
     }
@@ -730,11 +724,10 @@ export function ModelSettingsModal({
       // Note: Model is NOT auto-selected - user must explicitly choose it
       // This respects the database as the single source of truth
     } catch (err) {
-      const errorMsg = err instanceof Error ? err.message : t('downloadModelFailed');
-      console.error('Error downloading model:', err);
+      logFailure('ollama-model-download', err);
 
       // Check if Ollama is not installed and show appropriate error
-      if (isOllamaNotInstalledError(errorMsg)) {
+      if (isOllamaNotInstalledError(failureText(err))) {
         toast.error(t('ollamaNotInstalledTitle'), {
           description: t('ollamaNotInstalledForDownload'),
           duration: 7000,
@@ -762,9 +755,7 @@ export function ModelSettingsModal({
       toast.success(t('modelDeleted', { model: modelName }));
       await fetchOllamaModels(true); // Refresh list
     } catch (err) {
-      const errorMsg = err instanceof Error ? err.message : t('deleteModelFailed');
-      toast.error(errorMsg);
-      console.error('Error deleting model:', err);
+      toastFailure(t('deleteModelFailed'), 'ollama-model-delete', err);
     }
   };
 

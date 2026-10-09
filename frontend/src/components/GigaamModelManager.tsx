@@ -5,6 +5,7 @@ import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 import { AlertCircle, CheckCircle2, Download, Loader2, Trash2, Languages } from 'lucide-react';
 import { Button } from './ui/button';
 import { Progress } from './ui/progress';
+import { logFailure } from '@/lib/failure';
 
 export const GIGAAM_MODEL_NAME = 'gigaam-v3-e2e-rnnt-int8';
 
@@ -73,7 +74,8 @@ export function GigaamModelManager({ isSelected, disabled, onSelect }: GigaamMod
             listen<{ error?: string }>('gigaam-model-download-failed', (event) => {
                 setIsDownloading(false);
                 setSpeed(null);
-                setError(event.payload?.error || t('gigaamDownloadFailed'));
+                logFailure('gigaam-model-download', event.payload?.error);
+                setError(t('gigaamDownloadFailed'));
                 void refreshStatus();
             }),
             listen('gigaam-model-download-cancelled', () => {
@@ -116,7 +118,8 @@ export function GigaamModelManager({ isSelected, disabled, onSelect }: GigaamMod
             await invoke('gigaam_delete_model');
             await refreshStatus();
         } catch (deleteError) {
-            setError(typeof deleteError === 'string' ? deleteError : String(deleteError));
+            logFailure('gigaam-model-delete', deleteError);
+            setError(t('gigaamDeleteFailed'));
         }
     };
 

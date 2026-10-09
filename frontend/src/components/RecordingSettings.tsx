@@ -6,6 +6,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { DeviceSelection, SelectedDevices } from '@/components/DeviceSelection';
 import { toast } from 'sonner';
 import { useConfig } from '@/contexts/ConfigContext';
+import { toastFailure } from '@/lib/failure';
 
 export interface RecordingPreferences {
   save_folder: string;
@@ -165,10 +166,7 @@ export function RecordingSettings({ onSave }: RecordingSettingsProps) {
     try {
       await invoke('open_recordings_folder');
     } catch (error) {
-      console.error('Failed to open recordings folder:', error);
-      toast.error(t('openRecordingsFolderFailed'), {
-        description: String(error),
-      });
+      toastFailure(t('openRecordingsFolderFailed'), 'recordings-folder-open', error);
     }
   };
 
@@ -187,10 +185,7 @@ export function RecordingSettings({ onSave }: RecordingSettingsProps) {
       onSave?.(newPreferences);
       toast.success(t('recordingsFolderUpdated'));
     } catch (error) {
-      console.error('Failed to change recordings folder:', error);
-      toast.error(t('recordingsFolderUpdateFailed'), {
-        description: String(error),
-      });
+      toastFailure(t('recordingsFolderUpdateFailed'), 'recordings-folder-change', error);
     } finally {
       setIsChoosingFolder(false);
     }
@@ -223,10 +218,7 @@ export function RecordingSettings({ onSave }: RecordingSettingsProps) {
         description: t('devicesSelectedDescription', { mic: micDevice, system: systemDevice })
       });
     } catch (error) {
-      console.error('Failed to save recording preferences:', error);
-      toast.error(t('devicePreferencesSaveFailed'), {
-        description: error instanceof Error ? error.message : String(error)
-      });
+      toastFailure(t('devicePreferencesSaveFailed'), 'recording-preferences-save', error);
     } finally {
       setSaving(false);
     }

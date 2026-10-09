@@ -3,7 +3,6 @@ import { useTranslations } from 'next-intl';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { AlertCircle, BookOpen, Check, CheckCircle2, ChevronDown, Clock3, Languages, Loader2, Radio, Zap } from 'lucide-react';
-import { toast } from 'sonner';
 import { Textarea } from './ui/textarea';
 import { Button } from './ui/button';
 import { Label } from './ui/label';
@@ -13,6 +12,7 @@ import { ExternalSttSettings } from './ExternalSttSettings';
 import { GigaamModelManager, GIGAAM_MODEL_NAME, type GigaamModelStatus } from './GigaamModelManager';
 import type { RawModelInfo } from '@/hooks/useTranscriptionModels';
 import { isVisibleParakeetModel } from '@/lib/parakeet';
+import { logFailure, toastFailure } from '@/lib/failure';
 
 export interface TranscriptModelProps {
     provider: 'localWhisper' | 'parakeet' | 'gigaam' | 'externalStt' | 'deepgram' | 'elevenLabs' | 'groq' | 'openai';
@@ -154,9 +154,7 @@ export function TranscriptSettings({ transcriptModelConfig, setTranscriptModelCo
             onModelSelect?.();
             return true;
         } catch (error) {
-            toast.error(t('liveModelSaveFailed'), {
-                description: typeof error === 'string' ? error : String(error),
-            });
+            toastFailure(t('liveModelSaveFailed'), 'live-model-save', error);
             return false;
         } finally {
             liveSaveInFlightRef.current = false;
@@ -186,7 +184,8 @@ export function TranscriptSettings({ transcriptModelConfig, setTranscriptModelCo
         } catch (error) {
             if (postCallRevisionRef.current === revision) {
                 setPostCallConfig(previousConfig);
-                setPostCallError(typeof error === 'string' ? error : String(error));
+                logFailure('post-call-model-save', error);
+                setPostCallError(t('postCallSaveFailed'));
             }
             return false;
         } finally {
@@ -237,7 +236,8 @@ export function TranscriptSettings({ transcriptModelConfig, setTranscriptModelCo
             setVocabularySaved(true);
             window.setTimeout(() => setVocabularySaved(false), 2000);
         } catch (error) {
-            setVocabularyError(typeof error === 'string' ? error : String(error));
+            logFailure('vocabulary-save', error);
+            setVocabularyError(t('vocabularySaveFailed'));
         } finally {
             setIsSavingVocabulary(false);
         }

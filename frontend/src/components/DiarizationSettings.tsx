@@ -7,6 +7,7 @@ import { listen, UnlistenFn } from "@tauri-apps/api/event"
 import { toast } from "sonner"
 import { Users, CheckCircle2, AlertCircle, FolderOpen, Download, Loader2 } from "lucide-react"
 import { Button } from "./ui/button"
+import { toastFailure } from '@/lib/failure';
 
 interface DownloadProgress {
   file: string;
@@ -71,8 +72,7 @@ export function DiarizationSettings() {
       });
       refresh();
     } catch (e) {
-      const msg = e instanceof Error ? e.message : String(e);
-      toast.error(t('diarizationDownloadFailed'), { description: msg });
+      toastFailure(t('diarizationDownloadFailed'), 'diarization-download', e);
     } finally {
       if (unlistenRef.current) {
         unlistenRef.current();

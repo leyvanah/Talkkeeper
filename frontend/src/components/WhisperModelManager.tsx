@@ -15,6 +15,8 @@ import {
   WhisperAPI
 } from '../lib/whisper';
 import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from '@/components/ui/accordion';
+import { logFailure, toastFailure } from '@/lib/failure';
+import { failureText } from '@/lib/failure-text';
 
 interface ModelManagerProps {
   selectedModel?: string;
@@ -107,12 +109,8 @@ export function ModelManager({
         setModels(modelsWithDownloadState);
         setInitialized(true);
       } catch (err) {
-        console.error('Failed to initialize Whisper:', err);
-        setError(err instanceof Error ? err.message : t('modelsLoadFailedShort'));
-        toast.error(t('modelsLoadFailedTitle'), {
-          description: err instanceof Error ? err.message : t('unknownError'),
-          duration: 5000
-        });
+        setError(t('modelsLoadFailedShort'));
+        toastFailure(t('modelsLoadFailedTitle'), 'whisper-models-load', err, { duration: 5000 });
       } finally {
         setLoading(false);
       }
@@ -222,11 +220,10 @@ export function ModelManager({
           // Clean up throttle data
           progressThrottleRef.current.delete(modelName);
 
-          toast.error(t('modelDownloadFailed', { model: displayName }), {
-            description: error,
+          toastFailure(t('modelDownloadFailed', { model: displayName }), 'whisper-model-download', error, {
             duration: 6000,
             action: {
-              label: 'Retry',
+              label: t('modelRetry'),
               onClick: () => downloadModel(modelName)
             }
           });
@@ -285,11 +282,7 @@ export function ModelManager({
         duration: 3000
       });
     } catch (err) {
-      console.error('Failed to cancel download:', err);
-      toast.error(t('cancelDownloadFailed'), {
-        description: err instanceof Error ? err.message : t('unknownError'),
-        duration: 4000
-      });
+      toastFailure(t('cancelDownloadFailed'), 'whisper-download-cancel', err, { duration: 4000 });
     }
   };
 
@@ -323,7 +316,8 @@ export function ModelManager({
         return newSet;
       });
 
-      const errorMessage = err instanceof Error ? err.message : t('downloadFailedShort');
+      logFailure('whisper-model-download', err);
+      const errorMessage = failureText(err);
       setModels(prev =>
         prev.map(model =>
           model.name === modelName ? { ...model, status: { Error: errorMessage } } : model
@@ -371,11 +365,7 @@ export function ModelManager({
         onModelSelect('');
       }
     } catch (err) {
-      console.error('Failed to delete model:', err);
-      toast.error(t('modelDeleteFailedNamed', { model: displayName }), {
-        description: err instanceof Error ? err.message : t('deleteFailedShort'),
-        duration: 4000
-      });
+      toastFailure(t('modelDeleteFailedNamed', { model: displayName }), 'whisper-model-delete', err, { duration: 4000 });
     }
   };
 

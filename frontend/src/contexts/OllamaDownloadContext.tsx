@@ -4,6 +4,7 @@ import React, { createContext, useContext, useState, useEffect } from 'react';
 import { useTranslations } from 'next-intl';
 import { listen } from '@tauri-apps/api/event';
 import { toast } from 'sonner';
+import { toastFailure } from '@/lib/failure';
 
 /**
  * Ollama download state synchronized with backend
@@ -106,11 +107,8 @@ export function OllamaDownloadProvider({ children }: { children: React.ReactNode
           'ollama-model-download-error',
           (event) => {
             const { modelName, error } = event.payload;
-            console.error(`❌ [OllamaDownloadContext] Download error for ${modelName}:`, error);
-
-            toast.error(t('modelDownloadFailedToast', { model: modelName }), {
-              description: error,
-              duration: 6000
+            toastFailure(t('modelDownloadFailedToast', { model: modelName }), 'ollama-model-download', error, {
+              duration: 6000,
             });
 
             // Clear progress and remove from downloading set
