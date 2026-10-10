@@ -27,6 +27,8 @@
 import { useCallback, useRef, useReducer, startTransition, useEffect, useState, useMemo, memo } from "react";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { useAutoScroll } from "@/hooks/useAutoScroll";
+import { useSpeakerWords } from "@/hooks/useSpeakerWords";
+import { speakerLabel, type SpeakerWords } from "@/lib/speaker-label";
 import { useTranscriptStreaming } from "@/hooks/useTranscriptStreaming";
 import { ConfidenceIndicator } from "./ConfidenceIndicator";
 import { Tooltip, TooltipContent, TooltipTrigger } from "./ui/tooltip";
@@ -125,19 +127,8 @@ export function isUserSpeaker(speaker?: string): boolean {
     return /^you\b/i.test(normalized) || /\(\s*you\s*\)$/i.test(normalized);
 }
 
-export function displaySpeaker(speaker: string, userName: string): string {
-    // Both at once: name each voice, rather than letting the leading "You"
-    // stand for the whole label.
-    if (speaker.includes(' + ')) {
-        return speaker
-            .split(' + ')
-            .map((part) => displaySpeaker(part.trim(), userName))
-            .join(' + ');
-    }
-    if (isUserSpeaker(speaker)) {
-        return userName ? `${userName} (You)` : 'You';
-    }
-    return speaker;
+export function displaySpeaker(speaker: string, userName: string, words: SpeakerWords): string {
+    return speakerLabel(speaker, userName, words);
 }
 
 /** Normalize speaker keys so "You" / "you" / empty compare cleanly. */
@@ -289,7 +280,8 @@ const TranscriptSegment = memo(function TranscriptSegment({
     // everyone else on the left in purple/hashed colors. Timestamps stay shared
     // so turns still line up chronologically.
     const isYou = isUserSpeaker(speaker);
-    const label = speaker ? displaySpeaker(speaker, userName) : '';
+    const speakerWords = useSpeakerWords();
+    const label = speaker ? displaySpeaker(speaker, userName, speakerWords) : '';
 
     return (
         <div
@@ -306,7 +298,7 @@ const TranscriptSegment = memo(function TranscriptSegment({
                         <SpeakerLabelMenu
                             speaker={speaker}
                             label={label}
-                            displayOf={(option) => displaySpeaker(option, userName)}
+                            displayOf={(option) => displaySpeaker(option, userName, speakerWords)}
                             className={`text-xs font-semibold ${speakerColor(speaker)}`}
                             onRename={onRenameSpeaker}
                             choice={
