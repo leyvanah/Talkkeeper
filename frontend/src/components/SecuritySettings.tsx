@@ -54,6 +54,7 @@ export function SecuritySettings() {
     fieldEncryption,
     encryptFields,
     deletePlaintextBackup,
+    recoveryNotice,
   } = useSecurity()
 
   const [busy, setBusy] = useState(false)
@@ -559,6 +560,9 @@ export function SecuritySettings() {
               <p className="mb-3 text-xs text-gray-500">
                 {status.hasRecovery ? t('recoveryCodeExists') : t('recoveryCodeMissing')}
               </p>
+              {status.hasRecovery && recoveryNotice.codeUsed && (
+                <p className="mb-3 text-xs text-amber-600">{t('recoveryCodeStillValid')}</p>
+              )}
               <form
                 className="space-y-3"
                 onSubmit={(event) => {

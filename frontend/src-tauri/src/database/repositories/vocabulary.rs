@@ -4,6 +4,8 @@ use chrono::Utc;
 use sqlx::SqlitePool;
 use tokio::sync::Mutex;
 
+use crate::database::fields;
+
 pub const MAX_VOCABULARY_CHARS: usize = 1000;
 static GLOBAL_VOCABULARY_WRITE_LOCK: Mutex<()> = Mutex::const_new(());
 static MEETING_VOCABULARY_WRITE_LOCK: Mutex<()> = Mutex::const_new(());
@@ -63,12 +65,13 @@ impl VocabularyRepository {
     }
 
     pub async fn get_global(pool: &SqlitePool) -> Result<Option<String>, sqlx::Error> {
-        sqlx::query_scalar(
+        let stored: Option<String> = sqlx::query_scalar(
             "SELECT whisperVocabulary FROM transcript_settings WHERE id = '1' LIMIT 1",
         )
         .fetch_optional(pool)
-        .await
-        .map(Option::flatten)
+        .await?
+        .flatten();
+        fields::open_opt(fields::VOCABULARY_GLOBAL, stored)
     }
 
     pub async fn save_global(
@@ -92,7 +95,7 @@ impl VocabularyRepository {
             "#,
         )
         .bind(crate::config::DEFAULT_PARAKEET_MODEL)
-        .bind(vocabulary)
+        .bind(fields::seal_opt(fields::VOCABULARY_GLOBAL, vocabulary)?)
         .execute(pool)
         .await?;
         Ok(())
@@ -117,12 +120,39 @@ impl VocabularyRepository {
         pool: &SqlitePool,
         meeting_id: &str,
     ) -> Result<Option<String>, sqlx::Error> {
-        sqlx::query_scalar(
+        let stored: Option<String> = sqlx::query_scalar(
             "SELECT vocabulary FROM meeting_whisper_vocabulary WHERE meeting_id = ? LIMIT 1",
         )
         .bind(meeting_id)
         .fetch_optional(pool)
+        .await?;
+        fields::open_opt(fields::VOCABULARY_MEETING, stored)
+    }
+
+    /// Stores one meeting's terms, sealed. The caller holds the write lock.
+    async fn upsert_meeting(
+        pool: &SqlitePool,
+        meeting_id: &str,
+        vocabulary: &str,
+    ) -> Result<(), String> {
+        let sealed = fields::seal(fields::VOCABULARY_MEETING, vocabulary)
+            .map_err(|error| error.to_string())?;
+        sqlx::query(
+            r#"
+            INSERT INTO meeting_whisper_vocabulary (meeting_id, vocabulary, updated_at)
+            VALUES ($1, $2, $3)
+            ON CONFLICT(meeting_id) DO UPDATE SET
+                vocabulary = excluded.vocabulary,
+                updated_at = excluded.updated_at
+            "#,
+        )
+        .bind(meeting_id)
+        .bind(sealed)
+        .bind(Utc::now().to_rfc3339())
+        .execute(pool)
         .await
+        .map_err(|error| error.to_string())?;
+        Ok(())
     }
 
     pub async fn add_meeting(
@@ -142,21 +172,7 @@ impl VocabularyRepository {
         let normalized = Self::normalize(&combined)?;
 
         if let Some(vocabulary) = normalized.as_deref() {
-            sqlx::query(
-                r#"
-                INSERT INTO meeting_whisper_vocabulary (meeting_id, vocabulary, updated_at)
-                VALUES ($1, $2, $3)
-                ON CONFLICT(meeting_id) DO UPDATE SET
-                    vocabulary = excluded.vocabulary,
-                    updated_at = excluded.updated_at
-                "#,
-            )
-            .bind(meeting_id)
-            .bind(vocabulary)
-            .bind(Utc::now().to_rfc3339())
-            .execute(pool)
-            .await
-            .map_err(|error| error.to_string())?;
+            Self::upsert_meeting(pool, meeting_id, vocabulary).await?;
         }
         Ok(normalized)
     }
@@ -169,23 +185,7 @@ impl VocabularyRepository {
         let _guard = MEETING_VOCABULARY_WRITE_LOCK.lock().await;
         let normalized = Self::normalize(raw)?;
         match normalized.as_deref() {
-            Some(vocabulary) => {
-                sqlx::query(
-                    r#"
-                    INSERT INTO meeting_whisper_vocabulary (meeting_id, vocabulary, updated_at)
-                    VALUES ($1, $2, $3)
-                    ON CONFLICT(meeting_id) DO UPDATE SET
-                        vocabulary = excluded.vocabulary,
-                        updated_at = excluded.updated_at
-                    "#,
-                )
-                .bind(meeting_id)
-                .bind(vocabulary)
-                .bind(Utc::now().to_rfc3339())
-                .execute(pool)
-                .await
-                .map_err(|error| error.to_string())?;
-            }
+            Some(vocabulary) => Self::upsert_meeting(pool, meeting_id, vocabulary).await?,
             None => {
                 sqlx::query("DELETE FROM meeting_whisper_vocabulary WHERE meeting_id = ?")
                     .bind(meeting_id)

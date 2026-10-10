@@ -1,4 +1,6 @@
+use crate::database::fields;
 use crate::database::models::{Setting, TranscriptSetting};
+use crate::security::field::Field;
 use crate::summary::CustomOpenAIConfig;
 use sqlx::SqlitePool;
 
@@ -27,6 +29,59 @@ pub struct SettingsRepository;
 // Transcript providers: localWhisper, deepgram, elevenLabs, groq, openai
 // Summary providers: openai, claude, ollama, groq, added openrouter
 // NOTE: Handle data exclusion in the higher layer as this is database abstraction layer(using SELECT *)
+
+/// The column a summary provider's key is stored in, or `None` for a provider
+/// that takes no key. Custom OpenAI keeps its key inside its own JSON document
+/// and is handled by each caller before this.
+fn summary_key_field(provider: &str) -> Result<Option<Field>, sqlx::Error> {
+    match provider {
+        "openai" => Ok(Some(fields::SUMMARY_KEY_OPENAI)),
+        "claude" => Ok(Some(fields::SUMMARY_KEY_ANTHROPIC)),
+        "ollama" => Ok(Some(fields::SUMMARY_KEY_OLLAMA)),
+        "groq" => Ok(Some(fields::SUMMARY_KEY_GROQ)),
+        "openrouter" => Ok(Some(fields::SUMMARY_KEY_OPENROUTER)),
+        "builtin-ai" => Ok(None), // No API key needed
+        _ => Err(sqlx::Error::Protocol(
+            format!("Invalid provider: {}", provider).into(),
+        )),
+    }
+}
+
+/// The column a transcription provider's key is stored in, or `None` for an
+/// engine that takes no key.
+fn transcript_key_field(provider: &str) -> Result<Option<Field>, sqlx::Error> {
+    match provider {
+        "localWhisper" => Ok(Some(fields::TRANSCRIPT_KEY_WHISPER)),
+        // Parakeet and GigaAM run locally and take no key
+        "parakeet" | "gigaam" => Ok(None),
+        // The external STT service keeps its token inside externalSttConfig
+        "externalStt" => Ok(None),
+        "deepgram" => Ok(Some(fields::TRANSCRIPT_KEY_DEEPGRAM)),
+        "elevenLabs" => Ok(Some(fields::TRANSCRIPT_KEY_ELEVENLABS)),
+        "groq" => Ok(Some(fields::TRANSCRIPT_KEY_GROQ)),
+        "openai" => Ok(Some(fields::TRANSCRIPT_KEY_OPENAI)),
+        _ => Err(sqlx::Error::Protocol(
+            format!("Invalid provider: {}", provider).into(),
+        )),
+    }
+}
+
+/// Reads one sealed column of the single settings row and opens it. A `NULL`
+/// column is no value, not an error.
+async fn read_sealed(
+    pool: &SqlitePool,
+    field: Field,
+) -> std::result::Result<Option<String>, sqlx::Error> {
+    let query = format!(
+        "SELECT {} FROM {} WHERE id = '1' LIMIT 1",
+        field.column, field.table
+    );
+    let stored: Option<String> = sqlx::query_scalar::<_, Option<String>>(&query)
+        .fetch_optional(pool)
+        .await?
+        .flatten();
+    fields::open_opt(field, stored)
+}
 
 impl SettingsRepository {
     pub async fn get_model_config(
@@ -79,18 +134,8 @@ impl SettingsRepository {
             ));
         }
 
-        let api_key_column = match provider {
-            "openai" => "openaiApiKey",
-            "claude" => "anthropicApiKey",
-            "ollama" => "ollamaApiKey",
-            "groq" => "groqApiKey",
-            "openrouter" => "openRouterApiKey",
-            "builtin-ai" => return Ok(()), // No API key needed
-            _ => {
-                return Err(sqlx::Error::Protocol(
-                    format!("Invalid provider: {}", provider).into(),
-                ))
-            }
+        let Some(field) = summary_key_field(provider)? else {
+            return Ok(());
         };
 
         let query = format!(
@@ -100,9 +145,12 @@ impl SettingsRepository {
             ON CONFLICT(id) DO UPDATE SET
                 "{}" = $1
             "#,
-            api_key_column, api_key_column
+            field.column, field.column
         );
-        sqlx::query(&query).bind(api_key).execute(pool).await?;
+        sqlx::query(&query)
+            .bind(fields::seal(field, api_key)?)
+            .execute(pool)
+            .await?;
 
         Ok(())
     }
@@ -117,26 +165,10 @@ impl SettingsRepository {
             return Ok(config.and_then(|c| c.api_key));
         }
 
-        let api_key_column = match provider {
-            "openai" => "openaiApiKey",
-            "ollama" => "ollamaApiKey",
-            "groq" => "groqApiKey",
-            "claude" => "anthropicApiKey",
-            "openrouter" => "openRouterApiKey",
-            "builtin-ai" => return Ok(None), // No API key needed
-            _ => {
-                return Err(sqlx::Error::Protocol(
-                    format!("Invalid provider: {}", provider).into(),
-                ))
-            }
-        };
-
-        let query = format!(
-            "SELECT {} FROM settings WHERE id = '1' LIMIT 1",
-            api_key_column
-        );
-        let api_key = sqlx::query_scalar(&query).fetch_optional(pool).await?;
-        Ok(api_key)
+        match summary_key_field(provider)? {
+            Some(field) => read_sealed(pool, field).await,
+            None => Ok(None),
+        }
     }
 
     pub async fn get_transcript_config(
@@ -176,12 +208,7 @@ impl SettingsRepository {
     pub async fn get_external_stt_config(
         pool: &SqlitePool,
     ) -> std::result::Result<Option<String>, sqlx::Error> {
-        sqlx::query_scalar(
-            "SELECT externalSttConfig FROM transcript_settings WHERE id = '1' LIMIT 1",
-        )
-        .fetch_optional(pool)
-        .await
-        .map(Option::flatten)
+        read_sealed(pool, fields::EXTERNAL_STT_CONFIG).await
     }
 
     pub async fn save_external_stt_config(
@@ -197,7 +224,7 @@ impl SettingsRepository {
             "#,
         )
         .bind(crate::config::DEFAULT_PARAKEET_MODEL)
-        .bind(config_json)
+        .bind(fields::seal_opt(fields::EXTERNAL_STT_CONFIG, config_json)?)
         .execute(pool)
         .await?;
 
@@ -249,22 +276,8 @@ impl SettingsRepository {
         provider: &str,
         api_key: &str,
     ) -> std::result::Result<(), sqlx::Error> {
-        let api_key_column = match provider {
-            "localWhisper" => "whisperApiKey",
-            "parakeet" => return Ok(()), // Parakeet doesn't need an API key, return early
-            // GigaAM runs locally, like Parakeet
-            "gigaam" => return Ok(()),
-            // The external STT service keeps its token inside externalSttConfig
-            "externalStt" => return Ok(()),
-            "deepgram" => "deepgramApiKey",
-            "elevenLabs" => "elevenLabsApiKey",
-            "groq" => "groqApiKey",
-            "openai" => "openaiApiKey",
-            _ => {
-                return Err(sqlx::Error::Protocol(
-                    format!("Invalid provider: {}", provider).into(),
-                ))
-            }
+        let Some(field) = transcript_key_field(provider)? else {
+            return Ok(());
         };
 
         let query = format!(
@@ -274,9 +287,12 @@ impl SettingsRepository {
             ON CONFLICT(id) DO UPDATE SET
                 "{}" = $1
             "#,
-            api_key_column, crate::config::DEFAULT_PARAKEET_MODEL, api_key_column
+            field.column, crate::config::DEFAULT_PARAKEET_MODEL, field.column
         );
-        sqlx::query(&query).bind(api_key).execute(pool).await?;
+        sqlx::query(&query)
+            .bind(fields::seal(field, api_key)?)
+            .execute(pool)
+            .await?;
 
         Ok(())
     }
@@ -285,30 +301,10 @@ impl SettingsRepository {
         pool: &SqlitePool,
         provider: &str,
     ) -> std::result::Result<Option<String>, sqlx::Error> {
-        let api_key_column = match provider {
-            "localWhisper" => "whisperApiKey",
-            "parakeet" => return Ok(None), // Parakeet doesn't need an API key
-            // GigaAM runs locally, like Parakeet
-            "gigaam" => return Ok(None),
-            // The external STT service keeps its token inside externalSttConfig
-            "externalStt" => return Ok(None),
-            "deepgram" => "deepgramApiKey",
-            "elevenLabs" => "elevenLabsApiKey",
-            "groq" => "groqApiKey",
-            "openai" => "openaiApiKey",
-            _ => {
-                return Err(sqlx::Error::Protocol(
-                    format!("Invalid provider: {}", provider).into(),
-                ))
-            }
-        };
-
-        let query = format!(
-            "SELECT {} FROM transcript_settings WHERE id = '1' LIMIT 1",
-            api_key_column
-        );
-        let api_key = sqlx::query_scalar(&query).fetch_optional(pool).await?;
-        Ok(api_key)
+        match transcript_key_field(provider)? {
+            Some(field) => read_sealed(pool, field).await,
+            None => Ok(None),
+        }
     }
 
     pub async fn delete_api_key(
@@ -323,23 +319,13 @@ impl SettingsRepository {
             return Ok(());
         }
 
-        let api_key_column = match provider {
-            "openai" => "openaiApiKey",
-            "ollama" => "ollamaApiKey",
-            "groq" => "groqApiKey",
-            "claude" => "anthropicApiKey",
-            "openrouter" => "openRouterApiKey",
-            "builtin-ai" => return Ok(()), // No API key needed
-            _ => {
-                return Err(sqlx::Error::Protocol(
-                    format!("Invalid provider: {}", provider).into(),
-                ))
-            }
+        let Some(field) = summary_key_field(provider)? else {
+            return Ok(());
         };
 
         let query = format!(
             "UPDATE settings SET {} = NULL WHERE id = '1'",
-            api_key_column
+            field.column
         );
         sqlx::query(&query).execute(pool).await?;
 
@@ -357,34 +343,15 @@ impl SettingsRepository {
     pub async fn get_custom_openai_config(
         pool: &SqlitePool,
     ) -> std::result::Result<Option<CustomOpenAIConfig>, sqlx::Error> {
-        use sqlx::Row;
+        match read_sealed(pool, fields::CUSTOM_OPENAI_CONFIG).await? {
+            Some(json) => {
+                // Parse JSON into CustomOpenAIConfig
+                let config: CustomOpenAIConfig = serde_json::from_str(&json)
+                    .map_err(|e| sqlx::Error::Protocol(
+                        format!("Invalid JSON in customOpenAIConfig: {}", e).into()
+                    ))?;
 
-        let row = sqlx::query(
-            r#"
-            SELECT customOpenAIConfig
-            FROM settings
-            WHERE id = '1'
-            LIMIT 1
-            "#
-        )
-        .fetch_optional(pool)
-        .await?;
-
-        match row {
-            Some(record) => {
-                let config_json: Option<String> = record.get("customOpenAIConfig");
-
-                if let Some(json) = config_json {
-                    // Parse JSON into CustomOpenAIConfig
-                    let config: CustomOpenAIConfig = serde_json::from_str(&json)
-                        .map_err(|e| sqlx::Error::Protocol(
-                            format!("Invalid JSON in customOpenAIConfig: {}", e).into()
-                        ))?;
-
-                    Ok(Some(config))
-                } else {
-                    Ok(None)
-                }
+                Ok(Some(config))
             }
             None => Ok(None),
         }
@@ -419,7 +386,7 @@ impl SettingsRepository {
             "#,
         )
         .bind(&config.model)
-        .bind(config_json)
+        .bind(fields::seal(fields::CUSTOM_OPENAI_CONFIG, &config_json)?)
         .execute(pool)
         .await?;
 
