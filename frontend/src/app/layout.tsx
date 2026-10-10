@@ -228,41 +228,32 @@ export default function RootLayout({
           window.dispatchEvent(new CustomEvent('start-recording-from-sidebar'));
         };
 
-        // OS toast with a Start recording button (Windows native path).
+        const m = getLocaleMessages().app;
+        const title = m.meetingDetectedTitle.replace('{app}', app);
+
+        // OS toast; a click on it only brings the window forward. Recording
+        // starts here, from the in-app prompt below.
         if (notify) {
           invoke('show_simple_notification', {
-            title: `${app} meeting detected`,
-            body: 'Start recording this meeting now?',
+            title,
+            body: m.meetingDetectedNotifyBody,
           }).catch(() => {});
         }
 
         // In-app prompt with a one-click start action.
-        toast(`${app} meeting detected`, {
-          description: 'Capture mic + system audio in Talkkeeper.',
+        toast(title, {
+          description: m.meetingDetectedDescription,
           duration: 20000,
           action: {
-            label: 'Start recording',
+            label: m.meetingDetectedStart,
             onClick: startRecording,
           },
         });
       }
     );
 
-    // OS notification button → same start path as sidebar / in-app toast.
-    const unlistenStart = listen('start-recording-from-notification', () => {
-      if (showOnboarding) {
-        const m = getLocaleMessages().app;
-        toast.error(m.completeSetupFirst, {
-          description: m.completeSetupFirstShort,
-        });
-        return;
-      }
-      window.dispatchEvent(new CustomEvent('start-recording-from-sidebar'));
-    });
-
     return () => {
       unlisten.then((fn) => fn());
-      unlistenStart.then((fn) => fn());
     };
   }, [showOnboarding, startupResolved, startupError, pendingCrashReport]);
 
