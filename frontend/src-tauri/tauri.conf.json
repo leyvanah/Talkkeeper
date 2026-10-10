@@ -2,7 +2,7 @@
     "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
     "productName": "Talkkeeper",
     "version": "0.2.34",
-    "identifier": "com.meetily.ai",
+    "identifier": "io.github.leyvanah.talkkeeper",
     "build": {
         "frontendDist": "../out",
         "devUrl": "http://localhost:3118",
