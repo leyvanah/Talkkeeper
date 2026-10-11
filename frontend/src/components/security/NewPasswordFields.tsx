@@ -42,7 +42,7 @@ const PasswordInput = forwardRef<
         aria-label={placeholder}
         aria-invalid={invalid || undefined}
         aria-describedby={describedBy}
-        className="pr-10"
+        className="pr-10 [&::-ms-reveal]:hidden"
       />
       <button
         type="button"

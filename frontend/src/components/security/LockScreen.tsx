@@ -165,7 +165,7 @@ export function LockScreen() {
                 autoComplete="current-password"
                 disabled={busy || blocked}
                 aria-label={t('passwordPlaceholder')}
-                className="pr-10"
+                className="pr-10 [&::-ms-reveal]:hidden"
               />
               <button
                 type="button"
