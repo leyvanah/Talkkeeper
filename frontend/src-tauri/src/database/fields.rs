@@ -81,6 +81,10 @@ pub const SPEAKER_LABEL: Field = TRANSCRIPT_SPEAKER;
 /// upstream, which never used it; its `notes_markdown` column stays empty.
 pub const MEETING_NOTES: Field = Field::new("meeting_notes", "notes_json");
 
+/// The owner's own wording for an assistant request, such as a person's
+/// overview. What they ask about says something about whom they ask it.
+pub const ASSISTANT_PROMPT: Field = Field::new("assistant_prompts", "prompt");
+
 /// The words speech recognition is told to listen for, for every meeting and
 /// for one. The settings field asks for names, so this is a list of the people
 /// the owner talks to.
