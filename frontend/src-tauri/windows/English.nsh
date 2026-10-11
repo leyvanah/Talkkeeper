@@ -25,7 +25,7 @@ LangString webview2DownloadSuccess ${LANG_ENGLISH} "WebView2 bootstrapper downlo
 LangString webview2Downloading ${LANG_ENGLISH} "Downloading WebView2 bootstrapper…"
 LangString webview2InstallError ${LANG_ENGLISH} "WebView2 install failed (exit code $1)"
 LangString webview2InstallSuccess ${LANG_ENGLISH} "WebView2 installed"
-LangString deleteAppData ${LANG_ENGLISH} "Also delete meetings, models, and local data"
+LangString deleteAppData ${LANG_ENGLISH} "Also delete the meeting database and models (audio stays)"
 
 ; --- welcome page ---
 LangString tkEyebrow ${LANG_ENGLISH} "TALKKEEPER  /  LOCAL AI MEETINGS"
@@ -72,9 +72,13 @@ LangString tkFinishButton ${LANG_ENGLISH} "Finish"
 
 ; --- uninstall ---
 LangString tkKeyRescued ${LANG_ENGLISH} "Your recordings are encrypted, and the key that opens them was about to be deleted along with the app data.$\r$\n$\r$\nA copy has been saved here:$\r$\n$DOCUMENTS\Talkkeeper-key-backup\keystore.json$\r$\n$\r$\nKeep this file. Without it — and without your password — existing recordings cannot be opened again."
-LangString tkKeyWarning ${LANG_ENGLISH} "You are about to delete the app data, and with it the key that encrypts every recording you have made.$\r$\n$\r$\nThe recordings themselves live elsewhere and will stay on disk, but without this key and your password they can never be opened again.$\r$\n$\r$\nA copy of the key will be saved in Documents\Talkkeeper-key-backup.$\r$\n$\r$\nDelete the app data?"
+LangString tkKeyWarning ${LANG_ENGLISH} "You are about to delete the app data, and with it the key that encrypts every recording you have made.$\r$\n$\r$\nThe recordings themselves live elsewhere and will stay on disk:$\r$\n$TkRecordingsDir$\r$\n$\r$\nBut without this key and your password they can never be opened again.$\r$\n$\r$\nA copy of the key will be saved in Documents\Talkkeeper-key-backup.$\r$\n$\r$\nDelete the app data?"
 LangString tkKeyKept ${LANG_ENGLISH} "The key could not be copied, so the app data has been left where it is:$\r$\n$INSTDIR\data$\r$\n$\r$\nIt holds keystore.json, without which the recordings cannot be opened. Save it yourself, then delete the folder by hand."
 
 ; --- app still running (install, update, uninstall) ---
 LangString tkAppRunning ${LANG_ENGLISH} "Talkkeeper is running.$\r$\n$\r$\nIf a recording is in progress, stop it in the app first. Then quit Talkkeeper: tray icon → Quit.$\r$\n$\r$\nClick Retry once it has closed, or Cancel to change nothing."
 LangString tkAppRunningSilent ${LANG_ENGLISH} "Talkkeeper is running, so nothing was changed. Stop any recording, quit Talkkeeper (tray icon → Quit) and run this again."
+
+; --- what stays after uninstalling ---
+LangString tkRecordingsLeftOpen ${LANG_ENGLISH} "The meeting recordings are still on disk:$\r$\n$TkRecordingsDir$\r$\n$\r$\nThey are not encrypted: anyone with access to this computer can play them. If you no longer need them, delete the folder yourself."
+LangString tkRecordingsLeftSealed ${LANG_ENGLISH} "The meeting recordings are still on disk:$\r$\n$TkRecordingsDir$\r$\n$\r$\nRecordings made under a password are encrypted and cannot be opened without the key and the password. If you no longer need them, delete the folder yourself."

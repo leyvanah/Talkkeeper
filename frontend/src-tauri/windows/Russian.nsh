@@ -30,7 +30,7 @@ LangString webview2DownloadSuccess ${LANG_RUSSIAN} "Загрузчик WebView2 
 LangString webview2Downloading ${LANG_RUSSIAN} "Загрузка WebView2…"
 LangString webview2InstallError ${LANG_RUSSIAN} "Не удалось установить WebView2 (код $1)"
 LangString webview2InstallSuccess ${LANG_RUSSIAN} "WebView2 установлен"
-LangString deleteAppData ${LANG_RUSSIAN} "Удалить также встречи, модели и локальные данные"
+LangString deleteAppData ${LANG_RUSSIAN} "Удалить также базу встреч и модели (аудио останется)"
 
 ; --- страница приветствия ---
 LangString tkEyebrow ${LANG_RUSSIAN} "TALKKEEPER  /  ЛОКАЛЬНЫЕ ВСТРЕЧИ"
@@ -77,9 +77,13 @@ LangString tkFinishButton ${LANG_RUSSIAN} "Готово"
 
 ; --- удаление ---
 LangString tkKeyRescued ${LANG_RUSSIAN} "Ваши записи зашифрованы, и ключ к ним собирались удалить вместе с данными приложения.$\r$\n$\r$\nКопия ключа сохранена здесь:$\r$\n$DOCUMENTS\Talkkeeper-key-backup\keystore.json$\r$\n$\r$\nСохраните этот файл. Без него и без пароля записи открыть будет нельзя."
-LangString tkKeyWarning ${LANG_RUSSIAN} "Вы собираетесь удалить данные приложения вместе с ключом, которым зашифрованы все ваши записи.$\r$\n$\r$\nСами записи лежат отдельно и останутся на диске, но без этого ключа и пароля открыть их будет нельзя — никогда.$\r$\n$\r$\nКопия ключа будет сохранена в «Документы\Talkkeeper-key-backup».$\r$\n$\r$\nУдалить данные приложения?"
+LangString tkKeyWarning ${LANG_RUSSIAN} "Вы собираетесь удалить данные приложения вместе с ключом, которым зашифрованы все ваши записи.$\r$\n$\r$\nСами записи лежат отдельно и останутся на диске:$\r$\n$TkRecordingsDir$\r$\n$\r$\nНо без этого ключа и пароля открыть их будет нельзя — никогда.$\r$\n$\r$\nКопия ключа будет сохранена в «Документы\Talkkeeper-key-backup».$\r$\n$\r$\nУдалить данные приложения?"
 LangString tkKeyKept ${LANG_RUSSIAN} "Копию ключа сохранить не удалось, поэтому данные приложения оставлены на месте:$\r$\n$INSTDIR\data$\r$\n$\r$\nТам лежит keystore.json — без него записи не открыть. Сохраните его сами, а потом удалите папку вручную."
 
 ; --- программа запущена (установка, обновление, удаление) ---
 LangString tkAppRunning ${LANG_RUSSIAN} "Talkkeeper запущен.$\r$\n$\r$\nЕсли идёт запись, сначала остановите её в окне программы. Затем закройте Talkkeeper: значок в трее → «Выйти».$\r$\n$\r$\nКогда программа закроется, нажмите «Повторить». «Отмена» — ничего не менять."
 LangString tkAppRunningSilent ${LANG_RUSSIAN} "Talkkeeper запущен, поэтому ничего не изменено. Остановите запись, если она идёт, закройте Talkkeeper (значок в трее → «Выйти») и запустите снова."
+
+; --- что осталось после удаления ---
+LangString tkRecordingsLeftOpen ${LANG_RUSSIAN} "Аудиозаписи встреч остались на диске:$\r$\n$TkRecordingsDir$\r$\n$\r$\nОни не зашифрованы: их может открыть любой, у кого есть доступ к этому компьютеру. Если записи больше не нужны, удалите папку вручную."
+LangString tkRecordingsLeftSealed ${LANG_RUSSIAN} "Аудиозаписи встреч остались на диске:$\r$\n$TkRecordingsDir$\r$\n$\r$\nЗаписи, сделанные под паролем, зашифрованы — без ключа и пароля их не открыть. Если записи больше не нужны, удалите папку вручную."
