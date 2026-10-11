@@ -100,14 +100,14 @@ export function AboutSettings() {
       <div className="text-center text-xs text-gray-400">
         <p>
           {t.rich('developerCredit', {
-            handle: () => (
+            handle: (chunks) => (
               <button
                 type="button"
                 onClick={() => openUrl(PROFILE_URL)}
                 title={t('profileOnGithub')}
                 className="text-blue-500 hover:underline"
               >
-                leyvanah
+                {chunks}
               </button>
             ),
           })}
