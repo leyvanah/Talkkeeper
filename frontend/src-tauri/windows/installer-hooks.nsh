@@ -488,6 +488,181 @@ Var MeetilyCudaNotice
   !undef TkWaitID
 !macroend
 
+; Where the recordings live, found before anything is deleted, so that the
+; uninstaller can say what it leaves behind.
+;
+; Recordings are the one thing kept outside $INSTDIR (see
+; audio/recording_preferences.rs): `<Music>\meetily-recordings` unless the owner
+; picked another folder, which the app keeps as `save_folder` in its
+; recording_preferences.json under $APPDATA\<identifier> — the very folder the
+; "delete app data" box wipes, so it has to be read first. The uninstaller
+; deletes none of it; it only names the folder and says whether it is sealed.
+Var TkRecordingsDir     ; the folder, or the default one if the setting is unreadable
+Var TkRecordingsLeft    ; 1 when that folder holds anything
+Var TkRecordingsSealed  ; 1 when a keystore exists, so recordings made under it are encrypted
+
+; Body of un.Talkkeeper_FindRecordings, defined in installer.nsi where
+; ${BUNDLEID} is known.
+;
+; The store is UTF-8 and the path may hold non-Latin letters (a Cyrillic user
+; name is common), which FileRead would mangle through the ANSI code page. So
+; the file is read raw, `"save_folder"` is found in the bytes, and only that
+; stretch is converted from UTF-8 — one line, well under NSIS_MAX_STRLEN, even
+; when the whole file is not.
+!macro Talkkeeper_FindRecordingsBody
+  Push $R0
+  Push $R1
+  Push $R2
+  Push $R3
+  Push $R4
+  Push $R5
+  Push $R6
+  Push $R7
+  Push $R8
+  Push $R9
+  StrCpy $TkRecordingsDir ""
+  StrCpy $TkRecordingsLeft 0
+  StrCpy $TkRecordingsSealed 0
+  ${If} ${FileExists} "$INSTDIR\data\keystore.json"
+    StrCpy $TkRecordingsSealed 1
+  ${EndIf}
+
+  StrCpy $R9 "$APPDATA\${BUNDLEID}\recording_preferences.json"
+  ${If} ${FileExists} "$R9"
+    ; GENERIC_READ, share read/write/delete, OPEN_EXISTING
+    System::Call 'kernel32::CreateFileW(w R9, i 0x80000000, i 7, p 0, i 3, i 0, p 0) p.R8'
+    ${If} $R8 <> -1
+      System::Call 'kernel32::GetFileSize(p R8, p 0) i.R7'
+      ${If} $R7 > 0
+      ${AndIf} $R7 < 1048576
+        IntOp $R6 $R7 + 1
+        System::Alloc $R6 ; zero-filled, so the bytes end in a NUL for StrStrA
+        Pop $R6
+        System::Call 'kernel32::ReadFile(p R8, p R6, i R7, *i .R5, p 0) i.R4'
+        ${If} $R4 <> 0
+          System::Call `shlwapi::StrStrA(p R6, m '"save_folder"') p.R4`
+          ${If} $R4 <> 0
+            IntOp $R3 $R6 + $R5
+            IntOp $R3 $R3 - $R4
+            ${If} $R3 > 1000
+              StrCpy $R3 1000
+            ${EndIf}
+            System::Call 'kernel32::MultiByteToWideChar(i 65001, i 0, p R4, i R3, w .R2, i 1023) i.R1'
+            StrCpy $R2 $R2 $R1
+            ; $R2 = "save_folder": "C:\\Users\\…\\meetily-recordings", …
+            StrLen $R0 $R2
+            StrCpy $R1 13 ; past "save_folder"
+            StrCpy $R5 "" ; the path, unescaped
+            StrCpy $R7 0  ; 0 before the opening quote, 1 inside, 2 done, 3 gave up
+            ${Do}
+              ${If} $R1 >= $R0
+                StrCpy $R7 3
+                ${ExitDo}
+              ${EndIf}
+              StrCpy $R3 $R2 1 $R1
+              IntOp $R1 $R1 + 1
+              ${If} $R7 = 0
+                ${If} $R3 == '"'
+                  StrCpy $R7 1
+                ${EndIf}
+              ${ElseIf} $R3 == '"'
+                StrCpy $R7 2
+                ${ExitDo}
+              ${ElseIf} $R3 == "\"
+                ; serde_json escapes only \ and " in a Windows path; anything
+                ; else is not a path this parser should guess at
+                StrCpy $R3 $R2 1 $R1
+                IntOp $R1 $R1 + 1
+                ${If} $R3 == "\"
+                ${OrIf} $R3 == '"'
+                ${OrIf} $R3 == "/"
+                  StrCpy $R5 "$R5$R3"
+                ${Else}
+                  StrCpy $R7 3
+                  ${ExitDo}
+                ${EndIf}
+              ${Else}
+                StrCpy $R5 "$R5$R3"
+              ${EndIf}
+            ${Loop}
+            ${If} $R7 = 2
+            ${AndIf} $R5 != ""
+              StrCpy $TkRecordingsDir $R5
+            ${EndIf}
+          ${EndIf}
+        ${EndIf}
+        System::Free $R6
+      ${EndIf}
+      System::Call 'kernel32::CloseHandle(p R8)'
+    ${EndIf}
+  ${EndIf}
+
+  ${If} $TkRecordingsDir == ""
+    ; The app's default: the Music folder, else Documents
+    ${If} $MUSIC != ""
+      StrCpy $TkRecordingsDir "$MUSIC\meetily-recordings"
+    ${Else}
+      StrCpy $TkRecordingsDir "$DOCUMENTS\meetily-recordings"
+    ${EndIf}
+  ${EndIf}
+
+  ClearErrors
+  FindFirst $R0 $R1 "$TkRecordingsDir\*"
+  ${IfNot} ${Errors}
+    ${Do}
+      ${If} $R1 == ""
+        ${ExitDo}
+      ${EndIf}
+      ${If} $R1 != "."
+      ${AndIf} $R1 != ".."
+        StrCpy $TkRecordingsLeft 1
+        ${ExitDo}
+      ${EndIf}
+      FindNext $R0 $R1
+    ${Loop}
+    FindClose $R0
+  ${EndIf}
+
+  Pop $R9
+  Pop $R8
+  Pop $R7
+  Pop $R6
+  Pop $R5
+  Pop $R4
+  Pop $R3
+  Pop $R2
+  Pop $R1
+  Pop $R0
+!macroend
+
+!macro NSIS_HOOK_PREUNINSTALL
+  Call un.Talkkeeper_FindRecordings
+!macroend
+
 !macro NSIS_HOOK_POSTUNINSTALL
+  ; Say what stays on disk: the box never deleted recordings, and without a
+  ; password they are plain audio anyone with the computer can play.
+  ${If} $UpdateMode <> 1
+  ${AndIf} $TkRecordingsLeft = 1
+    DetailPrint "Recordings left in $TkRecordingsDir"
+    ${If} $TkRecordingsSealed = 1
+      StrCpy $R0 "encrypted where made under a password"
+    ${Else}
+      StrCpy $R0 "not encrypted"
+    ${EndIf}
+    ; A silent or passive run has no one to tell; the log stays when the data
+    ; folder does, which it always does without the confirm page.
+    ${If} ${FileExists} "$INSTDIR\data\*.*"
+      !insertmacro Meetily_Stamp "uninstall: recordings left in $TkRecordingsDir ($R0)"
+    ${EndIf}
+    ${IfNot} ${Silent}
+    ${AndIf} $PassiveMode <> 1
+      ${If} $TkRecordingsSealed = 1
+        MessageBox MB_ICONINFORMATION|MB_OK "$(tkRecordingsLeftSealed)"
+      ${Else}
+        MessageBox MB_ICONEXCLAMATION|MB_OK "$(tkRecordingsLeftOpen)"
+      ${EndIf}
+    ${EndIf}
+  ${EndIf}
   DetailPrint "Talkkeeper was removed from this user profile."
 !macroend
