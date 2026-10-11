@@ -1061,7 +1061,7 @@
   "about": {
     "versionTagline": "Version {version} · Privacy-first meeting assistant, on-device by default",
     "productSummary": "A private meeting assistant. It records, transcribes and summarises meetings on your own machine: GPU-accelerated, with encrypted recordings. A cloud model is used only if you pick one yourself and turn “This computer only” off.",
-    "developerCredit": "Developed by {handle}",
+    "developerCredit": "Developed by <handle>leyvanah</handle>",
     "profileOnGithub": "The developer's GitHub profile",
     "highlightOnDevice": "On-device",
     "highlightOnDeviceDetail": "Local transcription & summaries",
