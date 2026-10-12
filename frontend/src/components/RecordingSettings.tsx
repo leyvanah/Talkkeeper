@@ -6,6 +6,12 @@ import { invoke } from '@tauri-apps/api/core';
 import { DeviceSelection, SelectedDevices } from '@/components/DeviceSelection';
 import { toast } from 'sonner';
 import { useConfig } from '@/contexts/ConfigContext';
+import { usePlatform } from '@/hooks/usePlatform';
+import {
+  lockedRecordingSwitch,
+  shownEchoMode,
+  type EchoMode,
+} from '@/lib/recording-options';
 
 export interface RecordingPreferences {
   save_folder: string;
@@ -17,14 +23,15 @@ export interface RecordingPreferences {
   mic_gain?: number;
   /** System-audio gain before metering, transcription, and recording (0.5–3.0). */
   system_gain?: number;
-  /** Cancel the speakers' echo out of the microphone channel. */
-  echo_cancellation?: boolean;
   /** Drop microphone text that only repeats a recent system phrase. */
   echo_text_filter?: boolean;
   /** One conversation partner: microphone is you, the speakers are them. */
   single_remote_speaker?: boolean;
-  /** Let Windows remove the speakers' echo before we receive the sound. */
-  system_echo_cancellation?: boolean;
+  /** How the speakers' echo is kept out of the microphone. The backend
+   *  derives its older switches from this one. */
+  echo_mode?: EchoMode;
+  /** Only with the built-in canceller: drop microphone phrases heard while
+   *  the speakers played and the owner was silent. */
   own_speech_detector?: boolean;
   /** Recognise speech while recording; off, a recording is only sound. */
   live_transcription?: boolean;
@@ -32,6 +39,53 @@ export interface RecordingPreferences {
 
 interface RecordingSettingsProps {
   onSave?: (preferences: RecordingPreferences) => void;
+}
+
+/** One way of handling the echo, as a choice in the echo card. */
+function EchoModeOption({
+  selected,
+  disabled,
+  onSelect,
+  title,
+  hint,
+  unavailable,
+}: {
+  selected: boolean;
+  disabled: boolean;
+  onSelect: () => void;
+  title: string;
+  hint: string;
+  /** Why the option cannot be chosen here; shown instead of acting. */
+  unavailable?: string;
+}) {
+  const blocked = disabled || Boolean(unavailable);
+  return (
+    <button
+      type="button"
+      role="radio"
+      aria-checked={selected}
+      aria-disabled={blocked}
+      disabled={blocked}
+      onClick={selected ? undefined : onSelect}
+      // The theme recolours border utilities, so the chosen one is set here.
+      style={{ borderColor: selected ? 'var(--af-accent)' : 'var(--af-border)' }}
+      className={`flex w-full items-start gap-2.5 rounded-md border px-3 py-2 text-left transition-colors disabled:cursor-not-allowed ${
+        unavailable ? 'opacity-60' : ''
+      } ${selected ? 'bg-[var(--af-hover)]' : 'enabled:hover:bg-[var(--af-hover)]'}`}
+    >
+      <span
+        aria-hidden
+        className="mt-1 flex h-3.5 w-3.5 shrink-0 items-center justify-center rounded-full border"
+        style={{ borderColor: selected ? 'var(--af-accent)' : 'var(--af-text-3)' }}
+      >
+        {selected && <span className="h-1.5 w-1.5 rounded-full bg-[var(--af-accent)]" />}
+      </span>
+      <span className="min-w-0">
+        <span className="block text-sm font-medium text-[var(--af-text,#111827)]">{title}</span>
+        <span className="mt-0.5 block text-xs text-gray-500">{unavailable ?? hint}</span>
+      </span>
+    </button>
+  );
 }
 
 export function RecordingSettings({ onSave }: RecordingSettingsProps) {
@@ -45,13 +99,13 @@ export function RecordingSettings({ onSave }: RecordingSettingsProps) {
     preferred_system_device: null,
     mic_gain: 1.0,
     system_gain: 1.0,
-    echo_cancellation: true,
     echo_text_filter: false,
     single_remote_speaker: true,
-    system_echo_cancellation: true,
+    echo_mode: 'windows',
     own_speech_detector: false,
     live_transcription: true,
   });
+  const isWindows = usePlatform() === 'windows';
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [isChoosingFolder, setIsChoosingFolder] = useState(false);
@@ -101,20 +155,20 @@ export function RecordingSettings({ onSave }: RecordingSettingsProps) {
     await savePreferences(newPreferences);
   };
 
-  const handleSystemEchoCancellationToggle = async (enabled: boolean) => {
-    const newPreferences = { ...preferences, system_echo_cancellation: enabled };
+  const handleEchoModeChange = async (echo_mode: EchoMode) => {
+    const newPreferences = {
+      ...preferences,
+      echo_mode,
+      // The detector belongs to the built-in canceller; the backend drops it
+      // with any other choice, and so does the screen.
+      own_speech_detector: echo_mode === 'builtin' ? preferences.own_speech_detector : false,
+    };
     setPreferences(newPreferences);
     await savePreferences(newPreferences);
   };
 
   const handleOwnSpeechDetectorToggle = async (enabled: boolean) => {
     const newPreferences = { ...preferences, own_speech_detector: enabled };
-    setPreferences(newPreferences);
-    await savePreferences(newPreferences);
-  };
-
-  const handleEchoCancellationToggle = async (enabled: boolean) => {
-    const newPreferences = { ...preferences, echo_cancellation: enabled };
     setPreferences(newPreferences);
     await savePreferences(newPreferences);
   };
@@ -232,6 +286,13 @@ export function RecordingSettings({ onSave }: RecordingSettingsProps) {
     }
   };
 
+  const lockedSwitch = lockedRecordingSwitch(
+    preferences.auto_save,
+    preferences.live_transcription !== false,
+  );
+  const echoMode = shownEchoMode(preferences.echo_mode, isWindows);
+  const ownSpeechDetectorAvailable = isWindows && echoMode === 'builtin';
+
   if (loading) {
     return (
       <div className="animate-pulse">
@@ -250,18 +311,30 @@ export function RecordingSettings({ onSave }: RecordingSettingsProps) {
         </p>
       </div>
 
-      {/* Auto Save Toggle */}
+      {/* Auto Save Toggle. A recording keeps its sound, its live text or
+          both: whichever is the last one on cannot be turned off. */}
       <div className="flex min-w-0 items-start justify-between gap-3 rounded-lg border p-4 sm:items-center">
         <div className="min-w-0 flex-1">
           <div className="font-medium">{t('autoSaveTitle')}</div>
           <div className="text-sm text-gray-600">
             {t('autoSaveDescription')}
           </div>
+          {!preferences.auto_save && (
+            <div className="mt-2 text-sm text-amber-500">
+              {t('autoSaveOffWarning')}
+            </div>
+          )}
+          {lockedSwitch === 'autoSave' && (
+            <div className="mt-2 text-xs text-[var(--af-text-3)]">
+              {t('autoSaveLockedReason')}
+            </div>
+          )}
         </div>
         <Switch
           checked={preferences.auto_save}
           onCheckedChange={handleAutoSaveToggle}
-          disabled={saving}
+          disabled={saving || lockedSwitch === 'autoSave'}
+          aria-label={t('autoSaveTitle')}
           className="shrink-0"
         />
       </div>
@@ -273,11 +346,17 @@ export function RecordingSettings({ onSave }: RecordingSettingsProps) {
           <div className="text-sm text-gray-600">
             {t('liveTextDescription')}
           </div>
+          {lockedSwitch === 'liveText' && (
+            <div className="mt-2 text-xs text-[var(--af-text-3)]">
+              {t('liveTextLockedReason')}
+            </div>
+          )}
         </div>
         <Switch
           checked={preferences.live_transcription !== false}
           onCheckedChange={handleLiveTranscriptionToggle}
-          disabled={saving}
+          disabled={saving || lockedSwitch === 'liveText'}
+          aria-label={t('liveTextTitle')}
           className="shrink-0"
         />
       </div>
@@ -298,56 +377,61 @@ export function RecordingSettings({ onSave }: RecordingSettingsProps) {
         />
       </div>
 
-      {/* Windows' own echo cancellation. Above ours on purpose: when this
-          is on, ours stands down, because it has access to the played
-          signal and the exact delay and we never will. */}
-      <div className="flex min-w-0 items-start justify-between gap-3 rounded-lg border p-4 sm:items-center">
-        <div className="min-w-0 flex-1">
-          <div className="font-medium">{t('systemEchoCancellationTitle')}</div>
+      {/* The speakers' echo: one choice, where three switches used to
+          override each other while all reading "on". */}
+      <div className="min-w-0 space-y-3 rounded-lg border p-4">
+        <div className="min-w-0">
+          <div className="font-medium">{t('echoModeTitle')}</div>
           <div className="text-sm text-gray-600">
-            {t('systemEchoCancellationDescription')}
+            {t('echoModeDescription')}
           </div>
         </div>
-        <Switch
-          checked={preferences.system_echo_cancellation !== false}
-          onCheckedChange={handleSystemEchoCancellationToggle}
-          disabled={saving}
-          className="shrink-0"
-        />
-      </div>
+        <div role="radiogroup" aria-label={t('echoModeTitle')} className="space-y-2">
+          <EchoModeOption
+            selected={echoMode === 'windows'}
+            disabled={saving}
+            onSelect={() => void handleEchoModeChange('windows')}
+            title={t('echoModeWindows')}
+            hint={t('echoModeWindowsHint')}
+            unavailable={isWindows ? undefined : t('echoModeWindowsOnly')}
+          />
+          <EchoModeOption
+            selected={echoMode === 'builtin'}
+            disabled={saving}
+            onSelect={() => void handleEchoModeChange('builtin')}
+            title={t('echoModeBuiltin')}
+            hint={t('echoModeBuiltinHint')}
+          />
+          <EchoModeOption
+            selected={echoMode === 'off'}
+            disabled={saving}
+            onSelect={() => void handleEchoModeChange('off')}
+            title={t('echoModeOff')}
+            hint={t('echoModeOffHint')}
+          />
+        </div>
 
-      {/* The hybrid. Under the switch above because it changes what that one
-          means: Windows stops cleaning the microphone and only says who is
-          speaking, so the owner's voice survives talking over the speakers. */}
-      <div className="flex min-w-0 items-start justify-between gap-3 rounded-lg border p-4 sm:items-center">
-        <div className="min-w-0 flex-1">
-          <div className="font-medium">{t('ownSpeechDetectorTitle')}</div>
-          <div className="text-sm text-gray-600">
-            {t('ownSpeechDetectorDescription')}
+        {/* The own-speech detector: an addition to the built-in canceller,
+            and only that. With Windows cleaning the microphone it would
+            have to turn that cleaning off, which is what made the old
+            switches contradict each other. */}
+        <div className="flex min-w-0 items-start justify-between gap-3 border-t pt-3">
+          <div className="min-w-0 flex-1">
+            <div className="text-sm font-medium">{t('ownSpeechDetectorTitle')}</div>
+            <div className="text-xs text-gray-600">
+              {ownSpeechDetectorAvailable
+                ? t('ownSpeechDetectorDescription')
+                : t('ownSpeechDetectorUnavailable')}
+            </div>
           </div>
+          <Switch
+            checked={ownSpeechDetectorAvailable && preferences.own_speech_detector === true}
+            onCheckedChange={handleOwnSpeechDetectorToggle}
+            disabled={saving || !ownSpeechDetectorAvailable}
+            aria-label={t('ownSpeechDetectorTitle')}
+            className="shrink-0"
+          />
         </div>
-        <Switch
-          checked={preferences.own_speech_detector === true}
-          onCheckedChange={handleOwnSpeechDetectorToggle}
-          disabled={saving}
-          className="shrink-0"
-        />
-      </div>
-
-      {/* Echo cancellation — keep the speakers out of the mic channel */}
-      <div className="flex min-w-0 items-start justify-between gap-3 rounded-lg border p-4 sm:items-center">
-        <div className="min-w-0 flex-1">
-          <div className="font-medium">{t('echoCancellationTitle')}</div>
-          <div className="text-sm text-gray-600">
-            {t('echoCancellationDescription')}
-          </div>
-        </div>
-        <Switch
-          checked={preferences.echo_cancellation !== false}
-          onCheckedChange={handleEchoCancellationToggle}
-          disabled={saving}
-          className="shrink-0"
-        />
       </div>
 
       {/* Text-level echo fallback — only for setups the canceller cannot serve */}
@@ -490,15 +574,6 @@ export function RecordingSettings({ onSave }: RecordingSettingsProps) {
             <div className="text-xs text-blue-600 mt-1">
               {t('fileNamePattern', { format: preferences.file_format })}
             </div>
-          </div>
-        </div>
-      )}
-
-      {/* Info when auto_save is disabled */}
-      {!preferences.auto_save && (
-        <div className="p-4 border rounded-lg bg-yellow-50">
-          <div className="text-sm text-yellow-800">
-            {t('autoSaveDisabledNote')}
           </div>
         </div>
       )}
