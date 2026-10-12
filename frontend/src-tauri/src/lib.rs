@@ -61,6 +61,7 @@ pub mod gigaam_engine;
 pub mod parakeet_engine;
 pub mod paths;
 pub mod privacy;
+pub mod quit;
 pub mod security;
 pub mod state;
 pub mod summary;
@@ -642,6 +643,8 @@ pub fn run() {
             stop_recording,
             is_recording,
             get_transcription_status,
+            quit::stop_recording_and_quit,
+            quit::recording_save_settled,
             whisper_engine::commands::whisper_init,
             whisper_engine::commands::whisper_get_available_models,
             whisper_engine::commands::whisper_load_model,
