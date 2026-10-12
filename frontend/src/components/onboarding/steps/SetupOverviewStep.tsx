@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { useTranslations } from 'next-intl';
+import { useLocale, useTranslations } from 'next-intl';
 import { invoke } from '@tauri-apps/api/core';
 import { AlertTriangle, Cpu, Info, RefreshCw, Zap } from 'lucide-react';
 import { Button } from '@/components/ui/button';
@@ -12,6 +12,9 @@ import {
 } from '@/lib/transcription-acceleration';
 import { OnboardingContainer } from '../OnboardingContainer';
 import { useOnboarding, type SttEngine } from '@/contexts/OnboardingContext';
+import { onboardingDownloadMb } from '@/lib/onboarding-summary-model';
+import { formatDiskSize } from '@/lib/disk-space';
+import { useDiskSpaceText } from '@/hooks/useDiskSpaceText';
 import {
   Tooltip,
   TooltipContent,
@@ -21,7 +24,28 @@ import {
 
 export function SetupOverviewStep() {
   const t = useTranslations('onboarding');
-  const { goNext, sttEngine, setSttEngine } = useOnboarding();
+  const locale = useLocale();
+  const diskSpaceText = useDiskSpaceText();
+  const {
+    goNext,
+    sttEngine,
+    setSttEngine,
+    sttDownloaded,
+    selectedSummaryModel,
+    recommendedSummaryModel,
+    summaryModelDownloaded,
+  } = useOnboarding();
+  const [spaceError, setSpaceError] = useState<string | null>(null);
+  const [checkingSpace, setCheckingSpace] = useState(false);
+  // Both downloads, before the first one starts: recognition fetched only
+  // for the summary model to run out of space halfway helps nobody.
+  const downloadBytes =
+    onboardingDownloadMb({
+      sttEngine,
+      sttDownloaded,
+      summaryModel: selectedSummaryModel || recommendedSummaryModel,
+      summaryDownloaded: summaryModelDownloaded,
+    }) * 1024 * 1024;
   const [isMac, setIsMac] = useState(false);
   const [whisperBackend, setWhisperBackend] = useState<WhisperBackend | null | undefined>();
   const [cudaStatus, setCudaStatus] = useState<CudaReconfigurationStatus | null>(null);
@@ -72,7 +96,25 @@ export function SetupOverviewStep() {
     },
   ];
 
-  const handleContinue = () => {
+  const handleContinue = async () => {
+    setSpaceError(null);
+    if (downloadBytes > 0) {
+      setCheckingSpace(true);
+      try {
+        await invoke('check_model_download_space', { downloadBytes });
+      } catch (error) {
+        const text = diskSpaceText(error);
+        if (text) {
+          setSpaceError(text);
+          return;
+        }
+        // Not being able to tell is no reason to stop: each download checks
+        // again before its first byte.
+        console.error('Could not check free disk space:', error);
+      } finally {
+        setCheckingSpace(false);
+      }
+    }
     goNext();
   };
 
@@ -250,8 +292,19 @@ export function SetupOverviewStep() {
 
         {/* CTA Section */}
         <div className="w-full max-w-xs space-y-4">
+          {downloadBytes > 0 && (
+            <p className="text-center text-xs text-gray-500">
+              {t('setupDownloadTotal', { size: formatDiskSize(downloadBytes, locale) })}
+            </p>
+          )}
+          {spaceError && (
+            <p role="alert" className="text-center text-sm text-red-600">
+              {spaceError}
+            </p>
+          )}
           <Button
-            onClick={handleContinue}
+            onClick={() => void handleContinue()}
+            disabled={checkingSpace}
             className="w-full h-11 bg-gray-900 hover:bg-gray-800 text-white"
           >
             {t('setupLetsGo')}

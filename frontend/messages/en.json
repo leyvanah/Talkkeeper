@@ -4,7 +4,8 @@
     "clear": "Clear",
     "delete": "Delete",
     "cancel": "Cancel",
-    "save": "Save"
+    "save": "Save",
+    "noDiskSpace": "Not enough disk space: {needed} needed, {available} free. Free up some space and try again."
   },
   "window": {
     "minimize": "Minimize",
@@ -1289,7 +1290,8 @@
     "dlEngineRequired": "Transcription engine required",
     "dlRetryBeforeContinuing": "Please retry the download before continuing.",
     "dlBackgroundContinue": "Downloads will continue in the background",
-    "dlBackgroundContinueDescription": "You can use the app and record right away. The summary model will finish downloading in the background."
+    "dlBackgroundContinueDescription": "You can use the app and record right away. The summary model will finish downloading in the background.",
+    "setupDownloadTotal": "About {size} will be downloaded"
   },
   "app": {
     "completeSetupFirst": "Please complete setup first",

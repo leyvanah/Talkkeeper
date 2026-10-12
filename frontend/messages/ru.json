@@ -4,7 +4,8 @@
     "clear": "Очистить",
     "delete": "Удалить",
     "cancel": "Отмена",
-    "save": "Сохранить"
+    "save": "Сохранить",
+    "noDiskSpace": "Не хватает места на диске: нужно {needed}, свободно {available}. Освободите место и повторите."
   },
   "window": {
     "minimize": "Свернуть",
@@ -1289,7 +1290,8 @@
     "dlEngineRequired": "Нужен движок распознавания",
     "dlRetryBeforeContinuing": "Повторите загрузку, прежде чем продолжать.",
     "dlBackgroundContinue": "Загрузки продолжатся в фоне",
-    "dlBackgroundContinueDescription": "Приложением уже можно пользоваться и записывать. Модель саммари догрузится в фоне."
+    "dlBackgroundContinueDescription": "Приложением уже можно пользоваться и записывать. Модель саммари догрузится в фоне.",
+    "setupDownloadTotal": "Будет скачано около {size}"
   },
   "app": {
     "completeSetupFirst": "Сначала завершите настройку",

@@ -5,6 +5,7 @@ import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 import { AlertCircle, CheckCircle2, Download, Loader2, Trash2, Languages } from 'lucide-react';
 import { Button } from './ui/button';
 import { Progress } from './ui/progress';
+import { useDiskSpaceText } from '@/hooks/useDiskSpaceText';
 
 export const GIGAAM_MODEL_NAME = 'gigaam-v3-e2e-rnnt-int8';
 
@@ -37,6 +38,7 @@ interface GigaamModelManagerProps {
 
 export function GigaamModelManager({ isSelected, disabled, onSelect }: GigaamModelManagerProps) {
     const t = useTranslations('settings');
+    const diskSpaceText = useDiskSpaceText();
     const [status, setStatus] = useState<GigaamModelStatus | null>(null);
     const [percent, setPercent] = useState(0);
     const [speed, setSpeed] = useState<number | null>(null);
@@ -73,7 +75,10 @@ export function GigaamModelManager({ isSelected, disabled, onSelect }: GigaamMod
             listen<{ error?: string }>('gigaam-model-download-failed', (event) => {
                 setIsDownloading(false);
                 setSpeed(null);
-                setError(event.payload?.error || t('gigaamDownloadFailed'));
+                setError(
+                    diskSpaceText(event.payload?.error)
+                    ?? (event.payload?.error || t('gigaamDownloadFailed')),
+                );
                 void refreshStatus();
             }),
             listen('gigaam-model-download-cancelled', () => {
@@ -88,7 +93,7 @@ export function GigaamModelManager({ isSelected, disabled, onSelect }: GigaamMod
                 void pending.then((unlisten) => unlisten());
             });
         };
-    }, [refreshStatus, t]);
+    }, [diskSpaceText, refreshStatus, t]);
 
     const startDownload = async () => {
         setError(null);

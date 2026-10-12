@@ -39,6 +39,7 @@ pub mod clipboard;
 pub mod config;
 pub mod console_utils;
 pub mod crash_report;
+pub mod disk_space;
 pub mod database;
 pub mod diarization;
 pub mod notifications;
@@ -746,6 +747,7 @@ pub fn run() {
             diarization::diarization_models_available,
             diarization::diarization_model_directory,
             diarization::diarization_download_size,
+            disk_space::check_model_download_space,
             diarization::download_diarization_models,
             diarization::diarize_meeting,
             diarization::diarization_has_device_tracks,

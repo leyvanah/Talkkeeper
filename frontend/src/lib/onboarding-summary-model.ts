@@ -16,6 +16,30 @@ const SUMMARY_MODEL_SIZES_MB: Record<string, number> = {
   'gemma3:4b': 2374,
 };
 
+/** Download sizes of the speech recognition engines onboarding offers. */
+export const STT_DOWNLOAD_MB = { parakeet: 670, gigaam: 215 } as const;
+
+/**
+ * What onboarding is about to download, in MB: the recognition engine and
+ * the summary model, each only if it is not on disk already.
+ */
+export function onboardingDownloadMb({
+  sttEngine,
+  sttDownloaded,
+  summaryModel,
+  summaryDownloaded,
+}: {
+  sttEngine: keyof typeof STT_DOWNLOAD_MB;
+  sttDownloaded: boolean;
+  summaryModel: string;
+  summaryDownloaded: boolean;
+}): number {
+  return (
+    (sttDownloaded ? 0 : STT_DOWNLOAD_MB[sttEngine]) +
+    (summaryDownloaded ? 0 : getSummaryModelSizeMb(summaryModel))
+  );
+}
+
 export function resolveOnboardingSummaryModelStatus({
   selectedModel,
   recommendedModel,
