@@ -179,7 +179,9 @@ tauri-winrt-notification = "0.7.2"
 winreg = "0.55"
 # Foundation and Gdi: the compact bar keeps to the screen edge while it is
 # dragged (minibar_dock.rs), which needs the monitor's work area in WM_MOVING.
-windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_Graphics_Gdi", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging"] }
+# DataExchange, Memory and Ole: copying text with the formats that keep it out
+# of clipboard history and the cloud clipboard (clipboard.rs).
+windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_Graphics_Gdi", "Win32_System_DataExchange", "Win32_System_Memory", "Win32_System_Ole", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging"] }
 # Quick unlock: a Windows Hello prompt plus DPAPI. The version is already in the
 # tree via tauri, so this adds feature flags rather than a crate to compile.
 # Security_Credentials (the TPM-backed KeyCredentialManager) is deliberately

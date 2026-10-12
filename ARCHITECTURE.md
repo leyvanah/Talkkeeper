@@ -225,8 +225,9 @@ count, rounded memory size, source-relative panic file/line details, and a
 panic-location fingerprint. It
 never includes ordinary logs, recordings, checkpoints, transcript/summary data,
 meeting identity, SQLite/WebView/settings storage, credentials, usernames,
-hostnames, or device names. Do not replace it with the much broader manual
-`scripts/collect-meetily-crash-diagnostics.bat` support bundle.
+hostnames, or device names. There is deliberately no broader support bundle:
+the upstream script that zipped the database, WebView storage and memory
+dumps was removed, because such an archive carries the whole library.
 
 ---
 

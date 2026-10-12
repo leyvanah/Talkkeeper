@@ -12,6 +12,7 @@ import { useState } from 'react'
 import { useTranslations } from 'next-intl'
 import { Copy, Check, Printer, ShieldAlert } from 'lucide-react'
 import { Button } from '@/components/ui/button'
+import { copyText } from '@/lib/private-clipboard'
 
 export function RecoveryCodeCard({
   code,
@@ -26,7 +27,7 @@ export function RecoveryCodeCard({
 
   const copy = async () => {
     try {
-      await navigator.clipboard.writeText(code)
+      await copyText(code)
       setCopied(true)
       window.setTimeout(() => setCopied(false), 2000)
     } catch (error) {

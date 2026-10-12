@@ -139,14 +139,14 @@ export function About() {
                 </p>
                 <p className="mt-1 text-xs text-gray-500">
                     {t.rich('developerCredit', {
-                        handle: () => (
+                        handle: (chunks) => (
                             <button
                                 type="button"
                                 title={t('profileOnGithub')}
                                 className="underline underline-offset-2 transition-colors hover:text-blue-500"
                                 onClick={() => openExternal('https://github.com/leyvanah')}
                             >
-                                leyvanah
+                                {chunks}
                             </button>
                         ),
                     })}
