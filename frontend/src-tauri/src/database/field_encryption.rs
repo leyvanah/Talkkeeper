@@ -251,6 +251,13 @@ fn columns() -> Vec<Column> {
             field: fields::VOCABULARY_MEETING,
             kind: Kind::Sealed,
         },
+        Column {
+            table: "assistant_prompts",
+            key: "id",
+            name: "prompt",
+            field: fields::ASSISTANT_PROMPT,
+            kind: Kind::Sealed,
+        },
     ];
 
     // The two settings tables hold one row each, under the id '1', and every
@@ -519,6 +526,8 @@ mod tests {
              CREATE TABLE privacy_settings (id TEXT PRIMARY KEY, \
                  anonymize_cloud INTEGER NOT NULL DEFAULT 1, hidden_terms TEXT); \
              CREATE TABLE meeting_notes (meeting_id TEXT PRIMARY KEY, notes_json TEXT); \
+             CREATE TABLE assistant_prompts (id TEXT PRIMARY KEY, prompt TEXT NOT NULL, \
+                 updated_at TEXT NOT NULL); \
              CREATE TABLE meeting_whisper_vocabulary (meeting_id TEXT PRIMARY KEY, \
                  vocabulary TEXT NOT NULL); \
              CREATE TABLE settings (id TEXT PRIMARY KEY, openaiApiKey TEXT, \

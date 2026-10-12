@@ -192,11 +192,26 @@ impl ClientsRepository {
     pub async fn delete(pool: &SqlitePool, client_id: &str) -> Result<u64, SqlxError> {
         let mut transaction = pool.begin().await?;
 
+        let meetings: Vec<String> =
+            sqlx::query_scalar("SELECT id FROM meetings WHERE client_id = ?")
+                .bind(client_id)
+                .fetch_all(&mut *transaction)
+                .await?;
         let detached = sqlx::query("UPDATE meetings SET client_id = NULL WHERE client_id = ?")
             .bind(client_id)
             .execute(&mut *transaction)
             .await?
             .rows_affected();
+        // Without a client the meetings link to no one. The client's people
+        // keep what was written about them; the foreign key would clear their
+        // client too, but not every connection has foreign keys on.
+        for meeting_id in &meetings {
+            super::person::relink_meeting_speakers(&mut transaction, meeting_id).await?;
+        }
+        sqlx::query("UPDATE people SET client_id = NULL WHERE client_id = ?")
+            .bind(client_id)
+            .execute(&mut *transaction)
+            .await?;
 
         let removed = sqlx::query("DELETE FROM clients WHERE id = ?")
             .bind(client_id)
@@ -233,15 +248,21 @@ impl ClientsRepository {
             }
         }
 
+        let mut transaction = pool.begin().await?;
         let result = sqlx::query("UPDATE meetings SET client_id = ? WHERE id = ?")
             .bind(client_id)
             .bind(meeting_id)
-            .execute(pool)
+            .execute(&mut *transaction)
             .await?;
 
         if result.rows_affected() == 0 {
             return Err(SqlxError::RowNotFound);
         }
+        // The speakers' names now point at the new client's people, or at no
+        // one. Same transaction: a meeting is never under one client while its
+        // speakers are still linked to the other's people.
+        super::person::relink_meeting_speakers(&mut transaction, meeting_id).await?;
+        transaction.commit().await?;
         Ok(())
     }
 }
@@ -369,7 +390,109 @@ mod tests {
         .execute(&pool)
         .await
         .unwrap();
+        // What moving a meeting between clients relinks.
+        sqlx::raw_sql(
+            "CREATE TABLE transcripts (id TEXT PRIMARY KEY, meeting_id TEXT NOT NULL, \
+                 speaker TEXT); \
+             CREATE TABLE people (id TEXT PRIMARY KEY, display_name TEXT NOT NULL, \
+                 normalized_name TEXT NOT NULL, notes TEXT, created_at TEXT NOT NULL, \
+                 updated_at TEXT NOT NULL, client_id TEXT, \
+                 UNIQUE (client_id, normalized_name)); \
+             CREATE TABLE person_speakers (person_id TEXT NOT NULL, meeting_id TEXT NOT NULL, \
+                 speaker_label TEXT NOT NULL, UNIQUE (meeting_id, speaker_label));",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
         pool
+    }
+
+    async fn people_of(pool: &SqlitePool, meeting_id: &str) -> Vec<(String, Option<String>)> {
+        sqlx::query_as(
+            "SELECT p.display_name, p.client_id FROM person_speakers ps \
+             JOIN people p ON p.id = ps.person_id WHERE ps.meeting_id = ? \
+             ORDER BY p.display_name",
+        )
+        .bind(meeting_id)
+        .fetch_all(pool)
+        .await
+        .unwrap()
+    }
+
+    #[tokio::test]
+    async fn the_same_name_at_two_clients_is_two_people() {
+        let pool = test_pool().await;
+        let anna = ClientsRepository::create(&pool, "Клиент А").await.unwrap();
+        let boris = ClientsRepository::create(&pool, "Клиент Б").await.unwrap();
+        insert_meeting(&pool, "m1", "2026-10-01T10:00:00Z").await;
+        insert_meeting(&pool, "m2", "2026-10-02T10:00:00Z").await;
+        sqlx::query(
+            "INSERT INTO transcripts VALUES ('t1', 'm1', 'Тест А'), ('t2', 'm1', 'You'), \
+             ('t3', 'm2', 'Тест А')",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        ClientsRepository::assign_meeting(&pool, "m1", Some(&anna.id)).await.unwrap();
+        ClientsRepository::assign_meeting(&pool, "m2", Some(&boris.id)).await.unwrap();
+
+        // One profile per client; the owner's own label makes no profile.
+        assert_eq!(
+            people_of(&pool, "m1").await,
+            vec![("Тест А".to_string(), Some(anna.id.clone()))]
+        );
+        assert_eq!(
+            people_of(&pool, "m2").await,
+            vec![("Тест А".to_string(), Some(boris.id.clone()))]
+        );
+        let people: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM people")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(people, 2);
+
+        // Moved to the first client, the meeting joins that client's person.
+        ClientsRepository::assign_meeting(&pool, "m2", Some(&anna.id)).await.unwrap();
+        assert_eq!(
+            people_of(&pool, "m2").await,
+            vec![("Тест А".to_string(), Some(anna.id.clone()))]
+        );
+        let people: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM people")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(people, 1, "the second client's profile had no notes and went");
+
+        // Without a client, the meeting links to no one.
+        ClientsRepository::assign_meeting(&pool, "m2", None).await.unwrap();
+        assert!(people_of(&pool, "m2").await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn deleting_a_client_unlinks_its_meetings_and_keeps_written_notes() {
+        let pool = test_pool().await;
+        let client = ClientsRepository::create(&pool, "Клиент А").await.unwrap();
+        insert_meeting(&pool, "m1", "2026-10-01T10:00:00Z").await;
+        sqlx::query("INSERT INTO transcripts VALUES ('t1', 'm1', 'Тест А')")
+            .execute(&pool)
+            .await
+            .unwrap();
+        ClientsRepository::assign_meeting(&pool, "m1", Some(&client.id)).await.unwrap();
+        sqlx::query("UPDATE people SET notes = 'заметка'")
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        ClientsRepository::delete(&pool, &client.id).await.unwrap();
+
+        assert!(people_of(&pool, "m1").await.is_empty());
+        let kept: Vec<(Option<String>, Option<String>)> =
+            sqlx::query_as("SELECT notes, client_id FROM people")
+                .fetch_all(&pool)
+                .await
+                .unwrap();
+        assert_eq!(kept, vec![(Some("заметка".to_string()), None)]);
     }
 
     async fn insert_meeting(pool: &SqlitePool, id: &str, created_at: &str) {
