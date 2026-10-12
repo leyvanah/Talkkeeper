@@ -166,8 +166,8 @@ function PersonProfileContent() {
       setCustomPrompt(value);
       setPromptOpen(false);
     } catch (error) {
-      console.error('Failed to save the overview request:', error);
-      setPromptError(t('overviewPromptSaveFailed', { error: error instanceof Error ? error.message : String(error) }));
+      logFailure('person-overview-prompt-save', error);
+      setPromptError(t('overviewPromptSaveFailed'));
     } finally {
       setPromptSaving(false);
     }

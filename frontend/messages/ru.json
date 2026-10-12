@@ -1038,7 +1038,7 @@
     "overviewPromptHint": "Хранится только на этом компьютере, вместе с архивом (зашифрован, если задан пароль). Без своего текста используется стандартный запрос.",
     "overviewPromptSave": "Сохранить запрос",
     "overviewPromptReset": "Вернуть стандартный",
-    "overviewPromptSaveFailed": "Не удалось сохранить запрос: {error}",
+    "overviewPromptSaveFailed": "Не удалось сохранить запрос.",
     "meetingHistory": "История встреч",
     "meetingHistorySubtitle": "Все встречи, где этому человеку приписаны реплики.",
     "recordsCount": "{count, plural, one {# запись} few {# записи} many {# записей} other {# записей}}",

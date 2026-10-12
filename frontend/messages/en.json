@@ -1038,7 +1038,7 @@
     "overviewPromptHint": "Kept only on this computer, with the archive (encrypted when a password is set). Without your own text the standard request is used.",
     "overviewPromptSave": "Save request",
     "overviewPromptReset": "Back to standard",
-    "overviewPromptSaveFailed": "Could not save the request: {error}",
+    "overviewPromptSaveFailed": "Could not save the request.",
     "meetingHistory": "Meeting history",
     "meetingHistorySubtitle": "Every meeting where this person has attributed messages.",
     "recordsCount": "{count, plural, one {# record} other {# records}}",
