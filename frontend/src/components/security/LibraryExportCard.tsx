@@ -32,6 +32,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog'
+import { toastFailure } from '@/lib/failure'
 
 const MIN_PASSWORD = 8
 
@@ -51,8 +52,6 @@ interface ImportReport {
 
 type Step = 'readable' | 'packagePassword' | 'importPassword' | null
 type Running = 'export' | 'import' | null
-
-const describe = (error: unknown) => (typeof error === 'string' ? error : String(error))
 
 async function pickFolder(): Promise<string | null> {
   const chosen = await openDialog({ directory: true, multiple: false })
@@ -113,8 +112,7 @@ export function LibraryExportCard() {
         }),
       )
     } catch (error) {
-      console.error('[LibraryExport] Export failed:', error)
-      toast.error(t('libraryExportFailed'), { description: describe(error) })
+      toastFailure(t('libraryExportFailed'), 'library-export-readable', error)
     } finally {
       setRunning(null)
     }
@@ -129,8 +127,7 @@ export function LibraryExportCard() {
     try {
       finishExport(await invoke<ExportReport>('export_library_package', { targetDir: target, password: chosen }))
     } catch (error) {
-      console.error('[LibraryExport] Package export failed:', error)
-      toast.error(t('libraryExportFailed'), { description: describe(error) })
+      toastFailure(t('libraryExportFailed'), 'library-export-package', error)
     } finally {
       setRunning(null)
     }
@@ -154,8 +151,11 @@ export function LibraryExportCard() {
       if (result.failed > 0) toast.warning(t('libraryImportPartial', { failed: result.failed }))
       else toast.success(t('libraryImportDone'))
     } catch (error) {
-      console.error('[LibraryExport] Import failed:', error)
-      toast.error(t('libraryImportFailed'), { description: describe(error) })
+      // The likely reason is a mistyped password; the backend cannot tell it
+      // from a damaged package, so the hint names both.
+      toastFailure(t('libraryImportFailed'), 'library-import', error, {
+        description: t('libraryImportFailedHint'),
+      })
     } finally {
       setRunning(null)
     }

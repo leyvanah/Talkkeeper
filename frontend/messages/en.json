@@ -1231,6 +1231,7 @@
     "audioTestingNative": "Testing native system audio… Play a video now.",
     "audioSystemNotDetected": "System audio was not detected. Play audio, grant Audio Capture permission if prompted, then click Retest audio.",
     "audioMetersFailed": "Could not start level meters",
+    "audioSystemTestFailed": "Could not test system audio",
     "audioFindingDevices": "Finding devices…",
     "audioNoDevicesDetected": "No audio devices detected. Plug in a microphone and check system privacy settings.",
     "audioListDevicesFailed": "Failed to list audio devices",
@@ -1337,6 +1338,7 @@
     "modelReadyToUse": "Model is now ready to use",
     "modelDownloadFailedToast": "Download failed: {model}",
     "audioSaveFailed": "Some or all meeting audio could not be saved. The transcript will still be kept.",
+    "recordingCaptureFailed": "Recording stopped: audio capture was lost. Check the microphone and output device and start recording again.",
     "sourceLostMicrophone": "The microphone went away. The recording goes on while another one is opened",
     "sourceLostSystem": "The sound output went away. The recording goes on while another one is opened",
     "sourceSwitchedMicrophone": "Microphone is now “{device}”. The recording did not stop",
@@ -1595,7 +1597,8 @@
     "libraryImportSummary": "Recordings added: {imported}. Already in the library: {alreadyPresent}.",
     "libraryImportDone": "Package imported",
     "libraryImportPartial": "Package imported, but {failed, plural, one {# recording} other {# recordings}} could not be added — see the log",
-    "libraryImportFailed": "Could not import the package"
+    "libraryImportFailed": "Could not import the package",
+    "libraryImportFailedHint": "Check the package password. If it is right, the package may have been damaged in transfer."
   },
   "notes": {
     "title": "Notes",

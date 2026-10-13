@@ -5,6 +5,7 @@ import { useTranslations } from 'next-intl';
 import { listen } from '@tauri-apps/api/event';
 import { useRecordingStop } from '@/hooks/useRecordingStop';
 import { toast } from 'sonner';
+import { toastFailure } from '@/lib/failure';
 
 /**
  * RecordingPostProcessingProvider
@@ -56,8 +57,7 @@ export function RecordingPostProcessingProvider({ children }: { children: React.
 
           const { call_api, folder_path, meeting_name, audio_save_error } = event.payload;
           if (audio_save_error) {
-            toast.error(t('audioSaveFailed'), {
-              description: audio_save_error,
+            toastFailure(t('audioSaveFailed'), 'recording-audio-save', audio_save_error, {
               duration: 10000,
             });
           }
@@ -104,7 +104,7 @@ export function RecordingPostProcessingProvider({ children }: { children: React.
     let disposed = false;
 
     void listen<string>('recording-error', (event) => {
-      toast.error(event.payload || 'Recording stopped because audio capture failed.', {
+      toastFailure(t('recordingCaptureFailed'), 'recording-capture', event.payload, {
         duration: 10000,
       });
     }).then((unlisten) => {
