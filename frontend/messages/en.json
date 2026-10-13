@@ -1297,7 +1297,7 @@
     "dlRetryFailed": "Download retry failed",
     "dlSummaryRecommendationNotReady": "Summary model recommendation is not ready yet",
     "dlSummaryRetryFailed": "Summary model download retry failed",
-    "dlCheckConnection": "Please check your connection and try again.",
+    "dlFailedHint": "Try again. If it fails again, check the connection and free disk space.",
     "dlEngineRequired": "Transcription engine required",
     "dlRetryBeforeContinuing": "Please retry the download before continuing.",
     "dlBackgroundContinue": "Downloads will continue in the background",

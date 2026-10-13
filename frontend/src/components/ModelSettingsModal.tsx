@@ -34,7 +34,14 @@ import {
 import { cn, isOllamaNotInstalledError } from '@/lib/utils';
 import { toast } from 'sonner';
 import { logFailure, toastFailure } from '@/lib/failure';
-import { failureText } from '@/lib/failure-text';
+
+/**
+ * The text "Ollama is not installed" is recognised from. Only a JavaScript
+ * error is looked at, as before: a command rejects with a string, and its
+ * "connection refused" is the same for an Ollama that is installed but not
+ * running, which the "not installed" prompt would misdescribe.
+ */
+const ollamaReason = (err: unknown) => (err instanceof Error ? err.message : '');
 
 export interface ModelConfig {
   provider: 'ollama' | 'groq' | 'claude' | 'openai' | 'openrouter' | 'builtin-ai' | 'custom-openai';
@@ -471,13 +478,14 @@ export function ModelSettingsModal({
     } catch (err) {
       setError(t('loadOllamaModelsFailed'));
 
-      // Check if error indicates Ollama is not installed
-      setOllamaNotInstalled(isOllamaNotInstalledError(failureText(err)));
+      setOllamaNotInstalled(isOllamaNotInstalledError(ollamaReason(err)));
 
+      // The silent load runs whenever the window opens; without Ollama it
+      // fails every time and is not worth a line in the log.
       if (!silent) {
         toastFailure(t('loadOllamaModelsFailed'), 'ollama-models-load', err);
       } else {
-        logFailure('ollama-models-load', err);
+        console.error('[ollama-models-load]', err);
       }
     } finally {
       setIsLoadingOllama(false);
@@ -750,7 +758,7 @@ export function ModelSettingsModal({
       logFailure('ollama-model-download', err);
 
       // Check if Ollama is not installed and show appropriate error
-      if (isOllamaNotInstalledError(failureText(err))) {
+      if (isOllamaNotInstalledError(ollamaReason(err))) {
         toast.error(t('ollamaNotInstalledTitle'), {
           description: t('ollamaNotInstalledForDownload'),
           duration: 7000,

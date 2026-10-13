@@ -220,7 +220,9 @@ export function ModelManager({
           // Clean up throttle data
           progressThrottleRef.current.delete(modelName);
 
-          toastFailure(t('modelDownloadFailed', { model: displayName }), 'whisper-model-download', error, {
+          // Not logged here: the same failure rejects `downloadModel`, whose
+          // catch logs it.
+          toast.error(t('modelDownloadFailed', { model: displayName }), {
             duration: 6000,
             action: {
               label: t('modelRetry'),

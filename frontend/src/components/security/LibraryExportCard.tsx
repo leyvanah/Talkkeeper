@@ -33,8 +33,12 @@ import {
   DialogTitle,
 } from '@/components/ui/dialog'
 import { toastFailure } from '@/lib/failure'
+import { failureText } from '@/lib/failure-text'
 
 const MIN_PASSWORD = 8
+
+/** `library_export/sealed.rs`: what opening a package with a wrong password returns. */
+const WRONG_PASSWORD_OR_DAMAGED = 'Wrong password, or the package is damaged'
 
 interface ExportReport {
   folder: string
@@ -151,10 +155,10 @@ export function LibraryExportCard() {
       if (result.failed > 0) toast.warning(t('libraryImportPartial', { failed: result.failed }))
       else toast.success(t('libraryImportDone'))
     } catch (error) {
-      // The likely reason is a mistyped password; the backend cannot tell it
-      // from a damaged package, so the hint names both.
+      // A mistyped password is the one reason the owner can act on; the
+      // backend cannot tell it from a damaged package, so the hint names both.
       toastFailure(t('libraryImportFailed'), 'library-import', error, {
-        description: t('libraryImportFailedHint'),
+        description: failureText(error) === WRONG_PASSWORD_OR_DAMAGED ? t('libraryImportFailedHint') : undefined,
       })
     } finally {
       setRunning(null)

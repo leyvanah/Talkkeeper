@@ -6,7 +6,6 @@ import { SelectedDevices } from '@/components/DeviceSelection';
 import { configService, ModelConfig } from '@/services/configService';
 import { invoke } from '@tauri-apps/api/core';
 import { BetaFeatures, BetaFeatureKey, loadBetaFeatures, saveBetaFeatures } from '@/types/betaFeatures';
-import { logFailure } from '@/lib/failure';
 import { failureText } from '@/lib/failure-text';
 
 export interface OllamaModel {
@@ -193,8 +192,9 @@ export function ConfigProvider({ children }: { children: ReactNode }) {
         setModels(modelList);
         setError('');
       } catch (err) {
-        // Not shown anywhere; kept for the log and for code that checks for it.
-        logFailure('ollama-models-load', err);
+        // Not shown anywhere and not logged: without Ollama this fails on
+        // every start. Kept for code that checks for it.
+        console.error('[ollama-models-load]', err);
         setError(failureText(err));
       }
     };

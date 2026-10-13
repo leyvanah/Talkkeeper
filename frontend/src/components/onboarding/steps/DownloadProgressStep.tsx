@@ -107,7 +107,7 @@ export function DownloadProgressStep() {
       }));
 
       toast.error(t('dlRetryFailed'), {
-        description: t('dlCheckConnection'),
+        description: t('dlFailedHint'),
       });
     } finally {
       // Allow retry again after 2 seconds
@@ -155,7 +155,7 @@ export function DownloadProgressStep() {
       }));
 
       toast.error(t('dlSummaryRetryFailed'), {
-        description: t('dlCheckConnection'),
+        description: t('dlFailedHint'),
       });
     } finally {
       // Allow retry again after 2 seconds
@@ -523,7 +523,7 @@ export function DownloadProgressStep() {
       {state.status === 'error' && state.error && (
         <div className="mt-2 p-3 bg-red-50 border border-red-200 rounded-md">
           <p className="text-sm text-red-600 font-medium">{t('dlDownloadError')}</p>
-          <p className="text-xs text-red-500 mt-1">{t('dlCheckConnection')}</p>
+          <p className="text-xs text-red-500 mt-1">{t('dlFailedHint')}</p>
           {(step === 1 || step === 2) && (
             <button
               onClick={step === 1 ? handleRetryDownload : handleRetrySummaryDownload}
