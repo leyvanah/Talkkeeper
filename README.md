@@ -15,8 +15,10 @@
 > **Установка.** Установщик — на странице
 > [Releases](https://github.com/leyvanah/Talkkeeper/releases). Он не подписан:
 > Windows покажет «Система Windows защитила ваш компьютер» — «Подробнее» →
-> «Выполнить в любом случае». Сверить файл можно командой
-> `certutil -hashfile <файл> SHA256` с хешем из описания релиза. До первой
+> «Выполнить в любом случае». Проверить, что файл тот самый: в PowerShell
+> `Get-FileHash <файл>` должен показать хеш из описания релиза, а
+> `gh attestation verify` — подтвердить, что файл собран здесь, на машинах
+> GitHub (команда целиком — в разделе [Install](#install)). До первой
 > настоящей записи задайте пароль: **Настройки → Защита**. Приложение само не
 > проверяет обновления — новую версию ставьте поверх старой, данные и ключи
 > сохраняются. При удалении программы папка с записями (по умолчанию
@@ -89,8 +91,25 @@ you can also build from source (below).
 
 1. Download `Talkkeeper_<version>_x64-setup.exe` from the release.
 2. Optional, but worth a minute: check that the file is the one that was
-   published. In a command prompt, `certutil -hashfile Talkkeeper_<version>_x64-setup.exe SHA256`
-   must print the SHA-256 given in the release notes.
+   published. In PowerShell, in the folder with the file:
+
+   ```powershell
+   Get-FileHash .\Talkkeeper_<version>_x64-setup.exe
+   ```
+
+   The `Hash` it prints must match the SHA-256 in the release notes. With the
+   [GitHub CLI](https://cli.github.com/) (signed in with `gh auth login`) you
+   can also check where the file was built:
+
+   ```powershell
+   gh attestation verify .\Talkkeeper_<version>_x64-setup.exe --repo leyvanah/Talkkeeper --signer-workflow leyvanah/Talkkeeper/.github/workflows/release-signed.yml --format json
+   ```
+
+   It succeeds only for a file built by this repository's release workflow on
+   GitHub's machines, and the output names the commit it was built from
+   (`sourceRepositoryDigest`). A changed file, or one built anywhere else,
+   fails with an error. Keep `--format json`: without it a successful check
+   may print nothing at all.
 3. Run it. The installer is **not code-signed**, so Windows SmartScreen shows
    *Windows protected your PC* and *Unknown publisher*: choose **More info →
    Run anyway**. It installs for the current user only, into
@@ -324,7 +343,9 @@ Releases are **not code-signed** for now. Windows releases are built from this
 repository by the [`Signed release`](.github/workflows/release-signed.yml)
 workflow on GitHub-hosted machines, started by hand; a locally built installer
 is never published. The SHA-256 of each installer is given in its release
-notes. Signing through [SignPath Foundation](https://signpath.org/) is planned
+notes, and each published installer carries a GitHub build attestation that
+ties it to this workflow and the commit it was built from; [Install](#install)
+shows how to check both. Signing through [SignPath Foundation](https://signpath.org/) is planned
 once the app has more users; the workflow is ready for it.
 
 Team roles:
