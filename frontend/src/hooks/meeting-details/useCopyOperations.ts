@@ -138,8 +138,12 @@ export function useCopyOperations({
       .map(t => `${formatTime(t.audio_start_time, t.timestamp)} ${t.text}  `)
       .join('\n');
 
-    await copyText(header + date + fullTranscript);
-    toast.success(t('transcriptCopied'));
+    try {
+      await copyText(header + date + fullTranscript);
+      toast.success(t('transcriptCopied'));
+    } catch (error) {
+      toastFailure(t('copyTranscriptFailed'), 'transcript-copy', error);
+    }
   }, [meeting, meetingTitle, fetchAllTranscripts]);
 
   // Copy summary to clipboard
