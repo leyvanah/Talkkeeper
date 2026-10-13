@@ -502,13 +502,16 @@ impl PeopleRepository {
             .execute(&mut **tx)
             .await?;
 
-        if !is_person_name(to) {
+        // A capture label names nobody, and a meeting without a client has no
+        // people: either way the line keeps its name and links to no profile.
+        let client_id = meeting_client(tx, meeting_id).await?;
+        let (true, Some(client_id)) = (is_person_name(to), client_id) else {
             delete_orphan_people(tx).await?;
             return Ok(());
-        }
+        };
 
         let normalized = normalize_person_name(to);
-        let named_person = find_person_by_normalized_name(tx, &normalized).await?;
+        let named_person = find_person_by_normalized_name(tx, &client_id, &normalized).await?;
         // Removing this meeting/label mapping first lets us distinguish a truly
         // private profile from a shared identity. Any surviving mapping, even a
         // second alias in this same meeting, means changing the person row would
@@ -544,20 +547,7 @@ impl PeopleRepository {
             }
             // Shared profiles split here. This keeps the rename meeting-local
             // while leaving the other meetings attached to the original person.
-            _ => {
-                let id = format!("person-{}", Uuid::new_v4());
-                sqlx::query(
-                    "INSERT INTO people \
-                     (id, display_name, normalized_name, notes, created_at, updated_at) \
-                     VALUES (?, ?, ?, NULL, datetime('now'), datetime('now'))",
-                )
-                .bind(&id)
-                .bind(fields::seal(fields::PERSON_NAME, to)?)
-                .bind(fields::lookup(fields::PERSON_LOOKUP, &normalized)?)
-                .execute(&mut **tx)
-                .await?;
-                id
-            }
+            _ => insert_person(tx, &client_id, to, &normalized).await?,
         };
 
         sqlx::query(
@@ -686,18 +676,69 @@ pub(crate) fn normalize_person_name(name: &str) -> String {
 
 pub(crate) fn is_person_name(name: &str) -> bool {
     let trimmed = name.trim();
-    let lower = trimmed.to_ascii_lowercase();
+    let lower = trimmed.to_lowercase();
+    // The capture labels, and the same words as the Russian interface shows
+    // them: someone who typed "Гость" over a label has not named a person.
     if trimmed.is_empty()
         || matches!(
             lower.as_str(),
             "you" | "guest" | "mic" | "microphone" | "system" | "system audio" | "speaker"
+                | "вы" | "гость" | "спикер" | "микрофон" | "система"
         )
         || lower.starts_with("speaker ")
+        || lower.starts_with("спикер ")
         || trimmed.contains(" + ")
     {
         return false;
     }
     true
+}
+
+/// The client a meeting belongs to. A person exists only within a client, so
+/// `None` means the meeting's speakers are not linked to anyone.
+async fn meeting_client(
+    tx: &mut Transaction<'_, Sqlite>,
+    meeting_id: &str,
+) -> Result<Option<String>, sqlx::Error> {
+    let client: Option<Option<String>> =
+        sqlx::query_scalar("SELECT client_id FROM meetings WHERE id = ?")
+            .bind(meeting_id)
+            .fetch_optional(&mut **tx)
+            .await?;
+    Ok(client.flatten())
+}
+
+/// Links every named speaker of a meeting to the people of its client, from
+/// scratch. Run when the meeting changes client: the names stay on the lines,
+/// the people they point to are the new client's. Without a client the
+/// meeting ends up linked to no one.
+pub(crate) async fn relink_meeting_speakers(
+    tx: &mut Transaction<'_, Sqlite>,
+    meeting_id: &str,
+) -> Result<(), sqlx::Error> {
+    sqlx::query("DELETE FROM person_speakers WHERE meeting_id = ?")
+        .bind(meeting_id)
+        .execute(&mut **tx)
+        .await?;
+
+    if meeting_client(tx, meeting_id).await?.is_some() {
+        let stored: Vec<Option<String>> = sqlx::query_scalar(
+            "SELECT DISTINCT speaker FROM transcripts WHERE meeting_id = ?",
+        )
+        .bind(meeting_id)
+        .fetch_all(&mut **tx)
+        .await?;
+        let mut labels = std::collections::BTreeSet::new();
+        for sealed in stored {
+            if let Some(label) = fields::open_opt(fields::TRANSCRIPT_SPEAKER, sealed)? {
+                labels.insert(label);
+            }
+        }
+        for label in labels {
+            link_speaker_to_person(tx, meeting_id, &label, &label).await?;
+        }
+    }
+    delete_orphan_people(tx).await
 }
 
 async fn next_available_speaker_label(
@@ -984,23 +1025,13 @@ pub(crate) async fn link_speaker_to_person(
     if !is_person_name(person_name) {
         return Ok(());
     }
+    let Some(client_id) = meeting_client(tx, meeting_id).await? else {
+        return Ok(());
+    };
     let normalized = normalize_person_name(person_name);
-    let person_id = match find_person_by_normalized_name(tx, &normalized).await? {
+    let person_id = match find_person_by_normalized_name(tx, &client_id, &normalized).await? {
         Some(id) => id,
-        None => {
-            let id = format!("person-{}", Uuid::new_v4());
-            sqlx::query(
-                "INSERT INTO people \
-                 (id, display_name, normalized_name, notes, created_at, updated_at) \
-                 VALUES (?, ?, ?, NULL, datetime('now'), datetime('now'))",
-            )
-            .bind(&id)
-            .bind(fields::seal(fields::PERSON_NAME, person_name.trim())?)
-            .bind(fields::lookup(fields::PERSON_LOOKUP, &normalized)?)
-            .execute(&mut **tx)
-            .await?;
-            id
-        }
+        None => insert_person(tx, &client_id, person_name.trim(), &normalized).await?,
     };
     sqlx::query(
         "INSERT INTO person_speakers (person_id, meeting_id, speaker_label) \
@@ -1054,9 +1085,13 @@ pub(crate) async fn retain_present_speaker_mappings(
     delete_orphan_people(tx).await
 }
 
+/// Removes the people no meeting points to any more — unless the owner wrote
+/// notes about them. A rename or a move to another client can leave a profile
+/// without meetings for a while, and losing the notes with the last link would
+/// make an ordinary edit destroy something nobody asked to delete.
 async fn delete_orphan_people(tx: &mut Transaction<'_, Sqlite>) -> Result<(), sqlx::Error> {
     sqlx::query(
-        "DELETE FROM people WHERE NOT EXISTS \
+        "DELETE FROM people WHERE notes IS NULL AND NOT EXISTS \
          (SELECT 1 FROM person_speakers ps WHERE ps.person_id = people.id)",
     )
     .execute(&mut **tx)
@@ -1064,24 +1099,53 @@ async fn delete_orphan_people(tx: &mut Transaction<'_, Sqlite>) -> Result<(), sq
     Ok(())
 }
 
+/// A new person of `client_id`, with no notes yet.
+async fn insert_person(
+    tx: &mut Transaction<'_, Sqlite>,
+    client_id: &str,
+    display_name: &str,
+    normalized: &str,
+) -> Result<String, sqlx::Error> {
+    let id = format!("person-{}", Uuid::new_v4());
+    sqlx::query(
+        "INSERT INTO people \
+         (id, display_name, normalized_name, notes, created_at, updated_at, client_id) \
+         VALUES (?, ?, ?, NULL, datetime('now'), datetime('now'), ?)",
+    )
+    .bind(&id)
+    .bind(fields::seal(fields::PERSON_NAME, display_name)?)
+    .bind(fields::lookup(fields::PERSON_LOOKUP, normalized)?)
+    .bind(client_id)
+    .execute(&mut **tx)
+    .await?;
+    Ok(id)
+}
+
+/// The person of `client_id` going by this name. Only that client's people are
+/// considered: the same name at another client is somebody else.
+///
 /// SQLite's built-in lower/LIKE folding is ASCII-only. Migration values remain
 /// compatible with SQL search, while this Rust fallback compares display names
 /// with Unicode lowercase before deciding that a new identity is necessary.
 async fn find_person_by_normalized_name(
     tx: &mut Transaction<'_, Sqlite>,
+    client_id: &str,
     normalized: &str,
 ) -> Result<Option<String>, sqlx::Error> {
-    if let Some(id) = sqlx::query_scalar("SELECT id FROM people WHERE normalized_name = ?")
-        .bind(fields::lookup(fields::PERSON_LOOKUP, normalized)?)
-        .fetch_optional(&mut **tx)
-        .await?
+    if let Some(id) =
+        sqlx::query_scalar("SELECT id FROM people WHERE client_id = ? AND normalized_name = ?")
+            .bind(client_id)
+            .bind(fields::lookup(fields::PERSON_LOOKUP, normalized)?)
+            .fetch_optional(&mut **tx)
+            .await?
     {
         return Ok(Some(id));
     }
 
     let candidates = sqlx::query_as::<_, (String, String, String)>(
-        "SELECT id, display_name, normalized_name FROM people",
+        "SELECT id, display_name, normalized_name FROM people WHERE client_id = ?",
     )
+    .bind(client_id)
     .fetch_all(&mut **tx)
     .await?;
     for (id, display_name, stored_normalized) in candidates {
@@ -1124,6 +1188,9 @@ mod tests {
             "SYSTEM",
             "system audio",
             "Alice + Bob",
+            "Гость",
+            " ВЫ ",
+            "Спикер 2",
         ] {
             assert!(!is_person_name(label), "{} should not be a person", label);
         }
@@ -1227,7 +1294,11 @@ mod tests {
              INSERT INTO person_speakers VALUES \
                  ('person-alice', 'm1', 'Alice'), ('person-alice', 'm2', 'Alice'), \
                  ('person-bob', 'm3', 'Bob'), ('person-david', 'm4', 'David'); \
-             INSERT INTO transcripts VALUES ('t1', 'm1', 'Alice'), ('t2', 'm4', 'David');",
+             INSERT INTO transcripts VALUES ('t1', 'm1', 'Alice'), ('t2', 'm4', 'David'); \
+             ALTER TABLE people ADD COLUMN client_id TEXT; \
+             UPDATE people SET client_id = 'c1'; \
+             CREATE TABLE meetings (id TEXT PRIMARY KEY, client_id TEXT); \
+             INSERT INTO meetings VALUES ('m1', 'c1'), ('m2', 'c1'), ('m3', 'c1'), ('m4', 'c1');",
         )
         .execute(&pool)
         .await
@@ -1292,7 +1363,11 @@ mod tests {
              INSERT INTO people VALUES ('person-carol', 'Carol', 'carol', NULL, 'now', 'now'); \
              INSERT INTO person_speakers VALUES \
                  ('person-carol', 'm1', 'Carol'), ('person-carol', 'm1', 'C.'); \
-             INSERT INTO transcripts VALUES ('t1', 'm1', 'Carol'), ('t2', 'm1', 'C.');",
+             INSERT INTO transcripts VALUES ('t1', 'm1', 'Carol'), ('t2', 'm1', 'C.'); \
+             ALTER TABLE people ADD COLUMN client_id TEXT; \
+             UPDATE people SET client_id = 'c1'; \
+             CREATE TABLE meetings (id TEXT PRIMARY KEY, client_id TEXT); \
+             INSERT INTO meetings VALUES ('m1', 'c1');",
         )
         .execute(&pool)
         .await
@@ -1339,7 +1414,11 @@ mod tests {
                  PRIMARY KEY (meeting_id, speaker_label)); \
              CREATE TABLE transcripts (id TEXT PRIMARY KEY, meeting_id TEXT NOT NULL, speaker TEXT); \
              INSERT INTO people VALUES ('person-elodie', 'Élodie', 'Élodie', NULL, 'now', 'now'); \
-             INSERT INTO transcripts VALUES ('t1', 'm1', 'Speaker 1');",
+             INSERT INTO transcripts VALUES ('t1', 'm1', 'Speaker 1'); \
+             ALTER TABLE people ADD COLUMN client_id TEXT; \
+             UPDATE people SET client_id = 'c1'; \
+             CREATE TABLE meetings (id TEXT PRIMARY KEY, client_id TEXT); \
+             INSERT INTO meetings VALUES ('m1', 'c1');",
         )
         .execute(&pool)
         .await
@@ -1365,14 +1444,14 @@ mod tests {
     async fn replacement_cleanup_keeps_names_still_present_and_drops_the_rest() {
         let pool = sqlx::SqlitePool::connect(":memory:").await.unwrap();
         sqlx::raw_sql(
-            "CREATE TABLE people (id TEXT PRIMARY KEY); \
+            "CREATE TABLE people (id TEXT PRIMARY KEY, notes TEXT); \
              CREATE TABLE person_speakers (person_id TEXT NOT NULL, meeting_id TEXT NOT NULL, \
                  speaker_label TEXT NOT NULL, UNIQUE(meeting_id, speaker_label)); \
              CREATE TABLE meeting_speaker_roles (meeting_id TEXT NOT NULL, \
                  speaker_label TEXT NOT NULL, role TEXT NOT NULL, \
                  PRIMARY KEY (meeting_id, speaker_label)); \
              CREATE TABLE transcripts (meeting_id TEXT NOT NULL, speaker TEXT); \
-             INSERT INTO people VALUES ('only-m1'), ('shared'), ('kept'); \
+             INSERT INTO people (id) VALUES ('only-m1'), ('shared'), ('kept'); \
              INSERT INTO person_speakers VALUES \
                  ('only-m1', 'm1', 'Alice'), ('shared', 'm1', 'Bob'), ('shared', 'm2', 'Bob'), \
                  ('kept', 'm1', 'Carol'); \
@@ -1442,7 +1521,7 @@ mod tests {
     async fn removing_name_uses_available_local_label_and_unlinks_person() {
         let pool = sqlx::SqlitePool::connect(":memory:").await.unwrap();
         sqlx::raw_sql(
-            "CREATE TABLE people (id TEXT PRIMARY KEY); \
+            "CREATE TABLE people (id TEXT PRIMARY KEY, notes TEXT); \
              CREATE TABLE person_speakers (person_id TEXT NOT NULL, meeting_id TEXT NOT NULL, \
                  speaker_label TEXT NOT NULL, UNIQUE(meeting_id, speaker_label)); \
              CREATE TABLE meeting_speaker_roles (meeting_id TEXT NOT NULL, \
