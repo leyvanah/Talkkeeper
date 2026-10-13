@@ -538,7 +538,7 @@ function PersonProfileContent() {
                         {message.status === 'pending' ? (
                           <span className="inline-flex items-center gap-2 text-[var(--af-text-3)]"><Loader2 className="h-3.5 w-3.5 animate-spin" /> {t('checkingRecords')}</span>
                         ) : message.status === 'error' ? (
-                          <>{t('couldNotAnswer', { error: message.answer })}</>
+                          <>{message.answer}</>
                         ) : (
                           <div className="prose prose-xs max-w-none text-[var(--af-text-2)] dark:prose-invert prose-strong:text-[var(--af-text)] prose-p:my-1 prose-ul:my-1">
                             <ReactMarkdown remarkPlugins={[remarkGfm]}>{message.answer}</ReactMarkdown>
