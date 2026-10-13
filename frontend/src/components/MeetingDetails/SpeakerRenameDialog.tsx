@@ -66,11 +66,12 @@ export function SpeakerRenameDialog({
   // The stored label stays the key; the owner reads it in their own words.
   const shown = (label: string) => speakerLabel(label, userName, speakerWords);
 
-  const canRemoveName = !!speaker && !isGeneratedSpeakerLabel(speaker);
-
   // Start from an assigned name; a capture label ("You", "Guest", "Speaker N")
   // is a key, not a name, and leaves the field empty.
   const isName = !!speaker && !isGeneratedSpeakerLabel(speaker) && !/^guest$/i.test(speaker.trim()) && !isOwnerLabel(speaker);
+  // Only a real name can be removed. Removing a capture label would swap it
+  // for the next free "Speaker N", and an empty field must not do that.
+  const canRemoveName = isName;
   useEffect(() => {
     if (open) setName(isName ? speaker ?? '' : '');
   }, [isName, open, speaker]);
@@ -176,7 +177,7 @@ export function SpeakerRenameDialog({
             disabled={(!name.trim() && !canRemoveName) || saving}
             onClick={() => submit(name)}
           >
-            {saving ? t('speakerSaving') : name.trim() ? t('speakerRename') : t('speakerRemoveName')}
+            {saving ? t('speakerSaving') : name.trim() || !canRemoveName ? t('speakerRename') : t('speakerRemoveName')}
           </Button>
         </div>
       </DialogContent>
