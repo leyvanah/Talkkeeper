@@ -7,6 +7,8 @@ import { toast } from 'sonner';
 import { Unlink, UserRound } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Dialog, DialogContent, DialogTitle } from '@/components/ui/dialog';
+import { useSpeakerWords } from '@/hooks/useSpeakerWords';
+import { isOwnerLabel, speakerLabel } from '@/lib/speaker-label';
 
 interface SpeakerRenameDialogProps {
   open: boolean;
@@ -60,12 +62,19 @@ export function SpeakerRenameDialog({
     }
   }, []);
 
-  const canRemoveName = !!speaker && !isGeneratedSpeakerLabel(speaker);
+  const speakerWords = useSpeakerWords();
+  // The stored label stays the key; the owner reads it in their own words.
+  const shown = (label: string) => speakerLabel(label, userName, speakerWords);
 
-  // Start from an assigned name; generated labels remain an empty name field.
+  // Start from an assigned name; a capture label ("You", "Guest", "Speaker N")
+  // is a key, not a name, and leaves the field empty.
+  const isName = !!speaker && !isGeneratedSpeakerLabel(speaker) && !/^guest$/i.test(speaker.trim()) && !isOwnerLabel(speaker);
+  // Only a real name can be removed. Removing a capture label would swap it
+  // for the next free "Speaker N", and an empty field must not do that.
+  const canRemoveName = isName;
   useEffect(() => {
-    if (open) setName(canRemoveName ? speaker ?? '' : '');
-  }, [canRemoveName, open, speaker]);
+    if (open) setName(isName ? speaker ?? '' : '');
+  }, [isName, open, speaker]);
 
   const submit = async (value: string) => {
     const next = value.trim();
@@ -80,12 +89,10 @@ export function SpeakerRenameDialog({
       });
       if (result.removedName) {
         toast.success(t('speakerNameRemovedTitle'), {
-          description: t('speakerNameRemovedDescription', { speaker: result.speaker, count: result.count }),
+          description: t('speakerNameRemovedDescription', { speaker: shown(result.speaker), count: result.count }),
         });
       } else {
-        const displayName =
-          result.speaker === 'You' && userName ? t('speakerYouWithName', { name: userName }) : result.speaker;
-        toast.success(t('speakerRenamedTitle', { name: displayName }), {
+        toast.success(t('speakerRenamedTitle', { name: shown(result.speaker) }), {
           description: t('speakerRenamedDescription', { count: result.count }),
         });
       }
@@ -110,13 +117,13 @@ export function SpeakerRenameDialog({
       <DialogContent aria-describedby={undefined} className="sm:max-w-md">
         <DialogTitle className="flex items-center gap-2 text-base">
           <UserRound size={18} className="text-blue-500" />
-          {t('speakerWhoIs', { speaker: speaker ?? '' })}
+          {t('speakerWhoIs', { speaker: speaker ? shown(speaker) : '' })}
         </DialogTitle>
 
         <div className="mt-2 space-y-3">
           <p className="text-sm text-gray-500">
             {t.rich('speakerRenameHint', {
-              name: () => <strong>{speaker}</strong>,
+              name: () => <strong>{speaker ? shown(speaker) : ''}</strong>,
             })}
           </p>
 
@@ -170,7 +177,7 @@ export function SpeakerRenameDialog({
             disabled={(!name.trim() && !canRemoveName) || saving}
             onClick={() => submit(name)}
           >
-            {saving ? t('speakerSaving') : name.trim() ? t('speakerRename') : t('speakerRemoveName')}
+            {saving ? t('speakerSaving') : name.trim() || !canRemoveName ? t('speakerRename') : t('speakerRemoveName')}
           </Button>
         </div>
       </DialogContent>

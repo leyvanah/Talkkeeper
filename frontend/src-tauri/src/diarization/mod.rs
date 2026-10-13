@@ -668,6 +668,103 @@ fn find_meeting_audio(folder_path: Option<String>, meeting_title: Option<&str>) 
     newest_audio_in(&crate::paths::install_data_root())
 }
 
+/// The generated label to call "Guest" in a meeting, if there is one.
+///
+/// One person on the other end is "Guest" everywhere: live in a one-to-one
+/// recording, after "By device", and here, after the offline pass, when it
+/// found a single remote voice. Numbered speakers are kept only when there
+/// really are several. So the only label ever changed is a lone "Speaker N"
+/// with no other "Speaker M" anywhere in the meeting, combined lines included.
+pub(crate) fn lone_remote_label(labels: &[String]) -> Option<String> {
+    let mut numbered = std::collections::BTreeSet::new();
+    for label in labels {
+        for part in label.split(" + ") {
+            let part = part.trim();
+            let lower = part.to_ascii_lowercase();
+            if let Some(number) = lower.strip_prefix("speaker ") {
+                if number.chars().all(|c| c.is_ascii_digit()) && !number.is_empty() {
+                    numbered.insert(part.to_string());
+                }
+            }
+        }
+    }
+    if numbered.len() == 1 {
+        numbered.into_iter().next()
+    } else {
+        None
+    }
+}
+
+/// Renames a lone remote "Speaker N" of a meeting to "Guest" (see
+/// [`lone_remote_label`]), in every line that carries it and in its role.
+/// Returns the label it renamed, if any.
+pub(crate) async fn settle_lone_remote_voice(
+    pool: &sqlx::SqlitePool,
+    meeting_id: &str,
+) -> Result<Option<String>, String> {
+    let rows: Vec<(String, Option<String>)> =
+        sqlx::query_as("SELECT id, speaker FROM transcripts WHERE meeting_id = ?")
+            .bind(meeting_id)
+            .fetch_all(pool)
+            .await
+            .map_err(|e| format!("Failed to read speaker labels: {e}"))?;
+    let mut lines = Vec::with_capacity(rows.len());
+    for (id, sealed) in rows {
+        let label = fields::open_opt(fields::TRANSCRIPT_SPEAKER, sealed)
+            .map_err(|e| format!("Failed to read a speaker label: {e}"))?;
+        if let Some(label) = label {
+            lines.push((id, label));
+        }
+    }
+    let labels: Vec<String> = lines.iter().map(|(_, label)| label.clone()).collect();
+    let Some(lone) = lone_remote_label(&labels) else {
+        return Ok(None);
+    };
+
+    let mut tx = pool
+        .begin()
+        .await
+        .map_err(|e| format!("Failed to begin speaker update: {e}"))?;
+    for (id, label) in lines {
+        let next = as_settled(&label, &lone);
+        if next == label {
+            continue;
+        }
+        sqlx::query("UPDATE transcripts SET speaker = ? WHERE id = ?")
+            .bind(
+                fields::seal_joinable(fields::TRANSCRIPT_SPEAKER, &next)
+                    .map_err(|e| format!("Failed to seal speaker label: {e}"))?,
+            )
+            .bind(id)
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| format!("Failed to save speaker label: {e}"))?;
+    }
+    crate::database::repositories::speaker_role::SpeakerRolesRepository::follow_rename(
+        &mut tx, meeting_id, &lone, "Guest",
+    )
+    .await
+    .map_err(|e| format!("Failed to move the speaker's role: {e}"))?;
+    tx.commit()
+        .await
+        .map_err(|e| format!("Failed to commit speaker labels: {e}"))?;
+    log::info!("One remote voice in meeting {meeting_id}: {lone} is now Guest");
+    Ok(Some(lone))
+}
+
+/// `label` with the lone remote speaker called "Guest", the way
+/// [`settle_lone_remote_voice`] stored it.
+fn as_settled(label: &str, lone: &str) -> String {
+    let mut parts: Vec<&str> = Vec::new();
+    for part in label.split(" + ") {
+        let renamed = if part.trim() == lone { "Guest" } else { part.trim() };
+        if !parts.contains(&renamed) {
+            parts.push(renamed);
+        }
+    }
+    parts.join(" + ")
+}
+
 fn apply_source_track_hint(
     existing: Option<&str>,
     used_source_tracks: bool,
@@ -1303,6 +1400,13 @@ pub async fn diarize_meeting(
     tx.commit()
         .await
         .map_err(|e| format!("Failed to commit speaker labels: {e}"))?;
+    // One voice on the other end is "Guest", as it was live and as "By
+    // device" calls it; numbered speakers are for when there are several.
+    if let Some(lone) = settle_lone_remote_voice(pool, &meeting_id).await? {
+        for (_, label) in assignments.iter_mut() {
+            *label = as_settled(label, &lone);
+        }
+    }
     crate::database::repositories::transcript_history::forget(&meeting_id);
     if preserved > 0 {
         log::info!(
@@ -1506,6 +1610,76 @@ mod tests {
 
         assert_eq!(silence_the_speakers_in_wav(&wav, &[]).unwrap(), 0.0);
         assert_eq!(std::fs::read(&wav).unwrap(), bytes);
+    }
+
+    fn owned(labels: &[&str]) -> Vec<String> {
+        labels.iter().map(|label| label.to_string()).collect()
+    }
+
+    #[test]
+    fn a_lone_numbered_voice_is_the_guest() {
+        assert_eq!(
+            lone_remote_label(&owned(&["You", "Speaker 1", "You + Speaker 1"])).as_deref(),
+            Some("Speaker 1")
+        );
+        // "Guest" already there does not make it two people.
+        assert_eq!(
+            lone_remote_label(&owned(&["Guest", "Speaker 2"])).as_deref(),
+            Some("Speaker 2")
+        );
+    }
+
+    #[test]
+    fn several_voices_keep_their_numbers() {
+        assert_eq!(lone_remote_label(&owned(&["Speaker 1", "Speaker 2"])), None);
+        // The second voice may only ever speak over someone.
+        assert_eq!(lone_remote_label(&owned(&["Speaker 1", "You + Speaker 2"])), None);
+        // Nothing numbered, nothing to change; given names are not numbers.
+        assert_eq!(lone_remote_label(&owned(&["You", "Guest", "Анна"])), None);
+        assert_eq!(lone_remote_label(&owned(&["Speaker Facilitator"])), None);
+    }
+
+    #[test]
+    fn a_combined_line_names_the_guest_once() {
+        assert_eq!(as_settled("You + Speaker 1", "Speaker 1"), "You + Guest");
+        assert_eq!(as_settled("Guest + Speaker 1", "Speaker 1"), "Guest");
+        assert_eq!(as_settled("Анна", "Speaker 1"), "Анна");
+    }
+
+    #[tokio::test]
+    async fn the_lone_voice_is_renamed_in_lines_and_role() {
+        let pool = sqlx::SqlitePool::connect("sqlite::memory:").await.unwrap();
+        crate::database::manager::MIGRATOR.run(&pool).await.unwrap();
+        sqlx::raw_sql(
+            "INSERT INTO meetings (id, title, created_at, updated_at) VALUES ('m1', 't', 'n', 'n'); \
+             INSERT INTO transcripts (id, meeting_id, transcript, timestamp, speaker) VALUES \
+                 ('t1', 'm1', 'a', '00:00', 'You'), \
+                 ('t2', 'm1', 'b', '00:01', 'Speaker 1'), \
+                 ('t3', 'm1', 'c', '00:02', 'You + Speaker 1'); \
+             INSERT INTO meeting_speaker_roles VALUES ('m1', 'Speaker 1', 'host');",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let renamed = settle_lone_remote_voice(&pool, "m1").await.unwrap();
+        assert_eq!(renamed.as_deref(), Some("Speaker 1"));
+
+        let labels: Vec<String> =
+            sqlx::query_scalar("SELECT speaker FROM transcripts ORDER BY id")
+                .fetch_all(&pool)
+                .await
+                .unwrap();
+        assert_eq!(labels, owned(&["You", "Guest", "You + Guest"]));
+        let role_label: String =
+            sqlx::query_scalar("SELECT speaker_label FROM meeting_speaker_roles")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(role_label, "Guest", "the role an owner set follows the speaker");
+
+        // A second pass has nothing left to do.
+        assert_eq!(settle_lone_remote_voice(&pool, "m1").await.unwrap(), None);
     }
 
     #[test]
