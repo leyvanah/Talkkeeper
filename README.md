@@ -18,10 +18,12 @@
 > «Выполнить в любом случае». Проверить, что файл тот самый: в PowerShell
 > `Get-FileHash <файл>` должен показать хеш из описания релиза, а
 > `gh attestation verify` — подтвердить, что файл собран здесь, на машинах
-> GitHub (команда целиком — в разделе [Install](#install)). До первой
-> настоящей записи задайте пароль: **Настройки → Защита**. Приложение само не
-> проверяет обновления — новую версию ставьте поверх старой, данные и ключи
-> сохраняются. При удалении программы папка с записями (по умолчанию
+> GitHub, из коммита, указанного в описании релиза (команда целиком — в
+> разделе [Install](#install)). До первой настоящей записи задайте пароль:
+> **Настройки → Защита**. Приложение само не проверяет обновления — новую
+> версию ставьте поверх старой, данные и ключи сохраняются. Перед обновлением
+> или удалением остановите запись и выйдите из программы через значок в трее:
+> установщик закрывает её без вопроса, и идущая запись пропадёт. При удалении программы папка с записями (по умолчанию
 > `Музыка\meetily-recordings`) остаётся на диске. Подробнее — разделы
 > [Install](#install) и [What goes over the network](#what-goes-over-the-network).
 
@@ -102,14 +104,14 @@ you can also build from source (below).
    can also check where the file was built:
 
    ```powershell
-   gh attestation verify .\Talkkeeper_<version>_x64-setup.exe --repo leyvanah/Talkkeeper --signer-workflow leyvanah/Talkkeeper/.github/workflows/release-signed.yml --format json
+   gh attestation verify .\Talkkeeper_<version>_x64-setup.exe --repo leyvanah/Talkkeeper --signer-workflow leyvanah/Talkkeeper/.github/workflows/release-signed.yml --format json --jq '.[].verificationResult.signature.certificate | {sourceRepositoryRef, sourceRepositoryDigest}'
    ```
 
-   It succeeds only for a file built by this repository's release workflow on
-   GitHub's machines, and the output names the commit it was built from
-   (`sourceRepositoryDigest`). A changed file, or one built anywhere else,
-   fails with an error. Keep `--format json`: without it a successful check
-   may print nothing at all.
+   It succeeds (exit code 0) only for a file built by this repository's release
+   workflow on GitHub's machines, and prints the branch and the commit the file
+   was built from. A changed file, or one built anywhere else, fails with an
+   error. A test build from another branch passes too, so compare
+   `sourceRepositoryDigest` with the commit given in the release notes.
 3. Run it. The installer is **not code-signed**, so Windows SmartScreen shows
    *Windows protected your PC* and *Unknown publisher*: choose **More info →
    Run anyway**. It installs for the current user only, into
@@ -125,13 +127,20 @@ you can also build from source (below).
 Releases on GitHub** opens the releases page in your browser. Run the new
 installer over the old one: your meetings, recordings, models and keys are kept.
 
+**Before updating or uninstalling**, stop any recording, then quit Talkkeeper
+from its tray icon (closing the window only hides it there). The installer and
+the uninstaller close a running app without asking, and a recording still in
+progress is lost.
+
 **Uninstalling.** Use *Settings → Apps → Installed apps → Talkkeeper* in Windows.
 
 - By default only the program is removed; the data folder stays.
 - The tick box *Also delete meetings, models, and local data* deletes the data
-  folder as well. If a password is set, the uninstaller first asks separately,
-  copies the key to `Documents\Talkkeeper-key-backup` and deletes nothing if
-  that copy could not be written.
+  folder as well. If a password is set, the uninstaller first asks separately
+  and copies the key to
+  `Documents\Talkkeeper-key-backup`. If that copy could not be written, the
+  data folder is kept; the app's window settings (language, theme) are removed
+  either way.
 - **The recordings folder is never deleted by the uninstaller.** Delete it
   yourself if you no longer need it. Recordings made without a password are
   ordinary audio files that anyone with access to the disk can play.
@@ -158,6 +167,9 @@ The app itself connects only when you ask it to:
   Hugging Face; speaker models, and a fallback copy of one speech model, from
   the original project's GitHub releases. Every source is pinned to a fixed
   version, and every downloaded file is checked against its SHA-256.
+- **Downloading a model through Ollama**, if you use it: the app asks Ollama on
+  this computer to fetch the model, and Ollama downloads it from its own
+  registry. That download is Ollama's: Talkkeeper neither pins nor checks it.
 - **A cloud summary or recognition provider**, if you turned off *This computer
   only* and chose one. The meeting text goes to that provider.
 
@@ -345,8 +357,9 @@ workflow on GitHub-hosted machines, started by hand; a locally built installer
 is never published. The SHA-256 of each installer is given in its release
 notes, and each published installer carries a GitHub build attestation that
 ties it to this workflow and the commit it was built from; [Install](#install)
-shows how to check both. Signing through [SignPath Foundation](https://signpath.org/) is planned
-once the app has more users; the workflow is ready for it.
+shows how to check both. Signing through
+[SignPath Foundation](https://signpath.org/) is planned once the app has more
+users; the workflow is ready for it.
 
 Team roles:
 
