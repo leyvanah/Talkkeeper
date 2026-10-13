@@ -141,6 +141,36 @@ function PersonProfileContent() {
   const [question, setQuestion] = useState('');
   const [history, setHistory] = useState<AIMessage[]>([]);
   const [asking, setAsking] = useState(false);
+  // The owner's own overview request, kept in the archive; null = the default.
+  const [customPrompt, setCustomPrompt] = useState<string | null>(null);
+  const [promptOpen, setPromptOpen] = useState(false);
+  const [promptDraft, setPromptDraft] = useState('');
+  const [promptSaving, setPromptSaving] = useState(false);
+  const [promptError, setPromptError] = useState<string | null>(null);
+
+  useEffect(() => {
+    invoke<string | null>('get_person_overview_prompt')
+      .then(setCustomPrompt)
+      .catch((error) => console.error('Failed to load the overview request:', error));
+  }, []);
+
+  const savePrompt = async (next: string | null) => {
+    if (promptSaving) return;
+    // Saving the default text unchanged is not a request of one's own.
+    const value = next && next.trim() && next.trim() !== t('overviewPrompt').trim() ? next.trim() : null;
+    setPromptSaving(true);
+    setPromptError(null);
+    try {
+      await invoke('set_person_overview_prompt', { prompt: value });
+      setCustomPrompt(value);
+      setPromptOpen(false);
+    } catch (error) {
+      console.error('Failed to save the overview request:', error);
+      setPromptError(t('overviewPromptSaveFailed', { error: error instanceof Error ? error.message : String(error) }));
+    } finally {
+      setPromptSaving(false);
+    }
+  };
 
   useEffect(() => {
     setProfile(null);
@@ -202,7 +232,7 @@ function PersonProfileContent() {
     try {
       const answer = await invoke<string>('ask_person', {
         personId,
-        question: t('overviewPrompt'),
+        question: customPrompt ?? t('overviewPrompt'),
       });
       setOverview(answer);
     } catch (error) {
@@ -347,6 +377,54 @@ function PersonProfileContent() {
                     <button onClick={generateOverview} className="mt-5 inline-flex items-center gap-2 rounded-lg bg-[var(--af-accent)] px-4 py-2 text-sm font-medium text-[var(--af-accent-contrast)] hover:brightness-110">
                       <Sparkles className="h-4 w-4" /> {t('generateOverview')}
                     </button>
+                  </div>
+                )}
+              </div>
+              <div className="border-t border-[var(--af-border)] px-5 py-3 sm:px-6">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setPromptDraft(customPrompt ?? t('overviewPrompt'));
+                    setPromptError(null);
+                    setPromptOpen((open) => !open);
+                  }}
+                  className="text-xs font-medium text-[var(--af-text-2)] underline-offset-4 hover:text-[var(--af-text)] hover:underline"
+                  aria-expanded={promptOpen}
+                >
+                  {customPrompt ? t('overviewPromptCustomized') : t('overviewPromptCustomize')}
+                </button>
+                {promptOpen && (
+                  <div className="mt-3 space-y-2">
+                    <textarea
+                      value={promptDraft}
+                      onChange={(event) => setPromptDraft(event.target.value)}
+                      rows={5}
+                      maxLength={2000}
+                      aria-label={t('overviewPromptCustomize')}
+                      className="w-full resize-y rounded-lg border border-[var(--af-border-strong)] bg-[var(--af-bg)] px-3 py-2 text-sm text-[var(--af-text)] outline-none focus:border-[var(--af-accent)]"
+                    />
+                    <p className="text-xs text-[var(--af-text-3)]">{t('overviewPromptHint')}</p>
+                    {promptError && <p role="alert" className="text-xs text-red-400">{promptError}</p>}
+                    <div className="flex flex-wrap gap-2">
+                      <button
+                        type="button"
+                        onClick={() => void savePrompt(promptDraft)}
+                        disabled={promptSaving}
+                        className="inline-flex items-center gap-1.5 rounded-lg bg-[var(--af-accent)] px-3 py-1.5 text-xs font-medium text-[var(--af-accent-contrast)] hover:brightness-110 disabled:opacity-50"
+                      >
+                        <Save className="h-3.5 w-3.5" /> {t('overviewPromptSave')}
+                      </button>
+                      {customPrompt && (
+                        <button
+                          type="button"
+                          onClick={() => void savePrompt(null)}
+                          disabled={promptSaving}
+                          className="rounded-lg border border-[var(--af-border-strong)] px-3 py-1.5 text-xs font-medium text-[var(--af-text-2)] hover:bg-[var(--af-hover)] disabled:opacity-50"
+                        >
+                          {t('overviewPromptReset')}
+                        </button>
+                      )}
+                    </div>
                   </div>
                 )}
               </div>

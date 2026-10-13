@@ -6,8 +6,14 @@
 // The bundled FFmpeg ships inside the installer and processes decrypted audio,
 // so every archive and every extracted binary is pinned by SHA-256. Nothing is
 // extracted or executed before its hash matches; a mismatch fails the build.
+//
+// FFmpeg is GPL. Its license and the build's own description (version, source
+// commit, configuration, the libraries linked in) come out of the same pinned
+// archive into `licenses/ffmpeg/`, which the installer carries next to the
+// rest of the third-party notices.
 
 use sha2::{Digest, Sha256};
+use std::io::Read;
 
 /// A pinned FFmpeg download for one target.
 struct FfmpegSource {
@@ -16,6 +22,33 @@ struct FfmpegSource {
     archive_sha256: &'static str,
     /// SHA-256 of the ffmpeg executable inside the archive.
     binary_sha256: &'static str,
+    /// License and build notes shipped with the binary.
+    notices: &'static [Notice],
+}
+
+/// A text file from the archive that goes into the installer as it is.
+struct Notice {
+    /// File name in the archive's top folder.
+    in_archive: &'static str,
+    /// File name under `licenses/ffmpeg/`.
+    install_as: &'static str,
+    sha256: &'static str,
+}
+
+/// Where the notices are written; `tauri.conf.json` bundles this folder.
+fn notices_dir() -> std::path::PathBuf {
+    let manifest_dir = std::env::var("CARGO_MANIFEST_DIR")
+        .expect("CARGO_MANIFEST_DIR environment variable not set");
+    std::path::PathBuf::from(manifest_dir).join("licenses").join("ffmpeg")
+}
+
+/// Whether every notice is already in place with its pinned content.
+fn notices_present(source: &FfmpegSource) -> bool {
+    let dir = notices_dir();
+    source
+        .notices
+        .iter()
+        .all(|notice| sha256_file(&dir.join(notice.install_as)).as_deref() == Ok(notice.sha256))
 }
 
 /// Download and bundle FFmpeg binary for current target platform
@@ -47,11 +80,22 @@ pub fn ensure_ffmpeg_binary() {
         match sha256_file(&binary_path) {
             Ok(actual) if actual == source.binary_sha256 => {
                 println!("cargo:warning=🔒 FFmpeg binary SHA-256 matches pinned value: {}", actual);
-                if verify_ffmpeg_binary(&binary_path) {
+                if !notices_present(&source) {
+                    // The binary is fine and stays until a verified one replaces it
+                    println!("cargo:warning=📄 FFmpeg license files missing, downloading the archive for them...");
+                    if let Err(e) = download_and_extract_ffmpeg(&target, &source, &binary_path) {
+                        panic!("⚠️  Failed to download FFmpeg: {}", e);
+                    }
+                    if !verify_ffmpeg_binary(&binary_path) {
+                        panic!("⚠️  Downloaded FFmpeg binary verification failed!");
+                    }
+                    return;
+                } else if verify_ffmpeg_binary(&binary_path) {
                     println!("cargo:warning=✅ FFmpeg binary already cached and verified: {}", binary_name);
                     return;
+                } else {
+                    println!("cargo:warning=⚠️  Cached FFmpeg binary failed to run, re-downloading...");
                 }
-                println!("cargo:warning=⚠️  Cached FFmpeg binary failed to run, re-downloading...");
             }
             Ok(actual) => {
                 println!(
@@ -66,7 +110,7 @@ pub fn ensure_ffmpeg_binary() {
         let _ = std::fs::remove_file(&binary_path);
     }
 
-    println!("cargo:warning=📥 FFmpeg binary not found, downloading for {}", target);
+    println!("cargo:warning=📥 Downloading FFmpeg for {}", target);
 
     // Create binaries directory if it doesn't exist
     if !binaries_dir.exists() {
@@ -79,7 +123,7 @@ pub fn ensure_ffmpeg_binary() {
         Ok(()) => {
             println!("cargo:warning=✅ FFmpeg binary downloaded successfully: {}", binary_name);
 
-            // Hash already checked in extract_ffmpeg_from_archive; now it is safe to run
+            // Hash already checked in write_verified; now it is safe to run
             if !verify_ffmpeg_binary(&binary_path) {
                 panic!("⚠️  Downloaded FFmpeg binary verification failed!");
             }
@@ -90,14 +134,13 @@ pub fn ensure_ffmpeg_binary() {
     }
 }
 
-/// Download FFmpeg from platform-specific URL and extract to target location
+/// Download the pinned archive and take the binary and the notices out of it,
+/// in memory: nothing from the archive reaches the disk before its hash matches.
 fn download_and_extract_ffmpeg(
     target: &str,
     source: &FfmpegSource,
     output_path: &std::path::PathBuf,
 ) -> Result<(), String> {
-    use std::io::Write;
-
     let url = source.url;
 
     println!("cargo:warning=⬇️  Downloading from: {}", url);
@@ -120,44 +163,137 @@ fn download_and_extract_ffmpeg(
     let total_size = response.content_length().unwrap_or(0);
     println!("cargo:warning=📦 Download size: {:.1} MB", total_size as f64 / 1_048_576.0);
 
-    // Download to temp file
-    let temp_dir = std::env::temp_dir();
-    let archive_filename = url.split('/').next_back().unwrap_or("ffmpeg-archive");
-    let archive_path = temp_dir.join(format!("ffmpeg-build-{}-{}", target, archive_filename));
+    let content = response.bytes()
+        .map_err(|e| format!("Failed to read response: {}", e))?;
 
-    {
-        let content = response.bytes()
-            .map_err(|e| format!("Failed to read response: {}", e))?;
+    // Verify before anything is extracted
+    let actual = sha256_hex(&content);
+    if actual != source.archive_sha256 {
+        return Err(format!(
+            "FFmpeg archive SHA-256 mismatch for {}: expected {}, got {}. Refusing to extract.",
+            url, source.archive_sha256, actual
+        ));
+    }
+    println!("cargo:warning=🔒 FFmpeg archive SHA-256 matches pinned value: {}", actual);
+    println!("cargo:warning=📂 Extracting FFmpeg binary and license files...");
 
-        // Verify before the archive touches the disk or gets extracted
-        let actual = sha256_hex(&content);
-        if actual != source.archive_sha256 {
-            return Err(format!(
-                "FFmpeg archive SHA-256 mismatch for {}: expected {}, got {}. Refusing to extract.",
-                url, source.archive_sha256, actual
-            ));
-        }
-        println!("cargo:warning=🔒 FFmpeg archive SHA-256 matches pinned value: {}", actual);
+    let executable_name = if target.contains("windows") { "ffmpeg.exe" } else { "ffmpeg" };
+    let mut wanted: Vec<&str> = vec![executable_name];
+    wanted.extend(source.notices.iter().map(|notice| notice.in_archive));
+    let found = if url.ends_with(".zip") {
+        files_from_zip(&content, &wanted)?
+    } else if url.ends_with(".tar.xz") || url.ends_with(".txz") {
+        files_from_tar_xz(&content, &wanted)?
+    } else {
+        return Err(format!("Unsupported archive format: {}", url));
+    };
 
-        let mut file = std::fs::File::create(&archive_path)
-            .map_err(|e| format!("Failed to create temp file: {}", e))?;
+    let take = |name: &str| {
+        found
+            .iter()
+            .find(|(found_name, _)| found_name == name)
+            .map(|(_, bytes)| bytes.as_slice())
+            .ok_or_else(|| format!("'{}' not found in the FFmpeg archive", name))
+    };
 
-        file.write_all(&content)
-            .map_err(|e| format!("Failed to write archive: {}", e))?;
+    write_verified(take(executable_name)?, source.binary_sha256, output_path)?;
+    let dir = notices_dir();
+    std::fs::create_dir_all(&dir)
+        .map_err(|e| format!("Failed to create {:?}: {}", dir, e))?;
+    for notice in source.notices {
+        write_verified(take(notice.in_archive)?, notice.sha256, &dir.join(notice.install_as))?;
     }
 
-    println!("cargo:warning=📦 Downloaded to: {:?}", archive_path);
-    println!("cargo:warning=📂 Extracting FFmpeg binary...");
-
-    // Extract binary (platform-specific)
-    extract_ffmpeg_from_archive(&archive_path, target, source, output_path)?;
-
-    // Cleanup archive
-    let _ = std::fs::remove_file(&archive_path);
+    // Set executable permissions on Unix systems
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(output_path, std::fs::Permissions::from_mode(0o755))
+            .map_err(|e| format!("Failed to set executable permissions: {}", e))?;
+    }
 
     println!("cargo:warning=✨ Extraction complete");
-
     Ok(())
+}
+
+/// Writes `bytes` to `path` only if they are the pinned content, through a
+/// temporary name, and checks the file that landed.
+fn write_verified(bytes: &[u8], sha256: &str, path: &std::path::Path) -> Result<(), String> {
+    let actual = sha256_hex(bytes);
+    if actual != sha256 {
+        return Err(format!(
+            "{:?} from the FFmpeg archive: SHA-256 mismatch, expected {}, got {}",
+            path.file_name().unwrap_or_default(),
+            sha256,
+            actual
+        ));
+    }
+    let partial = path.with_extension("partial");
+    std::fs::write(&partial, bytes).map_err(|e| format!("Failed to write {:?}: {}", partial, e))?;
+    std::fs::rename(&partial, path).map_err(|e| format!("Failed to place {:?}: {}", path, e))?;
+    // The file on disk is what gets run and bundled
+    if sha256_file(path)? != sha256 {
+        let _ = std::fs::remove_file(path);
+        return Err(format!("{:?} changed on its way to disk", path));
+    }
+    Ok(())
+}
+
+/// Whether an archive entry is one of `wanted`: matched by file name, at most
+/// two folders deep (`ffmpeg-x/bin/ffmpeg.exe`, `ffmpeg-x/LICENSE`, `ffmpeg`).
+fn wanted_name(path: &std::path::Path, wanted: &[&str]) -> Option<String> {
+    let name = path.file_name()?.to_str()?;
+    (path.components().count() <= 3 && wanted.contains(&name)).then(|| name.to_string())
+}
+
+/// The wanted files of a ZIP held in memory, by file name.
+fn files_from_zip(content: &[u8], wanted: &[&str]) -> Result<Vec<(String, Vec<u8>)>, String> {
+    let mut archive = zip::ZipArchive::new(std::io::Cursor::new(content))
+        .map_err(|e| format!("Failed to read ZIP archive: {}", e))?;
+    let mut found = Vec::new();
+    for i in 0..archive.len() {
+        let mut file = archive.by_index(i)
+            .map_err(|e| format!("Failed to read ZIP entry {}: {}", i, e))?;
+        if file.is_dir() {
+            continue;
+        }
+        // enclosed_name() refuses path traversal ("../")
+        let Some(name) = file.enclosed_name().and_then(|path| wanted_name(&path, wanted)) else {
+            continue;
+        };
+        if found.iter().any(|(seen, _)| seen == &name) {
+            return Err(format!("'{}' appears twice in the FFmpeg archive", name));
+        }
+        let mut bytes = Vec::with_capacity(file.size() as usize);
+        file.read_to_end(&mut bytes)
+            .map_err(|e| format!("Failed to extract {}: {}", name, e))?;
+        found.push((name, bytes));
+    }
+    Ok(found)
+}
+
+/// The wanted files of a TAR.XZ held in memory, by file name.
+fn files_from_tar_xz(content: &[u8], wanted: &[&str]) -> Result<Vec<(String, Vec<u8>)>, String> {
+    let mut archive = tar::Archive::new(xz2::read::XzDecoder::new(std::io::Cursor::new(content)));
+    let mut found = Vec::new();
+    for entry in archive.entries().map_err(|e| format!("Failed to read TAR: {}", e))? {
+        let mut entry = entry.map_err(|e| format!("Failed to read TAR entry: {}", e))?;
+        if !entry.header().entry_type().is_file() {
+            continue;
+        }
+        let path = entry.path().map_err(|e| format!("Bad TAR entry name: {}", e))?.into_owned();
+        let Some(name) = wanted_name(&path, wanted) else {
+            continue;
+        };
+        if found.iter().any(|(seen, _)| seen == &name) {
+            return Err(format!("'{}' appears twice in the FFmpeg archive", name));
+        }
+        let mut bytes = Vec::new();
+        entry.read_to_end(&mut bytes)
+            .map_err(|e| format!("Failed to extract {}: {}", name, e))?;
+        found.push((name, bytes));
+    }
+    Ok(found)
 }
 
 /// Get the pinned FFmpeg download for specific target triple
@@ -175,6 +311,20 @@ fn get_ffmpeg_source_for_target(target: &str) -> Result<FfmpegSource, String> {
             url: "https://github.com/GyanD/codexffmpeg/releases/download/8.0.1/ffmpeg-8.0.1-essentials_build.zip",
             archive_sha256: "e2aaeaa0fdbc397d4794828086424d4aaa2102cef1fb6874f6ffd29c0b88b673",
             binary_sha256: "5af82a0d4fe2b9eae211b967332ea97edfc51c6b328ca35b827e73eac560dc0d",
+            notices: &[
+                // GPL v3, the build's license
+                Notice {
+                    in_archive: "LICENSE",
+                    install_as: "LICENSE.txt",
+                    sha256: "8ceb4b9ee5adedde47b31e975c1d90c73ad27b6b165a1dcd80c7c545eb65b903",
+                },
+                // Version, FFmpeg source commit, configuration, linked libraries
+                Notice {
+                    in_archive: "README.txt",
+                    install_as: "BUILD.txt",
+                    sha256: "a0e976df3cf1d781264c41db8ee3421978c1278be92ed00edbc96337529670be",
+                },
+            ],
         }
     } else if target.contains("apple") {
         if target.contains("aarch64") {
@@ -183,6 +333,8 @@ fn get_ffmpeg_source_for_target(target: &str) -> Result<FfmpegSource, String> {
                 url: "https://github.com/Zackriya-Solutions/ffmpeg-binaries/releases/download/0.0.1/ffmpeg80arm.zip",
                 archive_sha256: "0d4efcaf6a098430a708e0af694a84792938921fa126162787ae98c6151d7a95",
                 binary_sha256: "77d2c853f431318d55ec02676d9b2f185ebfdddb9f7677a251fbe453affe025a",
+                // This archive carries no license file; see licenses/ffmpeg/SOURCE.md
+                notices: &[],
             }
         } else {
             // Intel Mac
@@ -190,6 +342,8 @@ fn get_ffmpeg_source_for_target(target: &str) -> Result<FfmpegSource, String> {
                 url: "https://github.com/Zackriya-Solutions/ffmpeg-binaries/releases/download/0.0.1/ffmpeg-8.0.1.zip",
                 archive_sha256: "470e482f6e290eac92984ac12b2d67bad425b1e5269fd75fb6a3536c16e824e4",
                 binary_sha256: "430d60fbf419dab28daee9b679e7929a31ee9bae53f6e42e8ae26b725584290f",
+                // This archive carries no license file; see licenses/ffmpeg/SOURCE.md
+                notices: &[],
             }
         }
     } else if target.contains("linux") {
@@ -199,6 +353,8 @@ fn get_ffmpeg_source_for_target(target: &str) -> Result<FfmpegSource, String> {
                 url: "https://github.com/Zackriya-Solutions/ffmpeg-binaries/releases/download/0.0.1/ffmpeg-release-arm64-static.tar.xz",
                 archive_sha256: "f4149bb2b0784e30e99bdda85471c9b5930d3402014e934a5098b41d0f7201b1",
                 binary_sha256: "6bb182d0d75d23028db82e9e4f723ca69b853d055698486e6984ddb2c06fb8ce",
+                // This archive carries no license file; see licenses/ffmpeg/SOURCE.md
+                notices: &[],
             }
         } else {
             // Linux x86_64 (the archive contains FFmpeg 7.0.2, not 8.0.1)
@@ -206,6 +362,8 @@ fn get_ffmpeg_source_for_target(target: &str) -> Result<FfmpegSource, String> {
                 url: "https://github.com/Zackriya-Solutions/ffmpeg-binaries/releases/download/0.0.1/ffmpeg-release-amd64-static.tar.xz",
                 archive_sha256: "abda8d77ce8309141f83ab8edf0596834087c52467f6badf376a6a2a4c87cf67",
                 binary_sha256: "e7e7fb30477f717e6f55f9180a70386c62677ef8a4d4d1a5d948f4098aa3eb99",
+                // This archive carries no license file; see licenses/ffmpeg/SOURCE.md
+                notices: &[],
             }
         }
     } else {
@@ -228,196 +386,6 @@ fn sha256_file(path: &std::path::Path) -> Result<String, String> {
     std::io::copy(&mut file, &mut hasher)
         .map_err(|e| format!("Failed to read {:?}: {}", path, e))?;
     Ok(format!("{:x}", hasher.finalize()))
-}
-
-/// Extract FFmpeg binary from downloaded archive (handles ZIP and TAR.XZ)
-fn extract_ffmpeg_from_archive(
-    archive_path: &std::path::Path,
-    target: &str,
-    source: &FfmpegSource,
-    output_path: &std::path::PathBuf,
-) -> Result<(), String> {
-    let extract_dir = std::env::temp_dir().join(format!("ffmpeg-extract-{}", target));
-
-    // Clean old extraction directory
-    let _ = std::fs::remove_dir_all(&extract_dir);
-    std::fs::create_dir_all(&extract_dir)
-        .map_err(|e| format!("Failed to create extract dir: {}", e))?;
-
-    // Determine archive format from extension
-    let archive_str = archive_path.to_string_lossy();
-
-    if archive_str.ends_with(".zip") {
-        extract_zip(archive_path, &extract_dir)?;
-    } else if archive_str.ends_with(".tar.xz") || archive_str.ends_with(".txz") {
-        extract_tar_xz(archive_path, &extract_dir)?;
-    } else {
-        return Err(format!("Unsupported archive format: {}", archive_str));
-    }
-
-    // Find extracted FFmpeg binary (platform-specific locations)
-    let ffmpeg_binary = find_ffmpeg_in_extracted_dir(&extract_dir, target)?;
-
-    println!("cargo:warning=📋 Found FFmpeg at: {:?}", ffmpeg_binary);
-
-    // Copy to target location
-    std::fs::copy(&ffmpeg_binary, output_path)
-        .map_err(|e| format!("Failed to copy binary to binaries/: {}", e))?;
-    let _ = std::fs::remove_dir_all(&extract_dir);
-
-    // Verify the copy itself, not the temp file: this is the file that gets run
-    // and bundled, and the temp dir may be shared (/tmp on Unix)
-    let actual = sha256_file(output_path)?;
-    if actual != source.binary_sha256 {
-        let _ = std::fs::remove_file(output_path);
-        return Err(format!(
-            "Extracted FFmpeg binary SHA-256 mismatch: expected {}, got {}",
-            source.binary_sha256, actual
-        ));
-    }
-    println!("cargo:warning=🔒 FFmpeg binary SHA-256 matches pinned value: {}", actual);
-
-    // Set executable permissions on Unix systems
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let mut perms = std::fs::metadata(output_path)
-            .map_err(|e| format!("Failed to get metadata: {}", e))?
-            .permissions();
-        perms.set_mode(0o755); // rwxr-xr-x
-        std::fs::set_permissions(output_path, perms)
-            .map_err(|e| format!("Failed to set executable permissions: {}", e))?;
-        println!("cargo:warning=🔐 Set executable permissions");
-    }
-
-    Ok(())
-}
-
-/// Extract ZIP archive (Windows, macOS)
-fn extract_zip(
-    archive_path: &std::path::Path,
-    extract_dir: &std::path::Path,
-) -> Result<(), String> {
-    
-
-    let file = std::fs::File::open(archive_path)
-        .map_err(|e| format!("Failed to open ZIP: {}", e))?;
-
-    let mut archive = zip::ZipArchive::new(file)
-        .map_err(|e| format!("Failed to read ZIP archive: {}", e))?;
-
-    for i in 0..archive.len() {
-        let mut file = archive.by_index(i)
-            .map_err(|e| format!("Failed to read ZIP entry {}: {}", i, e))?;
-
-        // Use enclosed_name() to prevent Zip Slip path traversal attacks
-        let outpath = match file.enclosed_name() {
-            Some(name) => extract_dir.join(name),
-            None => {
-                // Skip entries with path traversal sequences (e.g., "../")
-                println!("cargo:warning=⚠️  Skipping suspicious ZIP entry: {}", file.name());
-                continue;
-            }
-        };
-
-        if file.is_dir() {
-            // Directory
-            std::fs::create_dir_all(&outpath)
-                .map_err(|e| format!("Failed to create directory: {}", e))?;
-        } else {
-            // File
-            if let Some(parent) = outpath.parent() {
-                std::fs::create_dir_all(parent)
-                    .map_err(|e| format!("Failed to create parent directory: {}", e))?;
-            }
-
-            let mut outfile = std::fs::File::create(&outpath)
-                .map_err(|e| format!("Failed to create output file: {}", e))?;
-
-            std::io::copy(&mut file, &mut outfile)
-                .map_err(|e| format!("Failed to extract file: {}", e))?;
-        }
-
-        // Set Unix permissions if available
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            if let Some(mode) = file.unix_mode() {
-                std::fs::set_permissions(&outpath, std::fs::Permissions::from_mode(mode))
-                    .ok();
-            }
-        }
-    }
-
-    Ok(())
-}
-
-/// Extract TAR.XZ archive (Linux)
-fn extract_tar_xz(
-    archive_path: &std::path::Path,
-    extract_dir: &std::path::Path,
-) -> Result<(), String> {
-    let file = std::fs::File::open(archive_path)
-        .map_err(|e| format!("Failed to open TAR.XZ: {}", e))?;
-
-    // Decompress XZ
-    let decompressor = xz2::read::XzDecoder::new(file);
-
-    // Extract TAR
-    let mut archive = tar::Archive::new(decompressor);
-    archive.unpack(extract_dir)
-        .map_err(|e| format!("Failed to extract TAR: {}", e))?;
-
-    Ok(())
-}
-
-/// Find FFmpeg binary in extracted directory (handles nested structures)
-fn find_ffmpeg_in_extracted_dir(
-    extract_dir: &std::path::Path,
-    target: &str,
-) -> Result<std::path::PathBuf, String> {
-    let executable_name = if target.contains("windows") {
-        "ffmpeg.exe"
-    } else {
-        "ffmpeg"
-    };
-
-    // Search patterns (in priority order)
-    let search_patterns = [
-        extract_dir.join(executable_name),                    // Flat: ffmpeg
-        extract_dir.join("bin").join(executable_name),        // Nested: bin/ffmpeg
-    ];
-
-    // Try direct paths first
-    for pattern in &search_patterns {
-        if pattern.exists() && pattern.is_file() {
-            return Ok(pattern.clone());
-        }
-    }
-
-    // Recursive search for nested directories (e.g., ffmpeg-6.0-full_build/bin/ffmpeg.exe)
-    for entry in std::fs::read_dir(extract_dir)
-        .map_err(|e| format!("Failed to read extract dir: {}", e))?
-    {
-        let entry = entry.map_err(|e| format!("Failed to read entry: {}", e))?;
-        let path = entry.path();
-
-        if path.is_dir() {
-            // Check bin/ subdirectory
-            let bin_path = path.join("bin").join(executable_name);
-            if bin_path.exists() && bin_path.is_file() {
-                return Ok(bin_path);
-            }
-
-            // Check root of subdirectory
-            let root_path = path.join(executable_name);
-            if root_path.exists() && root_path.is_file() {
-                return Ok(root_path);
-            }
-        }
-    }
-
-    Err(format!("FFmpeg binary '{}' not found in extracted archive", executable_name))
 }
 
 /// Verify FFmpeg binary is functional (runs -version successfully)

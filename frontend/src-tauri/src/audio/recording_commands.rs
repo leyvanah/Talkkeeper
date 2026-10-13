@@ -118,6 +118,12 @@ pub fn is_recording_active() -> bool {
     IS_RECORDING.load(Ordering::SeqCst)
 }
 
+/// Whether a Stop is under way: capture is ending and the last of the speech
+/// is being recognised.
+pub fn is_stopping() -> bool {
+    IS_STOPPING.load(Ordering::SeqCst)
+}
+
 /// How far into the recording now running we are, in seconds of recorded
 /// sound: the time pauses took is left out, as it is from the audio itself.
 pub fn recorded_seconds() -> Option<f64> {
@@ -1217,6 +1223,8 @@ async fn stop_recording_inner<R: Runtime>(
     // Every stop origin uses this one completion signal. Metadata travels in the
     // same main-window-only event so frontend persistence cannot race a separate
     // broadcast (the minibar mounts the same React providers in another webview).
+    // Marked before the event goes out, so a quick reply cannot arrive first.
+    crate::quit::save_handed_to_window();
     if let Err(error) = app.emit_to(
         "main",
         "recording-stop-complete",
@@ -1228,6 +1236,7 @@ async fn stop_recording_inner<R: Runtime>(
         }),
     ) {
         warn!("Failed to notify main window of recording completion: {}", error);
+        crate::quit::recording_save_settled();
     }
 
     info!("🎉 Recording stopped successfully with ZERO transcript chunks lost");

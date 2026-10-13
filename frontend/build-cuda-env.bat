@@ -1,30 +1,52 @@
 @echo off
-REM Fork build helper: MSVC + LLVM + reassembled CUDA toolkit + Ninja.
-REM Usage: build-cuda-env.bat [helper|libhelper|lib|bundle|check]
+REM Fork build helper: MSVC + LLVM 18 + CUDA toolkit + Ninja.
+REM Usage: build-cuda-env.bat [helper|libhelper|lib|bundle|check|test|fix]
 REM   check = cargo check only (type-check, NO exe link) - safe to run while the
 REM           app is still running (won't hit LNK1104 on the locked meetily.exe).
+REM Needs Visual Studio 2022 (or its Build Tools) with C++, LLVM 18.1.8 and a
+REM CUDA toolkit in CUDA_PATH (the CUDA installer sets it). Nothing here is
+REM tied to one machine: every location comes from the environment or vswhere.
 setlocal enabledelayedexpansion
 
 set "ROOT=%~dp0"
 set "REPO=%ROOT%.."
 
-REM --- MSVC environment ---
-call "C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\VC\Auxiliary\Build\vcvars64.bat" >nul 2>&1
+REM --- MSVC environment: the latest Visual Studio with the C++ tools ---
+set "VSWHERE=%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe"
+if not exist "%VSWHERE%" goto :no_vs
+set "VS="
+for /f "usebackq delims=" %%i in (`"%VSWHERE%" -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath`) do set "VS=%%i"
+if not defined VS goto :no_vs
+call "%VS%\VC\Auxiliary\Build\vcvars64.bat" >nul 2>&1
+where cl.exe >nul 2>&1 || goto :no_vs
 
-REM --- Toolchain env ---
+REM --- LLVM 18 for bindgen (LLVM 19 and later break whisper-rs-sys) ---
+REM An explicit LIBCLANG_PATH wins, then the portable copy that
+REM scripts\bootstrap-llvm18.ps1 unpacks, then the default LLVM install.
+if defined LIBCLANG_PATH goto :llvm_found
 set "LIBCLANG_PATH=%REPO%\.build-tools\clang+llvm-18.1.8-x86_64-pc-windows-msvc\bin"
+if exist "%LIBCLANG_PATH%\libclang.dll" goto :llvm_found
+set "LIBCLANG_PATH=%ProgramFiles%\LLVM\bin"
+:llvm_found
+if not exist "%LIBCLANG_PATH%\libclang.dll" goto :no_llvm
 REM Bundled whisper-rs bindings are Linux-shaped; Windows must generate them
 REM with the repository's pinned LLVM 18 toolchain.
 set "WHISPER_DONT_GENERATE_BINDINGS="
-REM Reassembled, working CUDA 13.3 toolkit (user-space; nvcc test compile passes)
-set "CUDA_PATH=C:\Users\tyler\Documents\BuzaMeet\.cuda_toolkit"
+
+REM --- CUDA toolkit, from CUDA_PATH ---
+if not defined CUDA_PATH goto :no_cuda
+if not exist "%CUDA_PATH%\bin\nvcc.exe" goto :no_cuda
 set "CUDA_TOOLKIT_ROOT_DIR=%CUDA_PATH%"
 set "CMAKE_GENERATOR=Ninja"
-set "CMAKE_CUDA_ARCHITECTURES=89"
+REM GPU architecture to compile for (89 = RTX 40 series); set it beforehand to override.
+if not defined CMAKE_CUDA_ARCHITECTURES set "CMAKE_CUDA_ARCHITECTURES=89"
 REM CUDA 13 CCCL (thrust/cub) needs C++17 + MSVC conforming preprocessor for .cu host compile
 set "NVCC_APPEND_FLAGS=-std=c++17 -Xcompiler=/Zc:preprocessor -DCCCL_IGNORE_MSVC_TRADITIONAL_PREPROCESSOR_WARNING"
-set "NINJA_DIR=C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\Common7\IDE\CommonExtensions\Microsoft\CMake\Ninja"
-set "PATH=C:\Program Files\CMake\bin;%NINJA_DIR%;%CUDA_PATH%\bin;%CUDA_PATH%\bin\x64;%USERPROFILE%\.cargo\bin;%PATH%"
+REM Ninja and CMake ship with the Visual Studio C++ CMake tools. Its Ninja goes
+REM first (the CUDA build uses the Ninja generator), its CMake last, as a
+REM fallback.
+set "VS_CMAKE=%VS%\Common7\IDE\CommonExtensions\Microsoft\CMake"
+set "PATH=%VS_CMAKE%\Ninja;%CUDA_PATH%\bin;%CUDA_PATH%\bin\x64;%USERPROFILE%\.cargo\bin;%PATH%;%VS_CMAKE%\CMake\bin"
 set "TAURI_GPU_FEATURE=cuda"
 
 echo === Build env ===
@@ -110,3 +132,15 @@ if errorlevel 1 exit /b %errorlevel%
 cd /d "%ROOT%"
 call pnpm run tauri:build:cuda
 exit /b %errorlevel%
+
+:no_vs
+1>&2 echo ERROR: Visual Studio 2022 with the C++ build tools was not found.
+exit /b 1
+
+:no_llvm
+1>&2 echo ERROR: libclang.dll not found. Install LLVM 18.1.8 or set LIBCLANG_PATH to its bin folder.
+exit /b 1
+
+:no_cuda
+1>&2 echo ERROR: CUDA_PATH is not set or has no bin\nvcc.exe. Install the CUDA toolkit or set CUDA_PATH to its folder.
+exit /b 1
