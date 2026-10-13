@@ -29,7 +29,8 @@ const formatOptions: Array<{
   descriptionKey: string;
   icon: typeof FileText;
 }> = [
-  { value: 'pdf', label: 'PDF', descriptionKey: 'exportFormatPdfDescription', icon: FileText },
+  // PDF is left out until its export can print Cyrillic, wrap long lines and lay
+  // out tables (talkkeeper-tasks#98); today it produces an unreadable file.
   { value: 'docx', label: 'Word', labelKey: 'exportFormatWord', descriptionKey: 'exportFormatWordDescription', icon: FileType },
   { value: 'txt', label: 'Text', labelKey: 'exportFormatText', descriptionKey: 'exportFormatTextDescription', icon: ScrollText },
   { value: 'markdown', label: 'Markdown', descriptionKey: 'exportFormatMarkdownDescription', icon: Files },
@@ -136,6 +137,10 @@ export function MeetingExportDialog({
               );
             })}
           </div>
+        )}
+
+        {step === 'format' && (
+          <p className="text-xs text-amber-600">{t('exportUnencryptedNote')}</p>
         )}
 
         <DialogFooter>
