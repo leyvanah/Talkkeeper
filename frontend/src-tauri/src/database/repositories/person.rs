@@ -163,12 +163,12 @@ impl PeopleRepository {
             }
             let display_name = fields::open(fields::PERSON_NAME, &display_name)?;
             let notes = fields::open_opt(fields::PERSON_NOTES, notes)?;
-            let client_display_name =
-                fields::open_opt(fields::CLIENT_DISPLAY_NAME, client_display_name)?;
             let normalized = normalize_person_name(&display_name);
             if !normalized.contains(&needle) {
                 continue;
             }
+            let client_display_name =
+                fields::open_opt(fields::CLIENT_DISPLAY_NAME, client_display_name)?;
             taken += 1;
             ranked.push(RankedResult {
                 score: match_quality(&normalized, &needle),
