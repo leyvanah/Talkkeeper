@@ -247,6 +247,54 @@ async fn search_still_finds_a_sealed_word() {
 }
 
 #[tokio::test]
+async fn two_people_of_the_same_name_are_told_apart_by_their_client() {
+    // A person is (client, name). Without the client a search for "Тест А"
+    // shows two identical rows, and a note can go to the wrong profile.
+    let pool = archive().await;
+    let clients = [("Клиент 1", "Первая"), ("Клиент 2", "Вторая")];
+    for (client, title) in clients {
+        let client = ClientsRepository::create(&pool, client).await.unwrap();
+        let meeting_id = TranscriptsRepository::save_transcript(
+            &pool,
+            title,
+            &[segment("s1", "синтетическая реплика", "Тест А", 0.0)],
+            &[],
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+        ClientsRepository::assign_meeting(&pool, &meeting_id, Some(&client.id))
+            .await
+            .unwrap();
+    }
+
+    let people: Vec<_> = PeopleRepository::global_search(&pool, "тест а", None)
+        .await
+        .unwrap()
+        .into_iter()
+        .filter(|result| result.kind == "person")
+        .collect();
+    let mut rows: Vec<(&str, Option<&str>)> = people
+        .iter()
+        .map(|result| (result.title.as_str(), result.client_display_name.as_deref()))
+        .collect();
+    rows.sort();
+    assert_eq!(
+        rows,
+        vec![("Тест А", Some("Клиент 1")), ("Тест А", Some("Клиент 2"))]
+    );
+
+    // Each row opens the profile of its own client's person.
+    for result in &people {
+        let profile = PeopleRepository::get_profile(&pool, &result.id)
+            .await
+            .unwrap();
+        assert_eq!(profile.client_display_name, result.client_display_name);
+    }
+}
+
+#[tokio::test]
 async fn a_person_profile_still_joins_to_the_lines_they_said() {
     // The join this exercises (`t.speaker = ps.speaker_label`) is why those two
     // columns are sealed deterministically. Under a random nonce the two sealed

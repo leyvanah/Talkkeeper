@@ -162,6 +162,8 @@ export interface GlobalSearchResult {
   speaker?: string;
   audioStartTime?: number;
   meetingCount?: number;
+  /** Person rows only: whose person this is, when the person has a client. */
+  clientDisplayName?: string;
 }
 
 export interface PersonProfileMeeting {
@@ -176,6 +178,7 @@ export interface PersonProfileMeeting {
 export interface PersonProfile {
   id: string;
   displayName: string;
+  clientDisplayName?: string;
   notes?: string;
   meetingCount: number;
   messageCount: number;

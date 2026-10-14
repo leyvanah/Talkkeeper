@@ -310,6 +310,11 @@ function PersonProfileContent() {
                 <span className="h-px w-6 bg-[var(--af-accent)]" /> {t('personProfile')}
               </div>
               <h1 className="truncate text-3xl font-semibold text-[var(--af-text)] sm:text-4xl">{profile.displayName}</h1>
+              {profile.clientDisplayName && (
+                <p className="mt-1 truncate text-base text-[var(--af-text)]">
+                  {t('clientLine', { client: profile.clientDisplayName })}
+                </p>
+              )}
               <p className="mt-2 flex flex-wrap items-center gap-x-2 gap-y-1 text-sm text-[var(--af-text-2)]">
                 <span>{t('sharedMeetingsCount', { count: profile.meetingCount })}</span>
                 <span className="text-[var(--af-text-3)]">/</span>
