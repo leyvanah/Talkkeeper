@@ -99,6 +99,7 @@ fn toggle_recording_handler<R: Runtime>(app: &AppHandle<R>) {
             match stop_result {
                 Ok(crate::audio::recording_commands::StopOutcome::Completed) => {
                     log::info!("Tray toggle: Recording stopped successfully");
+                    notify_stopped(&app_clone).await;
                 }
                 Ok(crate::audio::recording_commands::StopOutcome::AlreadyStopping) => {
                     log::info!("Tray toggle: Recording stop is already in progress");
@@ -117,10 +118,16 @@ fn toggle_recording_handler<R: Runtime>(app: &AppHandle<R>) {
             // Immediately show starting state
             set_tray_state(&app_clone, RecordingState::Starting);
 
+            // The window starts it, the same way as its own button, with the
+            // settings it already has loaded. It used to be reloaded for this,
+            // and right after the reload it checked the default engine instead
+            // of the chosen one.
             log::info!("Emitting start recording event from tray");
-            if let Some(window) = app_clone.get_webview_window("main") {
-                let _ = window.eval("sessionStorage.setItem('autoStartRecording', 'true')"); // Set the flag to start recording automatically
-                let _ = window.eval("window.location.assign('/')");
+            if let Err(error) =
+                tauri::Emitter::emit_to(&app_clone, "main", "request-recording-toggle", ())
+            {
+                log::error!("Tray: could not ask the window to start recording: {}", error);
+                update_tray_menu_async(&app_clone).await;
             }
         }
     });
@@ -189,6 +196,7 @@ fn stop_recording_handler<R: Runtime>(app: &AppHandle<R>) {
         match stop_result {
             Ok(crate::audio::recording_commands::StopOutcome::Completed) => {
                 log::info!("Tray: Recording stopped successfully");
+                notify_stopped(&app_clone).await;
             }
             Ok(crate::audio::recording_commands::StopOutcome::AlreadyStopping) => {
                 log::info!("Tray: Recording stop is already in progress");
@@ -204,6 +212,17 @@ fn stop_recording_handler<R: Runtime>(app: &AppHandle<R>) {
             }
         }
     });
+}
+
+/// The notification the window's Stop shows, so a stop from the tray is
+/// announced the same way. It follows the notification settings.
+async fn notify_stopped<R: Runtime>(app: &AppHandle<R>) {
+    let state = app.state::<crate::notifications::commands::NotificationManagerState<R>>();
+    if let Err(error) =
+        crate::notifications::commands::show_recording_stopped_notification(app, &state).await
+    {
+        log::error!("Tray: could not show the recording stopped notification: {}", error);
+    }
 }
 
 fn check_updates_handler<R: Runtime>(app: &AppHandle<R>) {
