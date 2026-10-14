@@ -408,8 +408,65 @@ impl ParakeetEngine {
         Ok(())
     }
 
+    /// The files ONNX Runtime opens for a model of this quantization.
+    fn loaded_files(quantization: &QuantizationType) -> &'static [&'static str] {
+        match quantization {
+            QuantizationType::Int8 => &[
+                "encoder-model.int8.onnx",
+                "decoder_joint-model.int8.onnx",
+                "nemo128.onnx",
+                "vocab.txt",
+            ],
+            QuantizationType::FP32 => &[
+                "encoder-model.onnx",
+                "encoder-model.onnx.data",
+                "decoder_joint-model.onnx",
+                "nemo128.onnx",
+                "vocab.txt",
+            ],
+        }
+    }
+
+    /// Checks every file of the model against its pinned hash before ONNX
+    /// Runtime parses it. A file that fails is deleted and the model shown as
+    /// corrupted, so the settings offer to download it again.
+    async fn verify_before_load(&self, model_name: &str) -> Result<()> {
+        if self.current_model_name.read().await.as_deref() == Some(model_name) {
+            return Ok(());
+        }
+        let (model_dir, quantization) = match self.available_models.read().await.get(model_name) {
+            Some(info) if matches!(info.status, ModelStatus::Available) => {
+                (info.path.clone(), info.quantization.clone())
+            }
+            // load_model says why it cannot load.
+            _ => return Ok(()),
+        };
+        for filename in Self::loaded_files(&quantization) {
+            let checked = match crate::model_integrity::find(Self::pinned_files(model_name), filename)
+            {
+                Some(pinned) => {
+                    crate::model_integrity::verify_before_load(pinned, &model_dir.join(filename))
+                        .await
+                }
+                None => Err(anyhow!("{} has no pinned checksum", filename)),
+            };
+            if let Err(error) = checked {
+                log::error!("Parakeet model {} did not pass its check: {}", model_name, error);
+                if let Some(model) = self.available_models.write().await.get_mut(model_name) {
+                    model.status = ModelStatus::Corrupted {
+                        file_size: 0,
+                        expected_min_size: 0,
+                    };
+                }
+                return Err(error);
+            }
+        }
+        Ok(())
+    }
+
     /// Load a Parakeet model
     pub async fn load_model(&self, model_name: &str) -> Result<()> {
+        self.verify_before_load(model_name).await?;
         let models = self.available_models.read().await;
         let model_info = models
             .get(model_name)
