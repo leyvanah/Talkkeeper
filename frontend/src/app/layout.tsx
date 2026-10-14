@@ -435,7 +435,7 @@ export default function RootLayout({
                           <RetranscriptionProvider>
                           <PostCallProvider>
                           <RecordingPostProcessingProvider>
-                            <UpdateCheckProvider onboardingCompleted={onboardingCompleted}>
+                            <UpdateCheckProvider>
                               {onboardingCompleted && !showOnboarding && <GlobalSearchDialog />}
                               <ImportDialogProvider onOpen={handleOpenImportDialog}>
                                 {/* Download progress toast provider - listens for background downloads */}
