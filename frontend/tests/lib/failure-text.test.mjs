@@ -24,6 +24,18 @@ describe('failureText', () => {
     assert.equal(failureText({}), '{}');
   });
 
+  test('keys that are data are counted, not written', () => {
+    assert.equal(
+      failureText({ code: 'x', 'Встреча в четверг': 1, 'Secret phrase': 2 }),
+      '{code, +2}',
+    );
+    const many = Object.fromEntries(Array.from({ length: 10 }, (_, i) => [`field${i}`, i]));
+    assert.equal(
+      failureText(many),
+      '{field0, field1, field2, field3, field4, field5, field6, field7, +2}',
+    );
+  });
+
   test('nothing useful still says something', () => {
     assert.equal(failureText(undefined), 'unknown error');
     assert.equal(failureText(null), 'unknown error');

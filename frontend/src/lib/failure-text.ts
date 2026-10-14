@@ -9,8 +9,20 @@
  *
  * Any other object is logged by its field names only: the log is not
  * encrypted, and such an object could carry archive data (a command reply, a
- * piece of a meeting), so its values stay out.
+ * piece of a meeting), so its values stay out. A map's keys are data too
+ * (speaker names, meeting titles), so only names that look like code fields
+ * are written, a few at most; the rest are counted.
  */
+const FIELD_NAME = /^[A-Za-z_][A-Za-z0-9_]{0,31}$/
+const MAX_FIELD_NAMES = 8
+
+function fieldNames(error: object): string {
+  const keys = Object.keys(error)
+  const shown = keys.filter((key) => FIELD_NAME.test(key)).slice(0, MAX_FIELD_NAMES)
+  const hidden = keys.length - shown.length
+  return `{${[...shown, ...(hidden > 0 ? [`+${hidden}`] : [])].join(', ')}}`
+}
+
 export function failureText(error: unknown): string {
   if (typeof error === 'string') return error.trim() || 'unknown error'
   if (error instanceof Error) return error.message.trim() || error.name
@@ -19,7 +31,7 @@ export function failureText(error: unknown): string {
     if (typeof shaped.message === 'string' && shaped.message.trim()) return shaped.message.trim()
     if (typeof shaped.error === 'string' && shaped.error.trim()) return shaped.error.trim()
     if (Array.isArray(error)) return `[array of ${error.length}]`
-    return `{${Object.keys(error).join(', ')}}`
+    return fieldNames(error)
   }
   if (error === undefined || error === null) return 'unknown error'
   return String(error)
