@@ -17,8 +17,11 @@ describe('failureText', () => {
     assert.equal(failureText({ error: 'Busy' }), 'Busy');
   });
 
-  test('any other object is kept as JSON', () => {
-    assert.equal(failureText({ code: 'locked', waitSeconds: 5 }), '{"code":"locked","waitSeconds":5}');
+  test('any other object gives its field names, never the values', () => {
+    assert.equal(failureText({ code: 'locked', waitSeconds: 5 }), '{code, waitSeconds}');
+    assert.equal(failureText({ message: { text: 'Секретная фраза' } }), '{message}');
+    assert.equal(failureText(['Секретная фраза', 'Встреча в четверг']), '[array of 2]');
+    assert.equal(failureText({}), '{}');
   });
 
   test('nothing useful still says something', () => {
@@ -31,6 +34,6 @@ describe('failureText', () => {
   test('a cyclic object does not throw', () => {
     const cyclic = {};
     cyclic.self = cyclic;
-    assert.equal(failureText(cyclic), '[object Object]');
+    assert.equal(failureText(cyclic), '{self}');
   });
 });
