@@ -1016,6 +1016,7 @@
     "noPersonSelectedDetail": "Open global search and choose a person to view their meeting profile.",
     "loadFailedTitle": "Couldn’t load this profile",
     "loadFailedDetail": "This person may no longer exist in your meeting library.",
+    "loadFailedRetryDetail": "Try again; the details are in the application log.",
     "back": "Back",
     "personProfile": "Person profile",
     "sharedMeetingsCount": "{count, plural, one {# shared meeting} other {# shared meetings}}",
