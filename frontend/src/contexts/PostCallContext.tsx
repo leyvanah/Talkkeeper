@@ -45,6 +45,8 @@ import {
   type RequestedModel,
 } from '@/lib/enhancement-model';
 import { planPostCall, type PostCallPlan } from '@/lib/post-call-plan';
+import { useSecurity } from '@/contexts/SecurityContext';
+import { BackgroundSummary } from '@/components/MeetingDetails/BackgroundSummary';
 
 export type Stage = 'queued' | 'prompt' | 'enhancing' | 'diarizing' | 'error' | 'done';
 export type FailedStage = 'enhancing' | 'diarizing';
@@ -174,6 +176,9 @@ export function PostCallProvider({ children }: { children: React.ReactNode }) {
   const runsRef = useRef(runs);
   runsRef.current = runs;
   const [versions, setVersions] = useState<Record<string, number>>({});
+  // Meetings processed while their page was not open, waiting for the
+  // summary the page would have started; one at a time, like the work.
+  const [summaryQueue, setSummaryQueue] = useState<string[]>([]);
 
   // Settings the steps need; kept current for code that outlives a render.
   const configRef = useRef({ selectedLanguage, transcriptModelConfig });
@@ -211,13 +216,20 @@ export function PostCallProvider({ children }: { children: React.ReactNode }) {
     return t('postCallFailedReason');
   }, [t]);
 
-  /** The transcript is final; remembered across a reload of the window. */
+  /**
+   * The transcript is final; remembered across a reload of the window, and
+   * across a restart by clearing the meeting's mark in the database.
+   */
   const settle = useCallback((meetingId: string) => {
     try {
       sessionStorage.setItem(completedKey(meetingId), 'completed');
     } catch {
       /* A reload would then offer the work again; nothing is lost. */
     }
+    void invoke('api_set_post_call_pending', { meetingId, pending: false }).catch((error) =>
+      // The next start would offer the work again; nothing is lost.
+      console.error('Could not clear the meeting\'s processing mark:', error),
+    );
     update(meetingId, { stage: 'done', error: null, failedStage: null });
   }, [update]);
 
@@ -254,6 +266,11 @@ export function PostCallProvider({ children }: { children: React.ReactNode }) {
             onClick: () => router.push(`/meeting-details?id=${encodeURIComponent(meetingId)}`),
           },
     });
+    // On its page the page starts the summary; elsewhere it would wait for
+    // the owner to open the meeting.
+    if (!showing) {
+      setSummaryQueue((queue) => (queue.includes(meetingId) ? queue : [...queue, meetingId]));
+    }
   }, [router, settle, t]);
 
   /**
@@ -412,6 +429,30 @@ export function PostCallProvider({ children }: { children: React.ReactNode }) {
   }, []);
   const transcriptVersion = useCallback((meetingId: string) => versions[meetingId] ?? 0, [versions]);
 
+  // A queue left by a quit, a restart or a reload of the window: a meeting
+  // stays marked in the database until its processing settles. Taken up once
+  // the archive is open, since the work writes sealed lines.
+  const { status: security } = useSecurity();
+  const archiveOpen = security?.state === 'unlocked' || security?.state === 'unconfigured';
+  const resumedRef = useRef(false);
+  useEffect(() => {
+    if (!archiveOpen || resumedRef.current) return;
+    resumedRef.current = true;
+    void invoke<{ meetingId: string; folderPath: string | null }[]>('api_list_post_call_pending')
+      .then((waiting) => {
+        const left = waiting.filter(({ meetingId }) => {
+          if (!readCompleted(meetingId)) return !runsRef.current[meetingId];
+          // Settled before a reload whose mark did not clear.
+          void invoke('api_set_post_call_pending', { meetingId, pending: false }).catch(() => {});
+          return false;
+        });
+        if (left.length === 0) return;
+        toast.info(t('postCallResuming', { count: left.length }));
+        for (const { meetingId, folderPath } of left) begin(meetingId, folderPath);
+      })
+      .catch((error) => console.error('Could not read the recordings waiting for processing:', error));
+  }, [archiveOpen, begin, t]);
+
   const value = useMemo(
     () => ({ begin, isPending, isDone, release, transcriptVersion }),
     [begin, isPending, isDone, release, transcriptVersion],
@@ -432,6 +473,13 @@ export function PostCallProvider({ children }: { children: React.ReactNode }) {
   return (
     <PostCallContext.Provider value={value}>
       {children}
+      {summaryQueue[0] && (
+        <BackgroundSummary
+          key={summaryQueue[0]}
+          meetingId={summaryQueue[0]}
+          onDone={() => setSummaryQueue((queue) => queue.slice(1))}
+        />
+      )}
       {asking && (
         <PostCallQuestion
           key={asking.meetingId}

@@ -734,6 +734,8 @@ pub fn run() {
             database::repositories::client::api_rename_client,
             database::repositories::client::api_delete_client,
             database::repositories::client::api_set_meeting_client,
+            database::repositories::post_call::api_set_post_call_pending,
+            database::repositories::post_call::api_list_post_call_pending,
             database::repositories::speaker_role::api_get_speaker_sides,
             database::repositories::speaker_role::api_assign_speaker_role,
             database::repositories::transcript_edit::api_edit_transcript_line,

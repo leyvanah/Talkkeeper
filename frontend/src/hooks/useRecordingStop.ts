@@ -271,6 +271,12 @@ export function useRecordingStop(
             throw new Error('No meeting ID received from save operation');
           }
 
+          // The processing after Stop runs from a queue in this window; the mark
+          // lets the next start take it up if the window goes away first.
+          await invoke('api_set_post_call_pending', { meetingId, pending: true }).catch((error) =>
+            console.error('Could not mark the meeting as waiting for processing:', error),
+          );
+
           let shouldDetectSummaryLanguage = false;
           try {
             shouldDetectSummaryLanguage = !(await applyPinnedSummaryLanguageToMeeting(meetingId));

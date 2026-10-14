@@ -19,14 +19,14 @@ import { useSummaryGeneration } from '@/hooks/meeting-details/useSummaryGenerati
 import { useTemplates } from '@/hooks/meeting-details/useTemplates';
 import { useCopyOperations } from '@/hooks/meeting-details/useCopyOperations';
 import { useMeetingOperations } from '@/hooks/meeting-details/useMeetingOperations';
+// Page remounts, and the background runner for a meeting processed while it
+// was not open, join the same backend-start attempt. Only accepted attempts
+// are persisted in sessionStorage; failed preflight attempts remain retryable.
+import { startAutoSummary, summaryStartKey } from '@/lib/auto-summary';
 import { useConfig } from '@/contexts/ConfigContext';
 import { usePostCall } from '@/contexts/PostCallContext';
 import { MeetingExportDialog } from '@/components/MeetingDetails/MeetingExportDialog';
 import { SummaryRegenerationDialog } from '@/components/MeetingDetails/SummaryRegenerationDialog';
-
-// Page remounts join the same backend-start attempt. Only accepted attempts are
-// persisted in sessionStorage below; failed preflight attempts remain retryable.
-const autoSummaryInFlight = new Map<string, Promise<boolean>>();
 
 export default function PageContent({
   meeting,
@@ -197,31 +197,19 @@ export default function PageContent({
         (!isPostCallRecording || postCallDone)
       ) {
         if (isPostCallRecording) {
-          const summaryStartKey = `post-call-summary-started:${meeting.id}`;
-          if (sessionStorage.getItem(summaryStartKey)) {
+          if (sessionStorage.getItem(summaryStartKey(meeting.id))) {
             postCall.release(meeting.id);
             onAutoGenerateComplete?.();
             return;
           }
 
-          let attempt = autoSummaryInFlight.get(meeting.id);
-          if (!attempt) {
+          const accepted = await startAutoSummary(meeting.id, () => {
             console.log(`🤖 Auto-generating summary with ${modelConfig.provider}/${modelConfig.model}...`);
-            attempt = summaryGeneration.handleGenerateSummary('');
-            autoSummaryInFlight.set(meeting.id, attempt);
-          }
-
-          let accepted = false;
-          try {
-            accepted = await attempt;
-          } finally {
-            if (autoSummaryInFlight.get(meeting.id) === attempt) {
-              autoSummaryInFlight.delete(meeting.id);
-            }
-          }
+            return summaryGeneration.handleGenerateSummary('');
+          });
 
           if (accepted) {
-            sessionStorage.setItem(summaryStartKey, 'started');
+            sessionStorage.setItem(summaryStartKey(meeting.id), 'started');
             postCall.release(meeting.id);
             onAutoGenerateComplete?.();
           }
