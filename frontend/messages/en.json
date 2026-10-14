@@ -1292,6 +1292,7 @@
     "dlBackgroundContinueDescription": "You can use the app and record right away. The summary model will finish downloading in the background."
   },
   "app": {
+    "copySelectionFailed": "Could not copy the selected text",
     "completeSetupFirst": "Please complete setup first",
     "completeSetupFirstOnboarding": "You need to finish onboarding before you can start recording.",
     "completeSetupFirstShort": "Finish onboarding before you can start recording.",
