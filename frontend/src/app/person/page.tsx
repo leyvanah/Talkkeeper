@@ -32,6 +32,7 @@ import {
 } from 'lucide-react';
 import type { PersonProfile } from '@/types';
 import { logFailure } from '@/lib/failure';
+import { failureText } from '@/lib/failure-text';
 
 // The overview prompt is localized too, so the model answers in the UI language.
 type Translate = (key: string, values?: Record<string, string | number>) => string;
@@ -197,7 +198,9 @@ function PersonProfileContent() {
       .catch((error) => {
         if (cancelled) return;
         logFailure('person-profile-load', error);
-        setLoadError(t('loadFailedDetail'));
+        // Only a missing row means the person is gone; a closed archive or a
+        // database that did not open must not say so.
+        setLoadError(failureText(error) === 'Person not found' ? t('loadFailedDetail') : t('loadFailedRetryDetail'));
       })
       .finally(() => {
         if (!cancelled) setLoading(false);
