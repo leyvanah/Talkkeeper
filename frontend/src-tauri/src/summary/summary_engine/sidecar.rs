@@ -402,9 +402,18 @@ impl SidecarManager {
         #[cfg(target_os = "windows")]
         {
             const CREATE_NO_WINDOW: u32 = 0x08000000;
-            const BELOW_NORMAL_PRIORITY_CLASS: u32 = 0x00004000;
+            // The helper yields to recording and transcription. The stub
+            // helpers of the tests must not: below normal priority, with
+            // every core busy, Windows runs a process only once it has been
+            // starved for seconds, and a `.bat` stub (cmd.exe plus the console
+            // host it starts, which inherits the class) then took over five
+            // minutes just to exit.
+            #[cfg(not(test))]
+            const PRIORITY_CLASS: u32 = 0x00004000; // BELOW_NORMAL_PRIORITY_CLASS
+            #[cfg(test)]
+            const PRIORITY_CLASS: u32 = 0; // the caller's, i.e. normal
 
-            command.creation_flags(CREATE_NO_WINDOW | BELOW_NORMAL_PRIORITY_CLASS);
+            command.creation_flags(CREATE_NO_WINDOW | PRIORITY_CLASS);
         }
 
         let mut child = command
@@ -861,12 +870,11 @@ mod tests {
         let manager = manager_for(helper);
         manager.ensure_running(dir.path().join("model.gguf")).await.unwrap();
 
-        // Let the stub finish dying before the request goes out. It runs at
-        // the helper's below-normal priority, and on a busy machine - this
-        // suite in parallel, a build next to it - that alone kept it from
-        // being scheduled for 40 s, far past any request timeout. What is
-        // checked here is how the exit is reported, not how soon a starved
-        // process gets to exit; the bound only stops a stub that hangs.
+        // Let the stub finish dying before the request goes out. On a busy
+        // machine - this suite in parallel, a build next to it - starting
+        // cmd.exe can take longer than any request timeout, and what is
+        // checked here is how the exit is reported, not how soon a process
+        // gets to exit. The bound only stops a stub that hangs.
         {
             let mut child_lock = manager.child_process.lock().await;
             let child = child_lock.as_mut().expect("the stub was spawned");
