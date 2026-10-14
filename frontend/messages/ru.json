@@ -533,7 +533,7 @@
     "exportContentBoth": "Транскрипт + саммари",
     "exportContentBothDescription": "Полная запись встречи",
     "exportNotAvailable": "Недоступно для этой встречи",
-    "exportUnencryptedNote": "Сохранённый файл не зашифрован: пароль архива его не защищает.",
+    "exportUnencryptedNote": "Сохранённый файл не зашифрован: пароль архива его не защищает. При копировании в буфер обмена текст не попадает в журнал Win+V.",
     "exportFormatPdfDescription": "Готово к отправке или печати",
     "exportFormatWord": "Word",
     "exportFormatWordDescription": "Редактируемый документ .docx",
