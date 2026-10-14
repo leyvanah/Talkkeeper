@@ -860,6 +860,22 @@ mod tests {
 
         let manager = manager_for(helper);
         manager.ensure_running(dir.path().join("model.gguf")).await.unwrap();
+
+        // Let the stub finish dying before the request goes out. It runs at
+        // the helper's below-normal priority, and on a busy machine - this
+        // suite in parallel, a build next to it - that alone kept it from
+        // being scheduled for 40 s, far past any request timeout. What is
+        // checked here is how the exit is reported, not how soon a starved
+        // process gets to exit; the bound only stops a stub that hangs.
+        {
+            let mut child_lock = manager.child_process.lock().await;
+            let child = child_lock.as_mut().expect("the stub was spawned");
+            tokio::time::timeout(Duration::from_secs(300), child.wait())
+                .await
+                .expect("the stub never exited")
+                .unwrap();
+        }
+
         let error = manager
             .send_request(r#"{"type":"ping"}"#.to_string(), Duration::from_secs(10))
             .await
