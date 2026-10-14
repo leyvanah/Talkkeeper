@@ -990,6 +990,22 @@ export function ModelSettingsModal({
                   : t('remoteEndpointNotice')}
             </p>
           )}
+          {/* A failed load leaves the model list empty; say so and let the
+              owner try again (choosing the provider again does not reload). */}
+          {modelConfig.provider === 'openrouter' && openRouterError && !isLoadingOpenRouter && (
+            <div className="mt-2 flex items-center gap-2 text-xs text-red-600" role="alert">
+              <span>{openRouterError}</span>
+              <Button
+                type="button"
+                variant="link"
+                size="sm"
+                className="h-auto p-0 text-xs"
+                onClick={() => loadOpenRouterModels()}
+              >
+                {t('modelRetry')}
+              </Button>
+            </div>
+          )}
         </div>
 
         {/* Custom OpenAI Configuration Section */}
