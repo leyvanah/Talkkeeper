@@ -1054,19 +1054,38 @@ impl WhisperEngine {
 
         // Check if download is already in progress for this model
         {
-            let active = self.active_downloads.read().await;
+            let mut active = self.active_downloads.write().await;
             if active.contains(model_name) {
                 log::warn!("Download already in progress for model: {}", model_name);
                 return Err(anyhow!("Download already in progress for model: {}", model_name));
             }
-        }
-
-        // Add to active downloads
-        {
-            let mut active = self.active_downloads.write().await;
             active.insert(model_name.to_string());
         }
 
+        let result = self.download_model_marked(model_name, progress_callback).await;
+
+        // Every way out lets go of the download. A failure before the first
+        // byte (no network, no models folder) used to leave the model marked as
+        // downloading, and every retry was refused as already in progress
+        // until the application was restarted.
+        self.active_downloads.write().await.remove(model_name);
+        if let Err(error) = &result {
+            let cancelled = self.cancel_download_flag.read().await.as_deref() == Some(model_name);
+            let mut models = self.available_models.write().await;
+            if let Some(model_info) = models.get_mut(model_name) {
+                if cancelled {
+                    model_info.status = ModelStatus::Missing;
+                } else if matches!(model_info.status, ModelStatus::Downloading { .. }) {
+                    model_info.status = ModelStatus::Error(error.to_string());
+                }
+            }
+        }
+        result
+    }
+
+    /// The download itself, with the model already marked as downloading;
+    /// [`Self::download_model`] takes the mark away however this ends.
+    async fn download_model_marked(&self, model_name: &str, progress_callback: Option<Box<dyn Fn(u8) + Send>>) -> Result<()> {
         // Clear any previous cancellation flag for this model
         {
             let mut cancel_flag = self.cancel_download_flag.write().await;
@@ -1080,8 +1099,6 @@ impl WhisperEngine {
             &format!("ggml-{}.bin", model_name),
         );
         let Some(pinned) = pinned else {
-            let mut active = self.active_downloads.write().await;
-            active.remove(model_name);
             return Err(anyhow!("Unsupported model: {}", model_name));
         };
         let model_url = format!("{}/{}", crate::model_integrity::WHISPER_BASE, pinned.file);
@@ -1117,9 +1134,6 @@ impl WhisperEngine {
         
         log::info!("Received response with status: {}", response.status());
         if !response.status().is_success() {
-            // Remove from active downloads on error
-            let mut active = self.active_downloads.write().await;
-            active.remove(model_name);
             return Err(anyhow!("Download failed with status: {}", response.status()));
         }
         
@@ -1157,9 +1171,6 @@ impl WhisperEngine {
                 let cancel_flag = self.cancel_download_flag.read().await;
                 if cancel_flag.as_ref() == Some(&model_name.to_string()) {
                     log::info!("Download cancelled for {}", model_name);
-                    // Remove from active downloads on cancellation
-                    let mut active = self.active_downloads.write().await;
-                    active.remove(model_name);
                     return Err(anyhow!("Download cancelled by user"));
                 }
             }
@@ -1232,8 +1243,6 @@ impl WhisperEngine {
                     model_info.status = ModelStatus::Error(error.to_string());
                 }
             }
-            let mut active = self.active_downloads.write().await;
-            active.remove(model_name);
             return Err(error);
         }
 
@@ -1246,12 +1255,6 @@ impl WhisperEngine {
                 model_info.status = ModelStatus::Available;
                 model_info.path = file_path.clone();
             }
-        }
-
-        // Remove from active downloads on completion
-        {
-            let mut active = self.active_downloads.write().await;
-            active.remove(model_name);
         }
 
         Ok(())
@@ -1294,5 +1297,29 @@ impl WhisperEngine {
         }
 
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod download_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn a_download_that_fails_before_the_first_byte_can_be_retried() {
+        // The models folder cannot be created: its parent is a file. The
+        // download fails before any request is made.
+        let dir = tempfile::tempdir().unwrap();
+        let blocker = dir.path().join("not-a-folder");
+        std::fs::write(&blocker, b"").unwrap();
+        let engine = WhisperEngine::new_with_models_dir(Some(blocker.join("models"))).unwrap();
+
+        let first = engine.download_model("tiny", None).await.unwrap_err();
+        assert!(first.to_string().contains("models directory"), "{first}");
+        assert!(engine.active_downloads.read().await.is_empty());
+
+        // A retry meets the same failure, not "already in progress".
+        let retry = engine.download_model("tiny", None).await.unwrap_err();
+        assert!(!retry.to_string().contains("already in progress"), "{retry}");
+        assert!(engine.active_downloads.read().await.is_empty());
     }
 }
