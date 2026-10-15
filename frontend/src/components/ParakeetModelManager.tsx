@@ -195,7 +195,7 @@ export function ParakeetModelManager({
             description: error,
             duration: 6000,
             action: {
-              label: 'Retry',
+              label: t('modelRetry'),
               onClick: () => downloadModel(modelName)
             }
           });

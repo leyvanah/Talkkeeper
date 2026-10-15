@@ -195,7 +195,7 @@ export function SummaryGeneratorButtonGroup({
 
       if (status.type === 'error') {
         toast.error(t('modelErrorTitle'), {
-          description: status.Error || t('modelErrorDescription'),
+          description: status.message || t('modelErrorDescription'),
           duration: 5000,
         });
         setSettingsDialogOpen(true);

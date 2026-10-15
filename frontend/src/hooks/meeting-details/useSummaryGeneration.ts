@@ -685,7 +685,7 @@ export function useSummaryGeneration({
             if (status.type === 'corrupted' || status.type === 'error') {
               setSummaryStatus('idle');
               const errorDesc = status.type === 'error'
-                ? status.Error || t('genBuiltinFileError')
+                ? status.message || t('genBuiltinFileError')
                 : t('genBuiltinFileCorrupted');
               toast.error(t('genBuiltinNotAvailableTitle'), {
                 description: t('genBuiltinNotAvailableDescription', { reason: errorDesc }),

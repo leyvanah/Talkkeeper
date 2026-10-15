@@ -17,6 +17,8 @@ interface ModelInfo {
   status: {
     type: 'not_downloaded' | 'downloading' | 'available' | 'incomplete' | 'corrupted' | 'error';
     progress?: number;
+    // With an error: what went wrong.
+    message?: string;
   };
   size_mb: number;
   context_size: number;
@@ -462,8 +464,8 @@ export function BuiltInModelManager({
                 )}
                 {(isError || isCorrupted || isIncomplete) && (
                   <p className="mb-1 text-xs text-red-600">
-                    {isError && typeof model.status === 'object' && 'Error' in model.status
-                      ? (model.status as any).Error
+                    {model.status.type === 'error' && model.status.message
+                      ? model.status.message
                       : isCorrupted
                       ? t('modelFileCorrupted')
                       : isIncomplete

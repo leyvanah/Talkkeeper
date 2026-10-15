@@ -75,8 +75,12 @@ pub enum ModelStatus {
     /// Model file is corrupted and needs redownload
     Corrupted { file_size: u64, expected_min_size: u64 },
 
-    /// Error occurred with the model
-    Error(String),
+    /// Error occurred with the model.
+    ///
+    /// A struct variant: with `tag = "type"` serde cannot write a newtype
+    /// variant holding a string, and the whole model list failed to serialize
+    /// for as long as any model was in this state.
+    Error { message: String },
 }
 
 /// Model information for UI display
@@ -281,7 +285,7 @@ impl ModelManager {
                             model_def.name,
                             e
                         );
-                        ModelStatus::Error(format!("Failed to read metadata: {}", e))
+                        ModelStatus::Error { message: format!("Failed to read metadata: {}", e) }
                     }
                 }
             } else {
@@ -810,7 +814,7 @@ impl ModelManager {
             {
                 let mut models = self.available_models.write().await;
                 if let Some(model_info) = models.get_mut(model_name) {
-                    model_info.status = ModelStatus::Error(format!("Validation failed: {}", e));
+                    model_info.status = ModelStatus::Error { message: format!("Validation failed: {}", e) };
                 }
             }
 
@@ -832,7 +836,7 @@ impl ModelManager {
             {
                 let mut models = self.available_models.write().await;
                 if let Some(model_info) = models.get_mut(model_name) {
-                    model_info.status = ModelStatus::Error(format!("Validation failed: {}", e));
+                    model_info.status = ModelStatus::Error { message: format!("Validation failed: {}", e) };
                 }
             }
             self.release_download(model_name, &control).await;
@@ -898,7 +902,7 @@ impl ModelManager {
     ) {
         let mut models = self.available_models.write().await;
         if let Some(model_info) = models.get_mut(model_name) {
-            model_info.status = ModelStatus::Error(message);
+            model_info.status = ModelStatus::Error { message };
         }
         drop(models);
         self.release_download(model_name, control).await;
@@ -992,6 +996,19 @@ impl ModelManager {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_model_in_error_serializes_with_its_message() {
+        // A model list holding one failed model used to fail to serialize
+        // altogether, and the window kept showing the stale list.
+        let status = ModelStatus::Error { message: "Not enough disk space".into() };
+        let value = serde_json::to_value(&status).unwrap();
+        assert_eq!(value, serde_json::json!({ "type": "error", "message": "Not enough disk space" }));
+        assert_eq!(serde_json::from_value::<ModelStatus>(value).unwrap(), status);
+
+        let list = vec![ModelStatus::Available, status];
+        assert!(serde_json::to_string(&list).is_ok());
+    }
 
     #[tokio::test]
     async fn scan_marks_partial_model_incomplete_and_exact_model_available() {
