@@ -899,6 +899,8 @@
     "modelAlreadyDownloading": "{model} уже загружается",
     "downloadModelFailed": "Не удалось загрузить модель",
     "ollamaNotInstalledForDownload": "Перед загрузкой моделей скачайте и установите Ollama.",
+    "ollamaNotInstalledTitle": "Ollama не установлена",
+    "ollamaDownloadAction": "Скачать Ollama",
     "modelDeleted": "Модель {model} удалена",
     "deleteModelFailed": "Не удалось удалить модель",
     "modelsLoadFailedShort": "Не удалось загрузить модели",
