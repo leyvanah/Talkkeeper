@@ -12,6 +12,10 @@ const PEOPLE_MIGRATION_LF_CHECKSUM: &str =
     "3722B8A73598E02E31D989430BF2E756539BA575BC4C4A7D981BEE4FB218E549AB36C93071EAA73C006E14CF6CF58B1B";
 const PEOPLE_MIGRATION_CRLF_CHECKSUM: &str =
     "75A90F5D84A2D6E6FE0AF8ABC583FEE66A10816AA39916AE2CB73AA728BD5F9FAB199C62CFEDD1F5D1083D795BD09B57";
+/// The later migration that rebuilds `people` with a client. Once it has run,
+/// the table no longer has the shape the people migration created, and that
+/// is not a reason to refuse the checksum repair.
+const PEOPLE_BY_CLIENT_VERSION: i64 = 20261007000000;
 
 #[derive(Clone)]
 pub struct DatabaseManager {
@@ -19,7 +23,10 @@ pub struct DatabaseManager {
 }
 
 impl DatabaseManager {
-    pub async fn new(tauri_db_path: &str, backend_db_path: &str) -> Result<Self> {
+    /// Opens the archive at `tauri_db_path`, creating an empty one if there is
+    /// none. Never fills a new archive from another database found nearby: a
+    /// copy of someone else's install would arrive unasked and unencrypted.
+    pub async fn new(tauri_db_path: &str) -> Result<Self> {
         if let Some(parent_dir) = Path::new(tauri_db_path).parent() {
             if !parent_dir.exists() {
                 fs::create_dir_all(parent_dir).map_err(|e| sqlx::Error::Io(e))?;
@@ -27,17 +34,8 @@ impl DatabaseManager {
         }
 
         if !Path::new(tauri_db_path).exists() {
-            if Path::new(backend_db_path).exists() {
-                log::info!(
-                    "Copying database from {} to {}",
-                    backend_db_path,
-                    tauri_db_path
-                );
-                fs::copy(backend_db_path, tauri_db_path).map_err(|e| sqlx::Error::Io(e))?;
-            } else {
-                log::info!("Creating database at {}", tauri_db_path);
-                Sqlite::create_database(tauri_db_path).await?;
-            }
+            log::info!("Creating database at {}", tauri_db_path);
+            Sqlite::create_database(tauri_db_path).await?;
         }
 
         let migration_pool = SqlitePool::connect_with(Self::connect_options(tauri_db_path)?).await?;
@@ -149,6 +147,21 @@ impl DatabaseManager {
                 )"#,
             ),
         ];
+        let people_rebuilt: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM _sqlx_migrations WHERE version = ? AND success = 1",
+        )
+        .bind(PEOPLE_BY_CLIENT_VERSION)
+        .fetch_one(&mut *transaction)
+        .await?;
+        let checked = |name: &str| !(people_rebuilt > 0 && name == "people");
+        let schema_objects: Vec<_> = schema_objects
+            .into_iter()
+            .filter(|(_, name, _)| checked(name))
+            .collect();
+        let expected_schema: Vec<_> = expected_schema
+            .into_iter()
+            .filter(|(_, name, _)| checked(name))
+            .collect();
         let schema_matches = schema_objects.len() == expected_schema.len()
             && schema_objects.iter().zip(expected_schema).all(
                 |((object_type, name, sql), (expected_type, expected_name, expected_sql))| {
@@ -215,21 +228,15 @@ impl DatabaseManager {
             .join("meeting_minutes.sqlite")
             .to_string_lossy()
             .to_string();
-        // Legacy backend DB path (for auto-migration if exists)
-        let backend_db_path = app_data_dir
-            .join("meeting_minutes.db")
-            .to_string_lossy()
-            .to_string();
 
         // WAL file paths for defensive cleanup
         let wal_path = app_data_dir.join("meeting_minutes.sqlite-wal");
         let shm_path = app_data_dir.join("meeting_minutes.sqlite-shm");
 
         log::info!("Tauri DB path: {}", tauri_db_path);
-        log::info!("Legacy backend DB path: {}", backend_db_path);
 
         // Try to open database with defensive WAL handling
-        match Self::new(&tauri_db_path, &backend_db_path).await {
+        match Self::new(&tauri_db_path).await {
             Ok(db_manager) => {
                 log::info!("Database opened successfully");
                 Ok(db_manager)
@@ -269,7 +276,7 @@ impl DatabaseManager {
 
                     // Retry connection without WAL files
                     log::info!("Retrying database connection after WAL cleanup...");
-                    match Self::new(&tauri_db_path, &backend_db_path).await {
+                    match Self::new(&tauri_db_path).await {
                         Ok(db_manager) => {
                             log::info!("Database opened successfully after WAL recovery");
                             Ok(db_manager)
@@ -299,32 +306,6 @@ impl DatabaseManager {
         let tauri_db_path = app_data_dir.join("meeting_minutes.sqlite");
 
         Ok(!tauri_db_path.exists())
-    }
-
-    /// Import a legacy database from the specified path and initialize
-    pub async fn import_legacy_database(
-        app_handle: &tauri::AppHandle,
-        legacy_db_path: &str,
-    ) -> Result<Self> {
-        let _ = app_handle; // retained for signature compatibility
-        let app_data_dir = crate::paths::install_data_root();
-
-        if !app_data_dir.exists() {
-            fs::create_dir_all(&app_data_dir).map_err(|e| sqlx::Error::Io(e))?;
-        }
-
-        // Copy legacy database to app data directory as meeting_minutes.db
-        let target_legacy_path = app_data_dir.join("meeting_minutes.db");
-        log::info!(
-            "Copying legacy database from {} to {}",
-            legacy_db_path,
-            target_legacy_path.display()
-        );
-
-        fs::copy(legacy_db_path, &target_legacy_path).map_err(|e| sqlx::Error::Io(e))?;
-
-        // Now use the standard initialization which will detect and migrate the legacy db
-        Self::new_from_app_handle(app_handle).await
     }
 
     pub fn pool(&self) -> &SqlitePool {
@@ -413,6 +394,174 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(secure_delete, 1);
+    }
+
+    /// The archive as it stood before people belonged to a client, with one
+    /// profile glued across two clients and a meeting with none.
+    async fn archive_before_people_had_clients() -> SqlitePool {
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        for migration in MIGRATOR.iter() {
+            if migration.version < PEOPLE_BY_CLIENT_VERSION {
+                sqlx::raw_sql(&*migration.sql).execute(&pool).await.unwrap();
+            }
+        }
+        sqlx::raw_sql(
+            "INSERT INTO clients (id, display_name, normalized_name, created_at, updated_at) \
+                 VALUES ('c1', 'Клиент 1', 'клиент 1', 'n', 'n'), \
+                        ('c2', 'Клиент 2', 'клиент 2', 'n', 'n'); \
+             INSERT INTO meetings (id, title, created_at, updated_at, client_id) VALUES \
+                 ('m1', 'Первая', '2026-09-01', 'n', 'c1'), \
+                 ('m2', 'Вторая', '2026-09-02', 'n', 'c1'), \
+                 ('m3', 'Третья', '2026-09-03', 'n', 'c2'), \
+                 ('m4', 'Без клиента', '2026-09-04', 'n', NULL); \
+             INSERT INTO people (id, display_name, normalized_name, notes, created_at, updated_at) \
+                 VALUES ('p-glued', 'Тест А', 'тест а', 'заметка', 'n', 'n'), \
+                        ('p-loose', 'Гость А', 'гость а', NULL, 'n', 'n'), \
+                        ('p-noted', 'Старый', 'старый', 'тоже заметка', 'n', 'n'); \
+             INSERT INTO person_speakers VALUES \
+                 ('p-glued', 'm1', 'Тест А'), ('p-glued', 'm2', 'Тест А'), \
+                 ('p-glued', 'm3', 'Тест А'), ('p-glued', 'm4', 'Тест А'), \
+                 ('p-loose', 'm4', 'Гость А'), ('p-noted', 'm4', 'Старый');",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        pool
+    }
+
+    #[tokio::test]
+    async fn a_profile_glued_across_clients_is_split_and_keeps_its_notes_once() {
+        let pool = archive_before_people_had_clients().await;
+        sqlx::raw_sql(include_str!(
+            "../../migrations/20261007000000_people_belong_to_a_client.sql"
+        ))
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let people: Vec<(String, String, Option<String>, Option<String>)> = sqlx::query_as(
+            "SELECT id, display_name, notes, client_id FROM people ORDER BY client_id, id",
+        )
+        .fetch_all(&pool)
+        .await
+        .unwrap();
+        let links: Vec<(String, String)> = sqlx::query_as(
+            "SELECT person_id, meeting_id FROM person_speakers ORDER BY meeting_id",
+        )
+        .fetch_all(&pool)
+        .await
+        .unwrap();
+
+        // The client with more meetings keeps the profile, its id and the notes.
+        let home = people.iter().find(|p| p.0 == "p-glued").unwrap();
+        assert_eq!(home.2.as_deref(), Some("заметка"));
+        assert_eq!(home.3.as_deref(), Some("c1"));
+        // The other client gets a profile of its own, same name, no notes.
+        let split = people
+            .iter()
+            .find(|p| p.3.as_deref() == Some("c2"))
+            .expect("a profile for the second client");
+        assert_ne!(split.0, "p-glued");
+        assert_eq!(split.1, "Тест А");
+        assert_eq!(split.2, None);
+
+        assert_eq!(
+            links,
+            vec![
+                ("p-glued".to_string(), "m1".to_string()),
+                ("p-glued".to_string(), "m2".to_string()),
+                (split.0.clone(), "m3".to_string()),
+            ],
+            "the meeting without a client keeps no links"
+        );
+
+        // A profile only the clientless meeting had: gone without notes, kept
+        // with them.
+        assert!(people.iter().all(|p| p.0 != "p-loose"));
+        let noted = people.iter().find(|p| p.0 == "p-noted").unwrap();
+        assert_eq!(noted.2.as_deref(), Some("тоже заметка"));
+        assert_eq!(noted.3, None);
+
+        // Foreign keys are back on, and nothing points at a missing person.
+        let (foreign_keys,): (i64,) = sqlx::query_as("PRAGMA foreign_keys")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(foreign_keys, 1);
+        let broken = sqlx::query("PRAGMA foreign_key_check")
+            .fetch_all(&pool)
+            .await
+            .unwrap();
+        assert!(broken.is_empty());
+    }
+
+    #[tokio::test]
+    async fn the_same_name_may_now_exist_once_per_client() {
+        let pool = archive_before_people_had_clients().await;
+        sqlx::raw_sql(include_str!(
+            "../../migrations/20261007000000_people_belong_to_a_client.sql"
+        ))
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        // A second "тест а" for the first client is still refused...
+        let duplicate = sqlx::query(
+            "INSERT INTO people (id, display_name, normalized_name, created_at, updated_at, client_id) \
+             VALUES ('p-dup', 'Тест А', 'тест а', 'n', 'n', 'c1')",
+        )
+        .execute(&pool)
+        .await;
+        assert!(duplicate.is_err());
+        // ...and deleting a person still takes their links with them.
+        sqlx::query("DELETE FROM people WHERE id = 'p-glued'")
+            .execute(&pool)
+            .await
+            .unwrap();
+        let left: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM person_speakers WHERE person_id = 'p-glued'")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(left, 0);
+    }
+
+    #[tokio::test]
+    async fn a_new_archive_does_not_take_in_a_database_lying_beside_it() {
+        // The old backend's file name, in the same folder, with a meeting in
+        // it. Upstream builds copied it into a new archive without asking —
+        // in the clear, whoever's it was.
+        let dir = tempfile::tempdir().unwrap();
+        let other = dir.path().join("meeting_minutes.db");
+        let pool = SqlitePool::connect_with(
+            DatabaseManager::connect_options(other.to_str().unwrap())
+                .unwrap()
+                .create_if_missing(true),
+        )
+        .await
+        .unwrap();
+        MIGRATOR.run(&pool).await.unwrap();
+        sqlx::query(
+            "INSERT INTO meetings (id, title, created_at, updated_at) \
+             VALUES ('m1', 'Чужая встреча', 'n', 'n')",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        pool.close().await;
+
+        let archive = dir.path().join("meeting_minutes.sqlite");
+        let manager = DatabaseManager::new(archive.to_str().unwrap()).await.unwrap();
+        let (meetings,): (i64,) = sqlx::query_as("SELECT COUNT(*) FROM meetings")
+            .fetch_one(manager.pool())
+            .await
+            .unwrap();
+        assert_eq!(meetings, 0, "the new archive started from the other database");
+        manager.pool().close().await;
     }
 
     #[test]

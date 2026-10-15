@@ -10,11 +10,16 @@
 # With `sign` off it is a dry run: the same build, the installer left unsigned,
 # for checking the toolchain before SignPath is set up.
 #
+# With `attest` on, a separate job records a GitHub build attestation for the
+# installer (see the `attest` job). Use it for a build that will be published.
+#
 # Settings it expects (repository → Settings):
 #   - environment `signing`, with the owner as a required reviewer;
 #   - secret SIGNPATH_API_TOKEN in that environment;
 #   - variables SIGNPATH_ORGANIZATION_ID, SIGNPATH_PROJECT_SLUG,
 #     SIGNPATH_SIGNING_POLICY_SLUG.
+#   - Actions → General → allowed actions: the ones this file uses, each
+#     pinned to the commit below, including actions/attest for `attest`.
 
 name: Signed release
 
@@ -23,6 +28,10 @@ on:
     inputs:
       sign:
         description: "Send the build to SignPath (off: an unsigned dry run)"
+        type: boolean
+        default: false
+      attest:
+        description: "Record a GitHub build attestation for the installer (for a build to publish)"
         type: boolean
         default: false
 
@@ -40,7 +49,15 @@ env:
   # bindgen 0.69 (whisper-rs-sys, llama-cpp-sys-2) misreads headers from
   # LLVM 19 and later; 18.1.8 is the version the project builds with.
   LLVM_VERSION: "18.1.8"
+  # The installers below run on the build machine before anything is built,
+  # so each is pinned: a file that is not this exact one is never started.
+  # LLVM-18.1.8-win64.exe: as listed in winget-pkgs (LLVM.LLVM 18.1.8) and
+  # hashed after download; GitHub shows no digest for this release's assets.
+  LLVM_SHA256: "94af030060d88cc17e9f00ef1663ebdc1126b35e16bebdfa1e807984b70abd8f"
   VULKAN_SDK_VERSION: "1.4.357.0"
+  # vulkansdk-windows-X64-1.4.357.0.exe: as published by LunarG
+  # (vulkan.lunarg.com/sdk/sha/…) and hashed after download.
+  VULKAN_SDK_SHA256: "81f474711e9042f4cd22b31b2f7a8870db2e428b21586fb43dd80150be97310d"
   PNPM_VERSION: "11.25.0"
 
 jobs:
@@ -80,6 +97,8 @@ jobs:
         run: |
           $installer = "$env:RUNNER_TEMP\llvm.exe"
           Invoke-WebRequest "https://github.com/llvm/llvm-project/releases/download/llvmorg-$env:LLVM_VERSION/LLVM-$env:LLVM_VERSION-win64.exe" -OutFile $installer
+          $actual = (Get-FileHash $installer -Algorithm SHA256).Hash.ToLower()
+          if ($actual -ne $env:LLVM_SHA256) { throw "LLVM installer SHA-256 mismatch: expected $env:LLVM_SHA256, got $actual" }
           Start-Process $installer -ArgumentList '/S', '/D=C:\LLVM18' -Wait
           # Wins over the repository's .cargo/config.toml, which points at the
           # default install location.
@@ -89,6 +108,8 @@ jobs:
         run: |
           $installer = "$env:RUNNER_TEMP\vulkansdk.exe"
           Invoke-WebRequest "https://sdk.lunarg.com/sdk/download/$env:VULKAN_SDK_VERSION/windows/vulkansdk-windows-X64-$env:VULKAN_SDK_VERSION.exe" -OutFile $installer
+          $actual = (Get-FileHash $installer -Algorithm SHA256).Hash.ToLower()
+          if ($actual -ne $env:VULKAN_SDK_SHA256) { throw "Vulkan SDK installer SHA-256 mismatch: expected $env:VULKAN_SDK_SHA256, got $actual" }
           $root = "C:\VulkanSDK\$env:VULKAN_SDK_VERSION"
           Start-Process $installer -ArgumentList '--root', $root, '--accept-licenses', '--default-answer', '--confirm-command', 'install' -Wait
           "VULKAN_SDK=$root" >> $env:GITHUB_ENV
@@ -104,10 +125,15 @@ jobs:
           rem The Visual Studio generator does not build the nested vulkan-shaders-gen.
           set "PATH=%VS%\Common7\IDE\CommonExtensions\Microsoft\CMake\Ninja;%PATH%"
           set "CMAKE_GENERATOR=Ninja"
+          rem From inside llama-helper\: its .cargo\config.toml links the C runtime statically.
+          cd llama-helper || exit /b 1
           set "CARGO_TARGET_DIR=%RUNNER_TEMP%\helper-vulkan"
-          cargo build --release -p llama-helper --features vulkan || exit /b 1
+          cargo build --release --features vulkan || exit /b 1
           set "CARGO_TARGET_DIR=%RUNNER_TEMP%\helper-cpu"
-          cargo build --release -p llama-helper || exit /b 1
+          cargo build --release || exit /b 1
+          cd .. || exit /b 1
+          rem Git-ignored, so a fresh checkout does not have it yet.
+          if not exist "frontend\src-tauri\binaries" mkdir "frontend\src-tauri\binaries" || exit /b 1
           copy /y "%RUNNER_TEMP%\helper-vulkan\release\llama-helper.exe" "frontend\src-tauri\binaries\llama-helper-x86_64-pc-windows-msvc.exe" || exit /b 1
           copy /y "%RUNNER_TEMP%\helper-cpu\release\llama-helper.exe" "frontend\src-tauri\binaries\llama-helper-cpu-x86_64-pc-windows-msvc.exe" || exit /b 1
 
@@ -116,6 +142,8 @@ jobs:
       - name: Fetch the Visual C++ runtime installer
         run: |
           $target = "frontend\src-tauri\runtime-deps\vc_redist.x64.exe"
+          # Git-ignored, so a fresh checkout does not have it yet.
+          New-Item -ItemType Directory -Force (Split-Path $target) | Out-Null
           Invoke-WebRequest "https://aka.ms/vs/17/release/vc_redist.x64.exe" -OutFile $target
           $signature = Get-AuthenticodeSignature $target
           if ($signature.Status -ne 'Valid' -or $signature.SignerCertificate.Subject -notmatch 'O=Microsoft Corporation') {
@@ -211,3 +239,53 @@ jobs:
           path: release/
           retention-days: 1
           if-no-files-found: error
+
+  # A GitHub build attestation for the installer: a signed, public record that
+  # this file came out of this workflow, from this commit. Anyone can check a
+  # downloaded installer with `gh attestation verify <file> --repo <owner>/<repo>`.
+  #
+  # Its own job, so that the right to mint an OIDC token and write attestations
+  # never reaches the build above, which runs third-party build scripts (npm
+  # packages, CMake, cargo build scripts). This job runs none of that: it only
+  # fetches the installer this run uploaded, and attests it.
+  #
+  # Only when asked: every attestation goes to the public Sigstore log for good,
+  # so dry runs that are not published leave none.
+  attest:
+    name: Attest the installer
+    if: inputs.attest
+    needs: build
+    runs-on: windows-2022
+    timeout-minutes: 15
+    permissions:
+      # `gh run download` reads this run's artifacts.
+      actions: read
+      # A short-lived OIDC token, exchanged for a Sigstore signing certificate.
+      id-token: write
+      # Stores the attestation with this repository.
+      attestations: write
+    defaults:
+      run:
+        shell: pwsh
+
+    steps:
+      - name: Download the installer
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ARTIFACT: ${{ inputs.sign && 'installer-signed' || 'installer-dry-run' }}
+        run: gh run download "$env:GITHUB_RUN_ID" --repo "$env:GITHUB_REPOSITORY" --name "$env:ARTIFACT" --dir installer
+
+      - name: List what is attested
+        run: |
+          $files = @(Get-ChildItem installer -Filter *.exe)
+          if ($files.Count -ne 1) { throw "Expected one installer, found $($files.Count)" }
+          foreach ($file in $files) {
+            "{0}  {1}" -f (Get-FileHash $file.FullName -Algorithm SHA256).Hash.ToLower(), $file.Name
+          }
+
+      - name: Attest
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-path: installer/*.exe
+          # Storage records are for container images pushed to a registry.
+          create-storage-record: false

@@ -35,6 +35,7 @@ macro_rules! perf_trace {
 // Declare audio module
 pub mod api;
 pub mod audio;
+pub mod clipboard;
 pub mod config;
 pub mod console_utils;
 pub mod crash_report;
@@ -60,6 +61,7 @@ pub mod gigaam_engine;
 pub mod parakeet_engine;
 pub mod paths;
 pub mod privacy;
+pub mod quit;
 pub mod security;
 pub mod state;
 pub mod summary;
@@ -482,11 +484,6 @@ pub fn run() {
                 }
             });
 
-            // Portable build: one-time, non-destructive migration of any legacy
-            // data from the OS app-data dir into the install-local root. Runs
-            // BEFORE model/DB init so migrated models + history are picked up.
-            crate::paths::migrate_legacy_data(&_app.handle());
-
             // Read the keystore before anything can ask for the key, and start
             // watching for the archive being left open unattended.
             crate::network_policy::load();
@@ -605,6 +602,7 @@ pub fn run() {
             network_policy::get_local_only_mode,
             network_policy::set_local_only_mode,
             ui_language::set_ui_language,
+            clipboard::copy_text_privately,
             security::commands::security_setup,
             security::commands::security_unlock,
             security::commands::security_unlock_with_recovery,
@@ -645,6 +643,8 @@ pub fn run() {
             stop_recording,
             is_recording,
             get_transcription_status,
+            quit::stop_recording_and_quit,
+            quit::recording_save_settled,
             whisper_engine::commands::whisper_init,
             whisper_engine::commands::whisper_get_available_models,
             whisper_engine::commands::whisper_load_model,
@@ -805,6 +805,8 @@ pub fn run() {
             summary::template_commands::api_is_custom_template,
             live_assistant::ask_live_assistant,
             live_assistant::ask_person,
+            database::repositories::assistant_prompt::get_person_overview_prompt,
+            database::repositories::assistant_prompt::set_person_overview_prompt,
             live_assistant::ollama_embed,
             // Built-in AI commands
             summary::summary_engine::commands::builtin_ai_list_models,
@@ -834,13 +836,8 @@ pub fn run() {
             // System audio capture commands
             // Screen Recording permission commands
             audio::permissions::trigger_system_audio_permission_command,
-            // Database import commands
+            // First-launch database commands
             database::commands::check_first_launch,
-            database::commands::select_legacy_database_path,
-            database::commands::detect_legacy_database,
-            database::commands::check_default_legacy_database,
-            database::commands::check_homebrew_database,
-            database::commands::import_and_initialize_database,
             database::commands::initialize_fresh_database,
             // Database and Models path commands
             database::commands::get_database_directory,

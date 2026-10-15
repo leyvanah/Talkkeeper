@@ -17,6 +17,11 @@ use std::os::windows::process::CommandExt;
 
 use super::models;
 
+/// Start of the error a request fails with when the helper process has ended,
+/// followed by its exit status. The frontend recognises it
+/// (`lib/summary-errors.ts`) and explains it in the user's language.
+pub const HELPER_EXITED: &str = "llama-helper exited";
+
 // ============================================================================
 // Sidecar State Management
 // ============================================================================
@@ -450,21 +455,27 @@ impl SidecarManager {
         let _guard = RequestGuard::new(self.active_request_count.clone());
 
         // Write request to stdin
-        {
+        let written = {
             let mut stdin_lock = self.stdin_writer.lock().await;
             let stdin = stdin_lock
                 .as_mut()
                 .ok_or_else(|| anyhow!("Sidecar not running"))?;
 
-            stdin
-                .write_all(request_json.as_bytes())
-                .await
-                .context("Failed to write request to stdin")?;
-            stdin
-                .write_all(b"\n")
-                .await
-                .context("Failed to write newline")?;
-            stdin.flush().await.context("Failed to flush stdin")?;
+            async {
+                stdin
+                    .write_all(request_json.as_bytes())
+                    .await
+                    .context("Failed to write request to stdin")?;
+                stdin
+                    .write_all(b"\n")
+                    .await
+                    .context("Failed to write newline")?;
+                stdin.flush().await.context("Failed to flush stdin")
+            }
+            .await
+        };
+        if let Err(error) = written {
+            return Err(self.explain_failure(error).await);
         }
 
         // Read response from stdout with timeout
@@ -473,7 +484,7 @@ impl SidecarManager {
                 self.update_activity().await;
                 Ok(response)
             }
-            Ok(Err(e)) => Err(e),
+            Ok(Err(e)) => Err(self.explain_failure(e).await),
             Err(_) => {
                 // Timeout reached - shutdown sidecar to stop generation
                 log::error!("Request timeout after {:?}, shutting down sidecar", timeout);
@@ -503,6 +514,30 @@ impl SidecarManager {
         }
 
         Ok(line.trim().to_string())
+    }
+
+    /// A request failed: if that is because the helper process has ended,
+    /// say so with its exit status instead of passing on the pipe error it
+    /// caused. A helper that crashes while starting (an incompatible C
+    /// runtime, a broken GPU driver) is otherwise reported only as a closed
+    /// pipe.
+    async fn explain_failure(&self, error: anyhow::Error) -> anyhow::Error {
+        let status = {
+            let mut child_lock = self.child_process.lock().await;
+            let Some(child) = child_lock.as_mut() else {
+                return error;
+            };
+            // The pipe breaks as the process dies; give its exit a moment to
+            // be recorded. A helper still running failed for another reason.
+            match tokio::time::timeout(Duration::from_secs(2), child.wait()).await {
+                Ok(Ok(status)) => status,
+                _ => return error,
+            }
+        };
+
+        self.is_healthy.store(false, Ordering::SeqCst);
+        log::error!("{HELPER_EXITED}: {status} ({error:#})");
+        anyhow!("{HELPER_EXITED}: {status}")
     }
 
     /// Send ping to keep sidecar alive
@@ -785,5 +820,55 @@ mod tests {
 
         // And the CPU helper has no fallback of its own to look for.
         assert_eq!(SidecarManager::cpu_sibling(&cpu), None);
+    }
+
+    fn manager_for(helper_binary_path: PathBuf) -> SidecarManager {
+        SidecarManager {
+            child_process: Arc::new(Mutex::new(None)),
+            stdin_writer: Arc::new(Mutex::new(None)),
+            stdout_reader: Arc::new(Mutex::new(None)),
+            last_activity: Arc::new(RwLock::new(Instant::now())),
+            is_healthy: Arc::new(AtomicBool::new(false)),
+            should_shutdown: Arc::new(AtomicBool::new(false)),
+            active_request_count: Arc::new(AtomicUsize::new(0)),
+            helper_binary_path,
+            current_model_path: Arc::new(RwLock::new(None)),
+            idle_timeout_secs: 60,
+        }
+    }
+
+    /// A helper that dies as it starts — the way it does on a machine with an
+    /// incompatible C runtime — must be reported as such, with its exit
+    /// status, not as the broken pipe it leaves behind.
+    #[tokio::test]
+    async fn a_helper_that_exits_at_start_is_reported_with_its_status() {
+        let dir = tempfile::tempdir().unwrap();
+        #[cfg(windows)]
+        let helper = {
+            let path = dir.path().join("llama-helper.bat");
+            std::fs::write(&path, "@exit 3\r\n").unwrap();
+            path
+        };
+        #[cfg(unix)]
+        let helper = {
+            use std::os::unix::fs::PermissionsExt;
+            let path = dir.path().join("llama-helper");
+            std::fs::write(&path, "#!/bin/sh\nexit 3\n").unwrap();
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+            path
+        };
+
+        let manager = manager_for(helper);
+        manager.ensure_running(dir.path().join("model.gguf")).await.unwrap();
+        let error = manager
+            .send_request(r#"{"type":"ping"}"#.to_string(), Duration::from_secs(10))
+            .await
+            .unwrap_err()
+            .to_string();
+        manager.shutdown().await.unwrap();
+
+        assert!(error.starts_with(HELPER_EXITED), "{error}");
+        assert!(error.ends_with(" 3"), "{error}");
+        assert!(!manager.is_healthy());
     }
 }
