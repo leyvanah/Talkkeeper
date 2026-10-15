@@ -3,10 +3,11 @@
  * meeting and coming back loses nothing: notes typed but not yet saved, the
  * overview and the answers to questions.
  *
- * It lives in memory only. Closing the app forgets the overview and answers
- * (they are never written to disk); notes reach the archive on their own
- * shortly after typing stops, and a draft that failed to save waits here to be
- * saved again.
+ * It lives in memory only. Closing the app or locking the archive forgets the
+ * overview and answers (they are never written to disk); notes reach the
+ * archive on their own shortly after typing stops, and a draft that failed to
+ * save waits here to be saved again — also across a lock, which is exactly
+ * when the save on leaving the page is refused.
  */
 
 export type AnswerStatus = 'pending' | 'complete' | 'error';
@@ -42,6 +43,8 @@ const EMPTY: PersonAiState = Object.freeze({
 
 const states = new Map<string, PersonAiState>();
 const listeners = new Set<() => void>();
+// Bumped when everything is forgotten; answers asked before that are dropped.
+let generation = 0;
 
 function notify() {
   for (const listener of listeners) listener();
@@ -92,25 +95,68 @@ export function profileSignature(profile: {
 
 /**
  * Called with the freshly loaded profile: answers built from other data are
- * dropped. One still being written is kept, it will arrive for this person.
+ * dropped. Requests still running keep their spinner; what they bring back
+ * describes the old data and is dropped on arrival (see `settlePersonRequest`).
  */
 export function reconcilePersonAi(personId: string, signature: string): void {
   const current = personAiState(personId);
   if (current.signature === signature) return;
-  const stillWriting = current.overviewPending || current.history.some((item) => item.status === 'pending');
-  if (current.signature === null || stillWriting) {
-    states.set(personId, { ...current, signature });
-  } else {
-    states.set(personId, { ...EMPTY, signature });
-  }
+  states.set(personId, {
+    ...EMPTY,
+    signature,
+    overviewPending: current.overviewPending,
+    history: current.history.filter((item) => item.status === 'pending'),
+  });
+  notify();
+}
+
+/** Taken when a request to the model starts, handed back with its result. */
+export interface PersonRequest {
+  personId: string;
+  generation: number;
+  signature: string | null;
+}
+
+export function beginPersonRequest(
+  personId: string,
+  change: (state: PersonAiState) => Partial<PersonAiState>,
+): PersonRequest {
+  updatePersonAi(personId, change);
+  return { personId, generation, signature: personAiState(personId).signature };
+}
+
+/**
+ * Lands a result. After a lock it is dropped whole: the page was cleared on
+ * purpose. If the person's meetings changed meanwhile, only `stale` applies —
+ * it ends the spinner without showing an answer about other data.
+ */
+export function settlePersonRequest(
+  request: PersonRequest,
+  fresh: (state: PersonAiState) => Partial<PersonAiState>,
+  stale: (state: PersonAiState) => Partial<PersonAiState>,
+): void {
+  if (request.generation !== generation) return;
+  const current = personAiState(request.personId);
+  updatePersonAi(request.personId, current.signature === request.signature ? fresh : stale);
+}
+
+/**
+ * Forgets every overview and answer: the archive was locked, and what it
+ * protects should not wait in memory for it to open again. Unsaved notes stay,
+ * they are saved after unlocking.
+ */
+export function forgetPersonAnswers(): void {
+  generation += 1;
+  if (states.size === 0) return;
+  states.clear();
   notify();
 }
 
 /** Forgets everything; for tests. */
 export function resetPersonPageMemory(): void {
-  states.clear();
+  forgetPersonAnswers();
   drafts.clear();
-  notify();
+  saving.clear();
 }
 
 // Notes typed but not confirmed saved, by person.
@@ -132,6 +178,37 @@ export function notesSaved(personId: string, saved: string): void {
   if (drafts.get(personId) === saved) drafts.delete(personId);
 }
 
+// The last save started for each person.
+const saving = new Map<string, Promise<void>>();
+
+/**
+ * Saves `text` after every save already started for this person, so an older
+ * text can never land after a newer one — the debounced save and the one on
+ * leaving the page are sent milliseconds apart. Settles like `write`.
+ */
+export function queueNotesSave(
+  personId: string,
+  text: string,
+  write: (text: string) => Promise<void>,
+): Promise<void> {
+  const previous = saving.get(personId) ?? Promise.resolve();
+  const next = previous
+    .catch(() => {})
+    .then(() => write(text))
+    .then(() => notesSaved(personId, text));
+  saving.set(personId, next);
+  const forget = () => {
+    if (saving.get(personId) === next) saving.delete(personId);
+  };
+  next.then(forget, forget);
+  return next;
+}
+
+/** Every person's unsaved notes; saved when the window is about to go away. */
+export function allNotesDrafts(): [string, string][] {
+  return [...drafts.entries()];
+}
+
 /** Where the person page's questions go with the chosen model. */
 export type AnswerDestination =
   /** No model is chosen yet. */
@@ -143,7 +220,9 @@ export type AnswerDestination =
   /** Ollama or an own server at an address on another machine. */
   | 'remote'
   /** Would leave this computer, but "This computer only" refuses it. */
-  | 'blocked';
+  | 'blocked'
+  /** The model settings could not be read: assume it may leave. */
+  | 'unknown';
 
 export function answerDestination(options: {
   hasModel: boolean;

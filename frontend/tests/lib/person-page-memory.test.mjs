@@ -2,13 +2,17 @@ import assert from 'node:assert/strict';
 import { beforeEach, describe, test } from 'node:test';
 import {
   answerDestination,
+  beginPersonRequest,
+  forgetPersonAnswers,
   keepNotesDraft,
   notesDraft,
   notesSaved,
   personAiState,
   profileSignature,
+  queueNotesSave,
   reconcilePersonAi,
   resetPersonPageMemory,
+  settlePersonRequest,
   subscribePersonAi,
   updatePersonAi,
 } from '../../src/lib/person-page-memory.ts';
@@ -49,6 +53,34 @@ describe('overview and answers', () => {
     assert.equal(personAiState('p1').overviewPending, true);
   });
 
+  test('an answer about data that changed meanwhile is not shown', () => {
+    reconcilePersonAi('p1', profileSignature(profile));
+    const request = beginPersonRequest('p1', () => ({ overviewPending: true }));
+    reconcilePersonAi('p1', profileSignature({ ...profile, meetingCount: 3 }));
+    settlePersonRequest(
+      request,
+      () => ({ overview: 'про старые встречи', overviewPending: false }),
+      () => ({ overviewPending: false }),
+    );
+    assert.equal(personAiState('p1').overview, null);
+    assert.equal(personAiState('p1').overviewPending, false);
+  });
+
+  test('locking the archive forgets answers, also those still on the way', () => {
+    reconcilePersonAi('p1', profileSignature(profile));
+    updatePersonAi('p1', () => ({ overview: 'Встреча в четверг' }));
+    const request = beginPersonRequest('p1', (state) => ({
+      history: [...state.history, { id: 1, question: 'q', answer: '', status: 'pending' }],
+    }));
+    keepNotesDraft('p1', 'Секретная фраза');
+    forgetPersonAnswers();
+    settlePersonRequest(request, () => ({ history: [{ id: 1, question: 'q', answer: 'a', status: 'complete' }] }), () => ({}));
+    assert.equal(personAiState('p1').overview, null);
+    assert.deepEqual(personAiState('p1').history, []);
+    // Unsaved notes are not answers: they wait to be saved after unlocking.
+    assert.equal(notesDraft('p1'), 'Секретная фраза');
+  });
+
   test('the state object is the same until something changes', () => {
     reconcilePersonAi('p1', profileSignature(profile));
     const before = personAiState('p1');
@@ -74,6 +106,42 @@ describe('notes draft', () => {
     keepNotesDraft('p1', 'Секретная фраза');
     notesSaved('p1', 'Секрет');
     assert.equal(notesDraft('p1'), 'Секретная фраза');
+  });
+});
+
+describe('queueNotesSave', () => {
+  test('an older text never lands after a newer one', async () => {
+    const written = [];
+    let releaseFirst;
+    const first = new Promise((resolve) => { releaseFirst = resolve; });
+    const write = async (text) => {
+      if (text === 'Секрет') await first;
+      written.push(text);
+    };
+    keepNotesDraft('p1', 'Секретная фраза');
+    const a = queueNotesSave('p1', 'Секрет', write);
+    const b = queueNotesSave('p1', 'Секретная фраза', write);
+    releaseFirst();
+    await Promise.all([a, b]);
+    assert.deepEqual(written, ['Секрет', 'Секретная фраза']);
+    assert.equal(notesDraft('p1'), undefined);
+  });
+
+  test('a failed save keeps the draft and does not stop the next one', async () => {
+    const written = [];
+    keepNotesDraft('p1', 'два');
+    const a = queueNotesSave('p1', 'один', async () => { throw new Error('database is locked'); });
+    const b = queueNotesSave('p1', 'два', async (text) => { written.push(text); });
+    await assert.rejects(a);
+    await b;
+    assert.deepEqual(written, ['два']);
+    assert.equal(notesDraft('p1'), undefined);
+  });
+
+  test('a failed last save leaves the draft to be saved again', async () => {
+    keepNotesDraft('p1', 'Встреча в четверг');
+    await assert.rejects(queueNotesSave('p1', 'Встреча в четверг', async () => { throw new Error('locked'); }));
+    assert.equal(notesDraft('p1'), 'Встреча в четверг');
   });
 });
 

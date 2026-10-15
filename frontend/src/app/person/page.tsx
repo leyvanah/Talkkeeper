@@ -35,16 +35,19 @@ import {
 import type { PersonProfile } from '@/types';
 import { isCloudProvider, sendsOffThisComputer } from '@/lib/cloud-providers';
 import {
+  allNotesDrafts,
   answerDestination,
+  beginPersonRequest,
+  keepNotesDraft,
   notesDraft,
   notesSaved,
-  keepNotesDraft,
   personAiState,
   profileSignature,
   providerName,
+  queueNotesSave,
   reconcilePersonAi,
+  settlePersonRequest,
   subscribePersonAi,
-  updatePersonAi,
   type AnswerDestination,
   type PersonQuestion,
 } from '@/lib/person-page-memory';
@@ -61,6 +64,11 @@ type AssistantModel = { provider: string; model: string; destination: AnswerDest
 
 /** Pause after the last keystroke before notes are saved. */
 const NOTES_SAVE_DELAY_MS = 800;
+
+/** Notes are written in the order they were typed; see `queueNotesSave`. */
+function saveNotes(personId: string, text: string): Promise<void> {
+  return queueNotesSave(personId, text, (notes) => invoke('api_update_person_notes', { personId, notes }));
+}
 
 /** "Claude · claude-sonnet", "Built-in model · gemma3:4b". */
 function modelLabel(assistant: AssistantModel, t: Translate): string {
@@ -86,12 +94,20 @@ function destinationText(assistant: AssistantModel | null, t: Translate): string
       return t('answersOnOtherMachine', { model: modelLabel(assistant, t) });
     case 'blocked':
       return t('answersBlocked', { model: modelLabel(assistant, t) });
+    case 'unknown':
+      return t('answersUnknown');
   }
 }
 
-/** Off this computer: the line is a warning, not a caption. */
+/** The records may leave this computer: the buttons say "Send". */
 function sendsAway(assistant: AssistantModel | null): boolean {
-  return assistant?.destination === 'cloud' || assistant?.destination === 'remote';
+  const destination = assistant?.destination;
+  return destination === 'cloud' || destination === 'remote' || destination === 'unknown';
+}
+
+/** The destination line is a warning, not a caption. */
+function warns(assistant: AssistantModel | null): boolean {
+  return sendsAway(assistant) || assistant?.destination === 'blocked';
 }
 
 function initials(name: string): string {
@@ -271,7 +287,11 @@ function PersonProfileContent() {
           localOnly,
         }),
       });
-    })().catch((error) => console.error('Failed to read the AI model settings:', error));
+    })().catch((error) => {
+      console.error('Failed to read the AI model settings:', error);
+      // Not knowing where the records go is said as plainly as the cloud.
+      if (!cancelled) setAssistant({ provider: '', model: '', destination: 'unknown' });
+    });
     return () => {
       cancelled = true;
     };
@@ -328,8 +348,7 @@ function PersonProfileContent() {
     const timer = window.setTimeout(async () => {
       setNotesState('saving');
       try {
-        await invoke('api_update_person_notes', { personId, notes: text });
-        notesSaved(personId, text);
+        await saveNotes(personId, text);
         if (shownPerson.current !== personId) return;
         // Typing during the save makes the newer text wait for its own.
         setNotesState((state) => state === 'saving' ? 'saved' : state);
@@ -349,26 +368,36 @@ function PersonProfileContent() {
     if (!personId) return;
     const draft = notesDraft(personId);
     if (draft === undefined) return;
-    invoke('api_update_person_notes', { personId, notes: draft })
-      .then(() => notesSaved(personId, draft))
+    saveNotes(personId, draft)
       .catch((error) => console.error('Failed to save person notes on leaving:', error));
   }, [personId]);
 
+  // Best effort when the window itself goes away: the save is started, but
+  // nothing waits for it.
+  useEffect(() => {
+    const flushAll = () => {
+      for (const [id, draft] of allNotesDrafts()) {
+        saveNotes(id, draft).catch(() => {});
+      }
+    };
+    window.addEventListener('beforeunload', flushAll);
+    return () => window.removeEventListener('beforeunload', flushAll);
+  }, []);
+
   const generateOverview = async () => {
     if (!personId || overviewLoading) return;
-    const id = personId;
-    updatePersonAi(id, () => ({ overviewPending: true, overviewError: null }));
+    const request = beginPersonRequest(personId, () => ({ overviewPending: true, overviewError: null }));
+    const done = () => ({ overviewPending: false });
     try {
       const reply = await invoke<PersonAnswer>('ask_person', {
-        personId: id,
+        personId,
         question: customPrompt ?? t('overviewPrompt'),
       });
-      updatePersonAi(id, () => ({ overview: reply.answer, overviewCutOff: reply.cutOff }));
+      settlePersonRequest(request, () => ({ ...done(), overview: reply.answer, overviewCutOff: reply.cutOff }), done);
     } catch (error) {
       console.error('Failed to generate person overview:', error);
-      updatePersonAi(id, () => ({ overviewError: error instanceof Error ? error.message : String(error) }));
-    } finally {
-      updatePersonAi(id, () => ({ overviewPending: false }));
+      const message = error instanceof Error ? error.message : String(error);
+      settlePersonRequest(request, () => ({ ...done(), overviewError: message }), done);
     }
   };
 
@@ -377,17 +406,21 @@ function PersonProfileContent() {
     const trimmed = question.trim();
     if (!personId || !trimmed || asking) return;
 
-    const id = personId;
     const messageId = Date.now();
-    const settle = (change: Partial<PersonQuestion>) => updatePersonAi(id, (state) => ({
-      history: state.history.map((message) => message.id === messageId ? { ...message, ...change } : message),
-    }));
-    updatePersonAi(id, (state) => ({
+    const request = beginPersonRequest(personId, (state) => ({
       history: [...state.history, { id: messageId, question: trimmed, answer: '', status: 'pending' }],
     }));
+    const settle = (change: Partial<PersonQuestion>) => settlePersonRequest(
+      request,
+      (state) => ({
+        history: state.history.map((message) => message.id === messageId ? { ...message, ...change } : message),
+      }),
+      // About data that has changed since: the question goes, unanswered.
+      (state) => ({ history: state.history.filter((message) => message.id !== messageId) }),
+    );
     setQuestion('');
     try {
-      const reply = await invoke<PersonAnswer>('ask_person', { personId: id, question: trimmed });
+      const reply = await invoke<PersonAnswer>('ask_person', { personId, question: trimmed });
       settle({ answer: reply.answer, cutOff: reply.cutOff, status: 'complete' });
     } catch (error) {
       console.error('Failed to ask about person:', error);
@@ -522,7 +555,7 @@ function PersonProfileContent() {
                   </div>
                 )}
                 {destination && (
-                  <p role="note" className={`mt-3 text-center text-xs ${away || assistant?.destination === 'blocked' ? 'text-amber-500' : 'text-[var(--af-text-3)]'}`}>
+                  <p role="note" className={`mt-3 text-center text-xs ${warns(assistant) ? 'text-amber-500' : 'text-[var(--af-text-3)]'}`}>
                     {destination}
                   </p>
                 )}
@@ -737,7 +770,7 @@ function PersonProfileContent() {
               </form>
 
               {destination && (
-                <div role="note" className={`flex items-start gap-2 border-t border-[var(--af-border)] bg-[var(--af-panel-2)]/50 px-4 py-3 text-xs leading-relaxed ${away || assistant?.destination === 'blocked' ? 'text-amber-500' : 'text-[var(--af-text-3)]'}`}>
+                <div role="note" className={`flex items-start gap-2 border-t border-[var(--af-border)] bg-[var(--af-panel-2)]/50 px-4 py-3 text-xs leading-relaxed ${warns(assistant) ? 'text-amber-500' : 'text-[var(--af-text-3)]'}`}>
                   {away && <Cloud className="mt-0.5 h-3.5 w-3.5 shrink-0" />}
                   <span>{destination}</span>
                 </div>

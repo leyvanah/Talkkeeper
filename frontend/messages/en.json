@@ -1064,7 +1064,8 @@
     "answersHere": "Answered by {model}, on this computer.",
     "answersInCloud": "Answered by {model} in the cloud: this person’s messages and their meeting summaries are sent to the provider’s servers.",
     "answersOnOtherMachine": "Answered by {model} on another machine: this person’s messages and their meeting summaries go over the network to the address in settings.",
-    "answersBlocked": "The chosen model ({model}) is not on this computer, and “This computer only” is on (Settings → Security), so nothing is sent."
+    "answersBlocked": "The chosen model ({model}) is not on this computer, and “This computer only” is on (Settings → Security), so nothing is sent.",
+    "answersUnknown": "Could not tell which model answers or where: this person’s messages and their meeting summaries may leave this computer. Check Settings, Summary tab."
   },
   "about": {
     "versionTagline": "Version {version} · Privacy-first meeting assistant, on-device by default",
