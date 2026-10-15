@@ -207,7 +207,15 @@ mod tests {
 
     #[test]
     fn a_single_wrong_character_is_reported_as_a_typo() {
-        let code = generate();
+        // The checksum is one byte, so by design 1 in 256 single-character typos
+        // still matches it; such a code then fails at the envelope and counts as
+        // an unlock attempt. A random code would draw one of those now and then,
+        // so this uses a fixed code whose mutation is known to break the checksum.
+        let mut bytes = [0x5a_u8; CODE_BYTES];
+        bytes[ENTROPY_BYTES] = checksum(&bytes[..ENTROPY_BYTES]);
+        let code = group(&encode(&bytes));
+        assert!(to_secret(&code).is_ok());
+
         let first = code.chars().next().unwrap();
         // Move one character to a different value inside the alphabet.
         let replacement = if first == '0' { '1' } else { '0' };
