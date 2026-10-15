@@ -195,7 +195,14 @@ export function TranscriptRecovery({
     try {
       const result = await onRecover(selectedMeetingId);
       console.log('Recovery successful:', result);
-      onClose();
+      // The list still holds the recording just recovered. With others
+      // left, the dialog stays and moves on to the next one.
+      if (recoverableMeetings.length <= 1) {
+        onClose();
+      } else {
+        setSelectedMeetingId(null);
+        setPreviewTranscripts([]);
+      }
     } catch (error) {
       // The caller has already said what went wrong.
       console.error('Recovery failed:', error);
@@ -386,11 +393,13 @@ export function TranscriptRecovery({
                       </div>
                     ) : previewTranscripts.length > 0 ? (
                       <div className="space-y-3">
-                        <Alert>
-                          <AlertDescription>
-                            {t('showingFirstSegments', { shown: previewTranscripts.length, total: selectedMeeting.transcriptCount })}
-                          </AlertDescription>
-                        </Alert>
+                        {selectedMeeting.transcriptCount > previewTranscripts.length && (
+                          <Alert>
+                            <AlertDescription>
+                              {t('showingFirstSegments', { shown: previewTranscripts.length, total: selectedMeeting.transcriptCount })}
+                            </AlertDescription>
+                          </Alert>
+                        )}
                         {previewTranscripts.map((transcript, index) => {
                           // Handle different timestamp formats
                           const getTimestamp = () => {
