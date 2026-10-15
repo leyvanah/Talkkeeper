@@ -61,11 +61,34 @@ describe('handleClipboardEvent', () => {
     assert.equal(event.stopImmediatePropagation.mock.callCount(), 1);
   });
 
-  test('nothing selected — the event is left alone', () => {
+  test('nothing the page can read — the browser copy is stopped all the same', () => {
+    // A selection dragged from the transcript into the notes field: the page
+    // reports nothing selected, the browser would still copy all of it.
+    const copy = mock.fn(async () => {});
+    const nothingOnPage = environment();
+    const caretInField = environment({ field: textarea('Секретная фраза', 4, 4) });
+    const password = environment({
+      field: { type: 'password', value: 'Секретная фраза', selectionStart: 0, selectionEnd: 15 },
+    });
+
+    for (const env of [nothingOnPage, caretInField, password]) {
+      for (const type of ['copy', 'cut']) {
+        const event = clipboardEvent(type);
+        handleClipboardEvent(event, env, copy, () => {});
+        assert.equal(event.preventDefault.mock.callCount(), 1);
+        assert.equal(event.stopImmediatePropagation.mock.callCount(), 1);
+      }
+      assert.equal(env.deleteSelection.mock.callCount(), 0);
+    }
+    assert.equal(copy.mock.callCount(), 0);
+  });
+
+  test('a field without a selection API is left to the browser', () => {
     const event = clipboardEvent();
     const copy = mock.fn(async () => {});
+    const field = { type: 'number', value: '15', selectionStart: null, selectionEnd: null };
 
-    handleClipboardEvent(event, environment(), copy, () => {});
+    handleClipboardEvent(event, environment({ field }), copy, () => {});
 
     assert.equal(copy.mock.callCount(), 0);
     assert.equal(event.preventDefault.mock.callCount(), 0);

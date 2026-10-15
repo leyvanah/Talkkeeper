@@ -40,12 +40,19 @@ export type CopyEnvironment = {
 }
 
 /**
+ * Whether the browser should copy on its own: only in a focused field without a
+ * selection API (`type="number"`). Its selection cannot be read, and such fields
+ * hold settings, not archive text.
+ */
+export function leftToBrowser(env: CopyEnvironment): boolean {
+  const field = env.focusedField()
+  return field !== null && (field.selectionStart === null || field.selectionEnd === null)
+}
+
+/**
  * The text a copy would take: the selection in a focused field, or on the page;
- * `null` when there is nothing to take and the browser can be left alone.
- *
- * A password field gives nothing — the browser never copies one, and neither
- * does this. Nor does a field without a selection API (`type="number"`): its
- * selection cannot be read, and such fields hold settings, not archive text.
+ * `null` when there is nothing to take. A password field gives nothing — the
+ * browser never copies one, and neither does this.
  */
 export function selectionToCopy(env: CopyEnvironment): string | null {
   const field = env.focusedField()
@@ -65,11 +72,13 @@ function canDelete(env: CopyEnvironment): boolean {
 }
 
 /**
- * Handles one `copy` or `cut` event. Nothing selected — the event is left
- * alone. Otherwise the browser's own copy and every later handler are stopped,
- * so nothing selected ever reaches the clipboard the ordinary way. A copy, or a
- * cut of text that can be edited, goes to `copy`, and the cut then removes the
- * selection; a cut of text that cannot be edited does nothing, as before.
+ * Handles one `copy` or `cut` event. Outside a number field the browser's own
+ * copy and every later handler are always stopped, so nothing ever reaches the
+ * clipboard the ordinary way — even when the page reports nothing selected: a
+ * selection dragged from the page into a text field cannot be read from the
+ * page, yet the browser would copy all of it. A copy, or a cut of text that can
+ * be edited, goes to `copy`, and the cut then removes the selection; a cut of
+ * text that cannot be edited does nothing, as before.
  */
 export function handleClipboardEvent(
   event: ClipboardLikeEvent,
@@ -77,11 +86,13 @@ export function handleClipboardEvent(
   copy: (text: string) => Promise<void>,
   onError: (error: unknown) => void,
 ): void {
-  const text = selectionToCopy(env)
-  if (text === null) return
+  if (leftToBrowser(env)) return
 
   event.preventDefault()
   event.stopImmediatePropagation()
+
+  const text = selectionToCopy(env)
+  if (text === null) return
 
   const cut = event.type === 'cut'
   if (cut && !canDelete(env)) return
