@@ -5,6 +5,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import type { PermissionStatus, OnboardingPermissions } from '@/types/onboarding';
 import { resolveOnboardingSummaryModelStatus } from '@/lib/onboarding-summary-model';
+import { recommendedLiveModel } from '@/lib/recording-options';
 import { useAppLocale } from '@/contexts/LocaleContext';
 
 const PARAKEET_MODEL = 'parakeet-tdt-0.6b-v3-int8';
@@ -94,7 +95,7 @@ export function OnboardingProvider({ children }: { children: React.ReactNode }) 
   const [completed, setCompleted] = useState(false);
   const { locale } = useAppLocale();
   const [chosenSttEngine, setChosenSttEngine] = useState<SttEngine | null>(null);
-  const sttEngine: SttEngine = chosenSttEngine ?? (locale === 'ru' ? 'gigaam' : 'parakeet');
+  const sttEngine: SttEngine = chosenSttEngine ?? recommendedLiveModel(locale);
   const [gigaamDownloaded, setGigaamDownloaded] = useState(false);
   const [parakeetDownloaded, setParakeetDownloaded] = useState(false);
   const sttDownloaded = sttEngine === 'gigaam' ? gigaamDownloaded : parakeetDownloaded;

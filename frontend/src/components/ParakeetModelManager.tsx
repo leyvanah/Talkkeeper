@@ -13,6 +13,7 @@ import {
   formatFileSize,
   isVisibleParakeetModel
 } from '../lib/parakeet';
+import { useDiskSpaceText } from '@/hooks/useDiskSpaceText';
 
 interface ParakeetModelManagerProps {
   selectedModel?: string;
@@ -28,6 +29,7 @@ export function ParakeetModelManager({
   autoSave = false
 }: ParakeetModelManagerProps) {
   const t = useTranslations('settings');
+  const diskSpaceText = useDiskSpaceText();
   const [models, setModels] = useState<ParakeetModelInfo[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -170,7 +172,8 @@ export function ParakeetModelManager({
       unlistenError = await listen<{ modelName: string; error: string }>(
         'parakeet-model-download-error',
         (event) => {
-          const { modelName, error } = event.payload;
+          const { modelName } = event.payload;
+          const error = diskSpaceText(event.payload.error) ?? event.payload.error;
           const displayInfo = getModelDisplayInfo(modelName);
           const displayName = displayInfo?.friendlyName || modelName;
 
@@ -295,7 +298,7 @@ export function ParakeetModelManager({
         return newSet;
       });
 
-      const errorMessage = String(err);
+      const errorMessage = diskSpaceText(err) ?? String(err);
       setModels(prev =>
         prev.map(model =>
           model.name === modelName ? { ...model, status: { Error: errorMessage } } : model

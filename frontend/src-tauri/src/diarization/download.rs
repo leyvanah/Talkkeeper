@@ -77,6 +77,19 @@ pub async fn download_models<R: Runtime>(app: &AppHandle<R>) -> Result<()> {
     tokio::fs::create_dir_all(&dir).await?;
 
     let total_bytes: u64 = ASSETS.iter().map(|(_, sz, _)| *sz).sum();
+    // A file already the right size is counted as present; the hash below
+    // still decides, and a wrong one is replaced in its own space.
+    let mut bytes_left = 0u64;
+    for (name, expected_size, _) in ASSETS.iter() {
+        let have = tokio::fs::metadata(dir.join(name))
+            .await
+            .map(|metadata| metadata.len())
+            .unwrap_or(0);
+        if have != *expected_size {
+            bytes_left += expected_size;
+        }
+    }
+    crate::disk_space::ensure_room(&dir, bytes_left)?;
     let mut completed_bytes: u64 = 0;
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(1800))
@@ -131,6 +144,9 @@ pub async fn download_models<R: Runtime>(app: &AppHandle<R>) -> Result<()> {
 
         // Stream to a .part temporary so a crash can't leave a half-written model.
         let part = dir.join(format!("{}.part", name));
+        // Made before the file so that it goes after it: Windows does not
+        // delete a file that is still open.
+        let unfinished = crate::disk_space::UnfinishedFile::new(&part);
         let mut file = tokio::fs::File::create(&part).await?;
         let mut hasher = Sha256::new();
         let mut written: u64 = 0;
@@ -142,7 +158,14 @@ pub async fn download_models<R: Runtime>(app: &AppHandle<R>) -> Result<()> {
             hasher.update(&chunk);
             {
                 use tokio::io::AsyncWriteExt;
-                file.write_all(&chunk).await?;
+                file.write_all(&chunk).await.map_err(|e| {
+                    crate::disk_space::write_error(
+                        e,
+                        &dir,
+                        bytes_left.saturating_sub(written),
+                        format!("Failed to write {}", name),
+                    )
+                })?;
             }
             written += chunk.len() as u64;
 
@@ -168,7 +191,14 @@ pub async fn download_models<R: Runtime>(app: &AppHandle<R>) -> Result<()> {
 
         {
             use tokio::io::AsyncWriteExt;
-            file.flush().await?;
+            file.flush().await.map_err(|e| {
+                crate::disk_space::write_error(
+                    e,
+                    &dir,
+                    bytes_left.saturating_sub(written),
+                    format!("Failed to flush {}", name),
+                )
+            })?;
         }
         drop(file);
 
@@ -199,6 +229,7 @@ pub async fn download_models<R: Runtime>(app: &AppHandle<R>) -> Result<()> {
         }
 
         tokio::fs::rename(&part, &dest).await?;
+        unfinished.keep();
         completed_bytes += written;
         log::info!("✅ {} downloaded and verified", name);
     }

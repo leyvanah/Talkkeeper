@@ -1,7 +1,6 @@
 'use client'
 
 import React, { createContext, useContext, useState, useCallback, useEffect } from 'react';
-import { useTranslations } from 'next-intl';
 import { useUpdateCheck } from '@/hooks/useUpdateCheck';
 import { UpdateInfo } from '@/services/updateService';
 import { UPDATES_AVAILABLE } from '@/lib/updates';
@@ -9,8 +8,6 @@ import { UpdateDialog } from './UpdateDialog';
 import { setUpdateDialogCallback, showUpdateNotification } from './UpdateNotification';
 import { invoke } from '@tauri-apps/api/core';
 import { usePlatform } from '@/hooks/usePlatform';
-import { toast } from 'sonner';
-import type { CudaReconfigurationStatus } from '@/lib/transcription-acceleration';
 
 interface UpdateCheckContextType {
   updateInfo: UpdateInfo | null;
@@ -21,14 +18,7 @@ interface UpdateCheckContextType {
 
 const UpdateCheckContext = createContext<UpdateCheckContextType | undefined>(undefined);
 
-export function UpdateCheckProvider({
-  children,
-  onboardingCompleted = false,
-}: {
-  children: React.ReactNode;
-  onboardingCompleted?: boolean;
-}) {
-  const t = useTranslations('app');
+export function UpdateCheckProvider({ children }: { children: React.ReactNode }) {
   const platform = usePlatform();
   // macOS ships as a separate DMG release with no Tauri updater artifact or
   // latest.json entry. Calling the Windows updater path there is misleading.
@@ -49,50 +39,6 @@ export function UpdateCheckProvider({
       .then(setCheckOnMount)
       .catch(() => setCheckOnMount(false));
   }, [updatesSupported]);
-
-  useEffect(() => {
-    if (platform !== 'windows' || !onboardingCompleted) return;
-
-    let cancelled = false;
-    invoke<CudaReconfigurationStatus>('get_cuda_reconfiguration_status')
-      .then((status) => {
-        if (cancelled) return;
-
-        const reconfigurationUrl = status.setupDownloadUrl;
-        if (status.reconfigurationRequired && reconfigurationUrl) {
-          toast.warning(t('cudaReadyTitle'), {
-            id: 'cuda-reconfiguration-status',
-            description: t('cudaReadyDescription', { backend: status.compiledBackend }),
-            duration: 30000,
-            action: {
-              label: t('cudaDownloadSetup'),
-              onClick: () => {
-                void invoke('open_external_url', { url: reconfigurationUrl });
-              },
-            },
-          });
-        } else if (status.driverUpdateRequired) {
-          toast.warning(t('cudaDriverUpdateTitle'), {
-            id: 'cuda-reconfiguration-status',
-            description: t('cudaDriverUpdateDescription'),
-            duration: 30000,
-            action: {
-              label: t('cudaGetDriver'),
-              onClick: () => {
-                void invoke('open_external_url', {
-                  url: 'https://www.nvidia.com/Download/index.aspx',
-                });
-              },
-            },
-          });
-        }
-      })
-      .catch((error) => console.error('Failed to recheck CUDA availability:', error));
-
-    return () => {
-      cancelled = true;
-    };
-  }, [onboardingCompleted, platform]);
 
   const { updateInfo, isChecking, checkForUpdates } = useUpdateCheck({
     checkOnMount: updatesSupported && checkOnMount,
