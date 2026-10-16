@@ -23,6 +23,7 @@ import {
   DialogTitle,
 } from '@/components/ui/dialog';
 import { VisuallyHidden } from '@/components/ui/visually-hidden';
+import { toastFailure } from '@/lib/failure';
 
 interface ClientPickerDialogProps {
   open: boolean;
@@ -87,10 +88,7 @@ export const ClientPickerDialog: React.FC<ClientPickerDialogProps> = ({
       onMoved?.(clientId);
       close();
     } catch (error) {
-      console.error('Failed to change the meeting client:', error);
-      toast.error(t('meetingMoveFailed'), {
-        description: error instanceof Error ? error.message : String(error),
-      });
+      toastFailure(t('meetingMoveFailed'), 'meeting-move', error);
     } finally {
       setBusy(false);
     }
@@ -111,10 +109,7 @@ export const ClientPickerDialog: React.FC<ClientPickerDialogProps> = ({
       }
       close();
     } catch (error) {
-      console.error('Failed to create the client:', error);
-      toast.error(t('clientSaveFailed'), {
-        description: error instanceof Error ? error.message : String(error),
-      });
+      toastFailure(t('clientSaveFailed'), 'client-create', error);
     } finally {
       setBusy(false);
     }
