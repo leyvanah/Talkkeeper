@@ -681,6 +681,11 @@ impl SidecarManager {
         self.is_healthy.load(Ordering::SeqCst)
     }
 
+    /// Whether a request to the model is being answered right now.
+    pub fn has_active_requests(&self) -> bool {
+        self.active_request_count.load(Ordering::SeqCst) > 0
+    }
+
     /// Update last activity timestamp
     async fn update_activity(&self) {
         let mut last_activity = self.last_activity.write().await;
