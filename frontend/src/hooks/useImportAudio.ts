@@ -4,6 +4,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { listen, UnlistenFn } from '@tauri-apps/api/event';
 import { applyPinnedSummaryLanguageToMeeting } from '@/lib/summary-language-preferences';
 import { toast } from 'sonner';
+import { logFailure } from '@/lib/failure';
 
 export interface AudioFileInfo {
   path: string;
@@ -72,6 +73,9 @@ export function useImportAudio({
   const onErrorRef = useRef(onError);
   useEffect(() => { onCompleteRef.current = onComplete; }, [onComplete]);
   useEffect(() => { onErrorRef.current = onError; }, [onError]);
+  // The listeners below are set up once; they read the current language here.
+  const tRef = useRef(t);
+  useEffect(() => { tRef.current = t; }, [t]);
 
   // Cancellation guard: prevents late events from updating state after cancel
   const isCancelledRef = useRef(false);
@@ -130,8 +134,9 @@ export function useImportAudio({
           if (isCancelledRef.current) return;
 
           setStatus('error');
-          setError(event.payload.error);
-          onErrorRef.current?.(event.payload.error);
+          logFailure('import', event.payload.error);
+          setError(tRef.current('importFailedDetail'));
+          onErrorRef.current?.(tRef.current('importFailedDetail'));
         }
       );
       if (cleanedUpRef.current) {
@@ -168,12 +173,12 @@ export function useImportAudio({
       }
     } catch (err: any) {
       setStatus('error');
-      const errorMsg = typeof err === 'string' ? err : (err?.message || String(err) || 'Failed to validate file');
-      setError(errorMsg);
-      onErrorRef.current?.(errorMsg);
+      logFailure('import-file-check', err);
+      setError(t('importFileUnreadable'));
+      onErrorRef.current?.(t('importFileUnreadable'));
       return null;
     }
-  }, []);
+  }, [t]);
 
   // Validate a file from a given path (for drag-drop)
   const validateFile = useCallback(async (path: string): Promise<AudioFileInfo | null> => {
@@ -187,12 +192,12 @@ export function useImportAudio({
       return result;
     } catch (err: any) {
       setStatus('error');
-      const errorMsg = typeof err === 'string' ? err : (err?.message || String(err) || 'Failed to validate file');
-      setError(errorMsg);
-      onErrorRef.current?.(errorMsg);
+      logFailure('import-file-check', err);
+      setError(t('importFileUnreadable'));
+      onErrorRef.current?.(t('importFileUnreadable'));
       return null;
     }
-  }, []);
+  }, [t]);
 
   // Start the import process
   const startImport = useCallback(
@@ -221,13 +226,12 @@ export function useImportAudio({
         });
       } catch (err: any) {
         setStatus('error');
-        const errorMsg = typeof err === 'string' ? err : (err?.message || String(err) || 'Failed to start import');
-        setError(errorMsg);
-
-        onErrorRef.current?.(errorMsg);
+        logFailure('import-start', err);
+        setError(t('importFailedDetail'));
+        onErrorRef.current?.(t('importFailedDetail'));
       }
     },
-    [fileInfo]
+    [fileInfo, t]
   );
 
   // Cancel ongoing import

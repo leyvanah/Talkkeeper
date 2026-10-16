@@ -51,6 +51,8 @@ import {
   type AnswerDestination,
   type PersonQuestion,
 } from '@/lib/person-page-memory';
+import { logFailure } from '@/lib/failure';
+import { failureText } from '@/lib/failure-text';
 
 // The overview prompt is localized too, so the model answers in the UI language.
 type Translate = (key: string, values?: Record<string, string | number>) => string;
@@ -211,7 +213,6 @@ function PersonProfileContent() {
   const [reloadKey, setReloadKey] = useState(0);
   const [notes, setNotes] = useState('');
   const [notesState, setNotesState] = useState<NotesState>('upToDate');
-  const [notesError, setNotesError] = useState<string | null>(null);
   const [question, setQuestion] = useState('');
   const [assistant, setAssistant] = useState<AssistantModel | null>(null);
   // A save that finishes after switching to another person must not mark theirs.
@@ -253,8 +254,8 @@ function PersonProfileContent() {
       setCustomPrompt(value);
       setPromptOpen(false);
     } catch (error) {
-      console.error('Failed to save the overview request:', error);
-      setPromptError(t('overviewPromptSaveFailed', { error: error instanceof Error ? error.message : String(error) }));
+      logFailure('person-overview-prompt-save', error);
+      setPromptError(t('overviewPromptSaveFailed'));
     } finally {
       setPromptSaving(false);
     }
@@ -301,7 +302,6 @@ function PersonProfileContent() {
     setProfile(null);
     setLoadError(null);
     setQuestion('');
-    setNotesError(null);
 
     if (!personId) {
       setLoading(false);
@@ -329,8 +329,10 @@ function PersonProfileContent() {
       })
       .catch((error) => {
         if (cancelled) return;
-        console.error('Failed to load person profile:', error);
-        setLoadError(error instanceof Error ? error.message : String(error));
+        logFailure('person-profile-load', error);
+        // Only a missing row means the person is gone; a closed archive or a
+        // database that did not open must not say so.
+        setLoadError(failureText(error) === 'Person not found' ? t('loadFailedDetail') : t('loadFailedRetryDetail'));
       })
       .finally(() => {
         if (!cancelled) setLoading(false);
@@ -353,9 +355,8 @@ function PersonProfileContent() {
         // Typing during the save makes the newer text wait for its own.
         setNotesState((state) => state === 'saving' ? 'saved' : state);
       } catch (error) {
-        console.error('Failed to save person notes:', error);
+        logFailure('person-notes-save', error);
         if (shownPerson.current !== personId) return;
-        setNotesError(error instanceof Error ? error.message : String(error));
         setNotesState((state) => state === 'saving' ? 'failed' : state);
       }
     }, NOTES_SAVE_DELAY_MS);
@@ -369,7 +370,7 @@ function PersonProfileContent() {
     const draft = notesDraft(personId);
     if (draft === undefined) return;
     saveNotes(personId, draft)
-      .catch((error) => console.error('Failed to save person notes on leaving:', error));
+      .catch((error) => logFailure('person-notes-save', error));
   }, [personId]);
 
   // Best effort when the window itself goes away: the save is started, but
@@ -395,9 +396,8 @@ function PersonProfileContent() {
       });
       settlePersonRequest(request, () => ({ ...done(), overview: reply.answer, overviewCutOff: reply.cutOff }), done);
     } catch (error) {
-      console.error('Failed to generate person overview:', error);
-      const message = error instanceof Error ? error.message : String(error);
-      settlePersonRequest(request, () => ({ ...done(), overviewError: message }), done);
+      logFailure('person-overview', error);
+      settlePersonRequest(request, () => ({ ...done(), overviewError: t('overviewFailed') }), done);
     }
   };
 
@@ -423,8 +423,8 @@ function PersonProfileContent() {
       const reply = await invoke<PersonAnswer>('ask_person', { personId, question: trimmed });
       settle({ answer: reply.answer, cutOff: reply.cutOff, status: 'complete' });
     } catch (error) {
-      console.error('Failed to ask about person:', error);
-      settle({ answer: error instanceof Error ? error.message : String(error), status: 'error' });
+      logFailure('person-ask', error);
+      settle({ answer: t('askFailed'), status: 'error' });
     }
   };
 
@@ -534,7 +534,7 @@ function PersonProfileContent() {
                       <ReactMarkdown remarkPlugins={[remarkGfm]}>{overview}</ReactMarkdown>
                     </div>
                     {ai.overviewCutOff && <CutOffNote />}
-                    {overviewError && <p className="mt-4 rounded-lg bg-red-500/10 px-3 py-2 text-xs text-red-400">{t('regenerationFailed', { error: overviewError })}</p>}
+                    {overviewError && <p className="mt-4 rounded-lg bg-red-500/10 px-3 py-2 text-xs text-red-400">{t('overviewRegenerateFailed')}</p>}
                   </>
                 ) : (
                   <div className="rounded-xl border border-dashed border-[var(--af-border-strong)] px-5 py-8 text-center">
@@ -675,7 +675,6 @@ function PersonProfileContent() {
                 onChange={(event) => {
                   setNotes(event.target.value);
                   keepNotesDraft(personId, event.target.value);
-                  setNotesError(null);
                   setNotesState('pending');
                 }}
                 rows={6}
@@ -686,7 +685,7 @@ function PersonProfileContent() {
               <div id="person-notes-status" aria-live="polite" className="mt-2 flex items-center gap-2 text-xs">
                 {notesState === 'failed' ? (
                   <>
-                    <span className="text-red-400">{t('notesSaveFailed', { error: notesError ?? '' })}</span>
+                    <span className="text-red-400">{t('notesSaveFailed')}</span>
                     <button
                       type="button"
                       onClick={() => setNotesState('pending')}
@@ -727,7 +726,7 @@ function PersonProfileContent() {
                         {message.status === 'pending' ? (
                           <span className="inline-flex items-center gap-2 text-[var(--af-text-3)]"><Loader2 className="h-3.5 w-3.5 animate-spin" /> {t('checkingRecords')}</span>
                         ) : message.status === 'error' ? (
-                          <>{t('couldNotAnswer', { error: message.answer })}</>
+                          <>{message.answer}</>
                         ) : (
                           <div className="prose prose-xs max-w-none text-[var(--af-text-2)] dark:prose-invert prose-strong:text-[var(--af-text)] prose-p:my-1 prose-ul:my-1">
                             <ReactMarkdown remarkPlugins={[remarkGfm]}>{message.answer}</ReactMarkdown>

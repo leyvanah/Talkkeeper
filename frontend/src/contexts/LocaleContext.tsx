@@ -2,6 +2,7 @@
 
 import { createContext, useCallback, useContext, useEffect, useState, ReactNode } from 'react';
 import { NextIntlClientProvider } from 'next-intl';
+import { invoke } from '@tauri-apps/api/core';
 import enMessages from '../../messages/en.json';
 import ruMessages from '../../messages/ru.json';
 
@@ -53,6 +54,14 @@ export function LocaleProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     setLocaleState(getSavedAppLocale());
   }, []);
+
+  // The tray and the Windows notifications are drawn by the backend, which
+  // has no other way to know which language the window speaks.
+  useEffect(() => {
+    invoke('set_ui_language', { language: locale }).catch((error) =>
+      console.error('[Locale] Could not tell the backend the language:', error),
+    );
+  }, [locale]);
 
   const setLocale = useCallback((next: AppLocale) => {
     setLocaleState(next);

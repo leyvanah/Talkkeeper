@@ -11,6 +11,7 @@ import { useConfig, NotificationSettings } from "@/contexts/ConfigContext"
 import { applyAppTheme, getSavedAppTheme, type AppTheme } from "@/lib/app-theme"
 import { useAppLocale } from "@/contexts/LocaleContext"
 import { useTranslations } from "next-intl"
+import { toastFailure } from '@/lib/failure';
 
 export function PreferenceSettings() {
   const t = useTranslations('settings');
@@ -146,10 +147,7 @@ export function PreferenceSettings() {
       updateRecordingsLocation(selectedFolder);
       toast.success(t('recordingsFolderUpdated'));
     } catch (error) {
-      console.error('Failed to change recordings folder:', error);
-      toast.error(t('recordingsFolderUpdateFailed'), {
-        description: String(error),
-      });
+      toastFailure(t('recordingsFolderUpdateFailed'), 'recordings-folder-change', error);
     } finally {
       setIsChoosingRecordingsFolder(false);
     }
