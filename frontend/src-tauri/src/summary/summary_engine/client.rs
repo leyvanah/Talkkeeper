@@ -154,6 +154,18 @@ pub async fn generate_with_builtin(
     // Resolve model path with caching (avoids repeated filesystem I/O)
     let model_path = get_cached_model_path(app_data_dir, model_name)?;
 
+    // The pinned hash, before llama.cpp parses the file. One that fails is
+    // deleted, and the model shows as not downloaded.
+    let remote_file = model_def.download_url.rsplit('/').next().unwrap_or_default();
+    let checked = match crate::model_integrity::summary_model(remote_file) {
+        Some((_, pinned)) => crate::model_integrity::verify_before_load(pinned, &model_path).await,
+        None => Err(anyhow!("{} has no pinned checksum", remote_file)),
+    };
+    if let Err(error) = checked {
+        log::error!("Summary model {} did not pass its check: {}", model_name, error);
+        return Err(error);
+    }
+
     // Apply model-specific chat template
     let formatted_prompt =
         models::format_prompt(&model_def.template, system_prompt, user_prompt)?;

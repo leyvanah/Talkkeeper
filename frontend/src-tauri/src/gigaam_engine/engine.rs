@@ -190,6 +190,19 @@ impl GigaamEngine {
             ));
         }
 
+        // Complete by size is not the same as the right file. One that fails
+        // is deleted, and the settings show the model as partly downloaded.
+        for (name, _) in MODEL_FILES {
+            let pinned = crate::model_integrity::find(crate::model_integrity::GIGAAM, name)
+                .ok_or_else(|| anyhow!("{} has no pinned checksum", name))?;
+            if let Err(error) =
+                crate::model_integrity::verify_before_load(pinned, &self.model_dir.join(name)).await
+            {
+                log::error!("GigaAM model did not pass its check: {}", error);
+                return Err(error);
+            }
+        }
+
         log::info!("Loading GigaAM model from {}", self.model_dir.display());
         let model_dir = self.model_dir.clone();
         // Session creation reads ~226 MB from disk; keep it off the async runtime
