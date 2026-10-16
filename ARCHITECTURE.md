@@ -524,109 +524,64 @@ Gotchas:
 
 ## 8. Windows installer, onboarding, and updates
 
-There are deliberately **two Windows installer executables** in each release.
-They contain the same application, but they have different callers and must not
-be substituted for one another:
+Each release has **one** Windows installer: the standard Tauri NSIS
+`Talkkeeper_<version>_x64-setup.exe`, with its SHA-256 in the release notes.
+There is no in-app updater: the window's update code is switched off
+(`UPDATES_AVAILABLE = false`) and the backend has no updater plugin. An update is
+the new installer run over the installed version.
 
-| Release asset | Caller | Purpose |
-|---|---|---|
-| `*-universal-setup.exe` | A person downloading from GitHub | Native frameless Win32 bootstrapper with the branded first-install UI |
-| `*-universal-updater.exe` + `.sig` | Tauri's updater plugin | Unmodified NSIS engine and the Tauri signature over those exact bytes |
+The upstream fork shipped more: a native frameless setup wrapping a "universal"
+NSIS engine with CPU, Vulkan and CUDA application variants, a separately signed
+updater engine, and `latest.json`, all built by `build-universal-windows.ps1`.
+Talkkeeper does not use that path; the bootstrapper, both build scripts and
+`tauri.updater.conf.json` are gone. What is left of it in the NSIS template and
+hooks does nothing in a standard bundle (see below).
 
-`latest.json` always points at `*-universal-updater.exe`, never the bootstrapper.
-The updater plugin expects an NSIS-compatible executable and verifies the exact
-download against the adjacent signature. Embedding the NSIS engine in the
-bootstrapper does not transfer that signature to the outer executable.
-
-### Manual setup path
+### Release build
 
 ```text
-build-universal-windows.ps1
-  -> Tauri builds the universal NSIS engine
-  -> build-installer-bootstrapper.ps1 embeds that engine as RCDATA
-  -> user runs the frameless bootstrapper
-  -> bootstrapper extracts + SHA-256 verifies the engine in %TEMP%
-  -> engine runs in passive mode with its stock window forced hidden
-  -> bootstrapper shows completion and launches meetily.exe
+.github/workflows/release-signed.yml   (run by hand)
+  -> pnpm tauri build --no-bundle       meetily.exe, llama-helper (Vulkan and CPU)
+  -> SignPath signing of the executables, when enabled
+  -> pnpm tauri bundle --bundles nsis   windows/installer.nsi + installer-hooks.nsh
+  -> Talkkeeper_<version>_x64-setup.exe
 ```
 
 Relevant files:
 
 | File | Responsibility |
 |---|---|
-| `frontend/src-tauri/installer-bootstrapper/bootstrapper.cpp` | Frameless `WS_POPUP` shell, custom close/minimize controls, folder selection, extraction, hash verification, process supervision, completion UI |
-| `frontend/scripts/build-installer-bootstrapper.ps1` | Compiles the bootstrapper with MSVC `/MT`, embeds the finalized NSIS payload and its generated SHA-256 |
-| `frontend/src-tauri/windows/installer.nsi` | Tauri NSIS template used as the actual install/update engine |
-| `frontend/src-tauri/windows/installer-hooks.nsh` | Hardware backend detection, dependency checks, runtime staging, and selected-backend persistence |
-| `frontend/scripts/build-universal-windows.ps1` | Builds CPU/Vulkan/CUDA variants, packages NSIS, builds the outer setup, signs updater bytes, and writes `latest.json`/checksums |
+| `.github/workflows/release-signed.yml` | The release build: helpers, application, optional signing, NSIS bundle |
+| `frontend/src-tauri/windows/installer.nsi` | Tauri NSIS template: the installer and the uninstaller |
+| `frontend/src-tauri/windows/installer-hooks.nsh` | Dependency checks and runtime staging |
 
-The bootstrapper shows byte-accurate determinate progress while extracting its
-payload. During installation it launches NSIS with `/P` rather than `/S`, hides
-the stock window before display, and reads its real progress control/current
-operation text. It combines that with explicit phase-completion milestones
-under the temporary
-`HKCU\Software\meetily\InstallerProgress\<token>` key. This gives a real percent
-while still identifying runtime phases where NSIS itself is waiting on a child
-installer. For bundled files, `build-installer-bootstrapper.ps1` embeds the
-ordered uncompressed file sizes; the wrapper combines NSIS's current-file
-percentage with those sizes so large CUDA/runtime files advance smoothly rather
-than jumping once per `File` command. Text uses GDI+ grayscale grid-fitted
-antialiasing rather than GDI `DrawText`, and the
-completion badge alone is supersampled before being composited into the normal
-window buffer. Whole-window supersampling is unsafe because several GDI APIs
-ignore world transforms and produce a quarter-size UI. Progress from NSIS,
-milestones, and byte weighting is clamped monotonically because sources can
-briefly report an older value during phase transitions. The key is unique per run and removed when
-the engine exits. Closing
-is blocked once installation starts because externally terminating NSIS can
-leave a partial installation. The wrapper also restores the previously
-registered install path from `HKCU\Software\meetily\Talkkeeper`
-before offering the default. Fresh installs default to
-`%LOCALAPPDATA%\Talkkeeper`; the folder is written out literally and is not
-derived from the display product name, which stays free to change.
+Fresh installs default to `%LOCALAPPDATA%\Talkkeeper` (`installer.nsi`); the
+folder is written out literally and is not derived from the display product
+name, which stays free to change.
 
-Backend selection still belongs to `installer-hooks.nsh`; do not reimplement it
-in the bootstrapper. The universal package stages three app executables and the
-hook chooses CUDA, Vulkan, or CPU, then installs the chosen variant as the
-canonical `meetily.exe`. In-app updates continue through the raw NSIS engine so
-they retain Tauri's `/P /R /UPDATE /ARGS` behavior.
+Leftovers of the universal path that a standard bundle skips:
 
-CUDA selection also distinguishes missing or outdated NVIDIA drivers from a PC
-with no NVIDIA display adapter. The hook checks PCI display-class metadata so a
-fresh Windows install using Microsoft Basic Display Adapter is still recognized,
-then reports the CUDA fallback reason through the run-specific progress registry
-key. The frameless setup shows that notice on its completion page, including the
-minimum NVIDIA driver and the temporary Vulkan/CPU selection. Keep this decision
-in NSIS; the bootstrapper only presents the result and removes the temporary key.
+- `Meetily_SelectBackend` in `installer-hooks.nsh` chooses a CUDA, Vulkan or CPU
+  variant only when `installer-variants\universal.marker` exists. A standard
+  bundle has none, so the hook keeps the bundled executable.
+- The template and the hooks write progress and the CUDA notice under
+  `HKCU\Software\meetily\InstallerProgress\<token>` only when a bootstrapper
+  passed a token. Without one the token is empty and nothing is written.
 
 The selected Whisper backend is compiled into the installed executable; closing
 and reopening a Vulkan build cannot turn it into the CUDA build. Setup Overview
 and completed-onboarding startup therefore run a fresh, timeout-bounded
-`nvidia-smi` check.
-Before a compatible driver exists it links to NVIDIA's driver page. If CUDA
-becomes available later, it replaces the stale "Vulkan selected" message with a
-prompt to rerun the latest setup, which safely installs the CUDA executable.
-That action links directly to the current version's `*-universal-setup.exe`, not
-the updater engine listed beside it on the release.
-
-Vulkan selection requires the 64-bit system loader and runs the staged x64
-`meetily-vulkan-probe.exe`, which applies GGML's device-selection policy and
-requires every selected device to provide Vulkan 1.2, a compute queue, 16-bit
-storage support, and successful logical-device creation. This follows modern
-Intel/AMD DCH discovery without a fragile registry scan. Do not
-replace it with a loader-file-only check: stale loaders can exist without a
-usable ICD, and the Vulkan backend cannot safely assume CPU fallback. A legacy
-Khronos ICD scan remains only for packages missing the probe. The helper is
-installer-only and is removed with the staged variants after selection.
+`nvidia-smi` check. Before a compatible driver exists it links to NVIDIA's
+driver page; when CUDA becomes available later, it links to the project's
+releases page.
 
 The raw engine detects `/UPDATE` before its install-files page is shown. Update
 mode must use updater-specific chrome and language (`Talkkeeper Updater`,
 `Updating Talkkeeper`, and `Updating app files`) rather than exposing the
 setup wording. Keep the verbose NSIS extraction log collapsed, preserve the
 stock MUI header font metrics so title/subtitle rectangles do not overlap at
-scaled DPI, and show a monotonic overall percentage in the header. The update
-progress color matches the blue native bootstrapper; setup-only pages and all
-hardware/runtime decisions remain shared with the normal installer.
+scaled DPI, and show a monotonic overall percentage in the header. Setup-only pages
+and all hardware/runtime decisions remain shared with the normal installer.
 `nsis-progress/MeetilyProgress.cpp` subclasses NSIS's current-operation label on
 the UI thread, preserves its per-file text, and maps that file percentage through
 the build-generated uncompressed-size table to drive a separate overall bar and
@@ -639,7 +594,9 @@ version even though the registry and executable already contain the new one.
 
 ### Update-consent path
 
-Update consent is an application preference, not an installer option:
+Inherited from upstream and not reachable in Talkkeeper while
+`UPDATES_AVAILABLE` is false. Update consent is an application preference, not
+an installer option:
 
 ```text
 WelcomeStep.tsx
@@ -681,43 +638,12 @@ an exact-size file with valid GGUF magic becomes `Available`. Progress reaching
 
 ### Release rules
 
-The updater is already "inside the app" from the user's perspective: the Tauri
-plugin checks `latest.json`, downloads `*-universal-updater.exe`, verifies its
-matching `.sig`, exits Talkkeeper, and launches that payload to replace files that
-the running process cannot overwrite. GitHub must expose the updater as a
-release asset so installed clients can download it. Users manually launch only
-`*-universal-setup.exe`; removing the updater asset breaks in-app updates.
-
-- Tauri updater signing and Windows Authenticode are separate. This fork's
-  updater signature is required. Published builds are currently unsigned and
-  must pass the explicit `-AllowUnsigned` build switch; Authenticode support
-  remains available when `DIGICERT_KEYPAIR_ALIAS` is configured.
-- Never modify `*-universal-updater.exe` after Tauri generates its `.sig`.
-- The outer `setup.exe` has no Tauri `.sig`; `SHA256SUMS.txt` covers it for
-  manual verification.
-- Keep the updater private key and password under the ignored
-  `.build-tools/updater/` directory. Losing them prevents compatible updates.
-- `-PackageOnly` reuses staged CPU/Vulkan/CUDA binaries but still rebuilds NSIS,
-  the bootstrapper, updater metadata, and checksums. Use it only for installer
-  shell/template changes. Frontend, Rust, icon, or Tauri-command changes require
-  a full universal build: the post-install hook replaces the freshly packaged
-  placeholder with one of those staged variants, so stale variants silently
-  install stale application code.
-- `-BootstrapperOnly` is narrower: it re-embeds the existing universal updater
-  engine, rebuilds only the native outer setup, and refreshes checksums. Use it
-  only for `installer-bootstrapper/bootstrapper.cpp` presentation changes; it
-  deliberately does not regenerate NSIS, application variants, or `latest.json`.
-  It refuses to run unless the existing metadata version, URL, and signature
-  match the updater engine.
-- `tauri.updater.conf.json` deliberately clears `beforeBuildCommand`. The
-  universal script builds Next.js once unless `-SkipFrontend` is passed; letting
-  Tauri build it again changes the embedded assets and forces a redundant second
-  CPU relink. The script also creates `universal.marker` before compiling any
-  variants so that adding the resource later cannot invalidate the first CPU
-  build. Do not restore the command in that overlay or move marker creation back
-  below variant compilation.
-- `setup.exe --verify-payload` extracts and verifies the embedded engine without
-  installing it; use this as a release smoke test.
+- Releases come only from `release-signed.yml`, started by hand; see the code
+  signing policy in the README.
+- Publish the installer's SHA-256 in the release notes; it is how a download is
+  checked while the installer is unsigned.
+- Authenticode through the upstream DigiCert hook stays inert unless
+  `DIGICERT_KEYPAIR_ALIAS` is configured.
 
 ### Branding assets
 
@@ -727,7 +653,7 @@ Those generated files feed every native surface through these connections:
 
 ```text
 icon-source.png
-  -> icons/icon.ico  -> Windows app/taskbar + NSIS + bootstrapper executable
+  -> icons/icon.ico  -> Windows app/taskbar + NSIS
   -> icons/icon.png  -> native Windows notifications
   -> default app icon -> system tray (tray.rs)
   -> icons/icon.icns -> macOS bundle
@@ -735,10 +661,9 @@ icon-source.png
   -> src/app/favicon.ico -> Next.js favicon
 ```
 
-`tauri.conf.json` and `build-installer-bootstrapper.ps1` both reference the
-generated `icon.*` family. Do not introduce a second `app_icon.*` family: that
-previous duplication allowed the tray/app and installer to silently use
-different brands. The README intentionally renders `icon-source.png` from the
+`tauri.conf.json` references the generated `icon.*` family. Do not introduce
+a second `app_icon.*` family: that previous duplication allowed the tray/app
+and installer to silently use different brands. The README intentionally renders `icon-source.png` from the
 repository so GitHub uses the same canonical art.
 
 On Windows, `com.meetily.ai` is also the single shell identity: it is Tauri's
