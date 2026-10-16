@@ -195,7 +195,17 @@ export function TranscriptRecovery({
     try {
       const result = await onRecover(selectedMeetingId);
       console.log('Recovery successful:', result);
-      onClose();
+      // With others left, the dialog stays and moves on to the next one.
+      // Selected here: the list dropped the recovered recording while it was
+      // still selected, so the auto-select effect has already run and passed.
+      // `recoverableMeetings` is the list from before, with that recording in
+      // it, hence the filter by id.
+      const next = recoverableMeetings.find((m) => m.meetingId !== selectedMeetingId);
+      if (!next) {
+        onClose();
+      } else {
+        void handleMeetingSelect(next.meetingId);
+      }
     } catch (error) {
       // The caller has already said what went wrong.
       console.error('Recovery failed:', error);
@@ -386,11 +396,13 @@ export function TranscriptRecovery({
                       </div>
                     ) : previewTranscripts.length > 0 ? (
                       <div className="space-y-3">
-                        <Alert>
-                          <AlertDescription>
-                            {t('showingFirstSegments', { shown: previewTranscripts.length, total: selectedMeeting.transcriptCount })}
-                          </AlertDescription>
-                        </Alert>
+                        {selectedMeeting.transcriptCount > previewTranscripts.length && (
+                          <Alert>
+                            <AlertDescription>
+                              {t('showingFirstSegments', { shown: previewTranscripts.length, total: selectedMeeting.transcriptCount })}
+                            </AlertDescription>
+                          </Alert>
+                        )}
                         {previewTranscripts.map((transcript, index) => {
                           // Handle different timestamp formats
                           const getTimestamp = () => {

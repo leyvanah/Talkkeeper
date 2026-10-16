@@ -150,17 +150,26 @@ export default function Home() {
 
   // Handle recovery with toast notifications and navigation
   const handleRecovery = async (meetingId: string) => {
+    // Others still waiting: stay with the list rather than leave for the
+    // recovered meeting, which the toast offers to open instead.
+    const othersLeft = recoverableMeetings.some((meeting) => meeting.meetingId !== meetingId);
     try {
       const result = await recoverMeeting(meetingId);
 
       if (result.success && result.meetingId && result.transcribeFolder) {
         // Only the audio was left: recognise it the way a stopped recording is.
         beginPostCall(result.meetingId, result.transcribeFolder);
+        const recoveredId = result.meetingId;
         toast.success(t('restoredFromAudioTitle'), {
           description: t('restoredFromAudioDescription'),
+          action: othersLeft ? {
+            label: t('viewMeetingAction'),
+            onClick: () => router.push(`/meeting-details?id=${encodeURIComponent(recoveredId)}`),
+          } : undefined,
         });
+        if (!othersLeft) sessionStorage.removeItem('recovery_dialog_shown');
         await refetchMeetings();
-        router.push(`/meeting-details?id=${encodeURIComponent(result.meetingId)}`);
+        if (!othersLeft) router.push(`/meeting-details?id=${encodeURIComponent(recoveredId)}`);
         return;
       }
 
@@ -181,13 +190,12 @@ export default function Home() {
         // Refresh sidebar to show the newly recovered meeting
         await refetchMeetings();
 
-        // If no more recoverable meetings, clear session flag so dialog can show again
-        if (recoverableMeetings.length === 0) {
-          sessionStorage.removeItem('recovery_dialog_shown');
-        }
+        // Nothing left: a recording interrupted later this session opens the
+        // dialog by itself again.
+        if (!othersLeft) sessionStorage.removeItem('recovery_dialog_shown');
 
-        // Auto-navigate after a short delay
-        if (result.meetingId) {
+        // Auto-navigate after a short delay, once nothing else waits
+        if (result.meetingId && !othersLeft) {
           setTimeout(() => {
             router.push(`/meeting-details?id=${result.meetingId}`);
           }, 2000);
@@ -201,11 +209,10 @@ export default function Home() {
     }
   };
 
-  // Handle dialog close - clear session flag if no meetings left
+  // The dialog opens by itself once per session; after that the line above
+  // the transcript opens it again for as long as anything waits.
   const handleDialogClose = () => {
     setShowRecoveryDialog(false);
-    // If user closes dialog and there are no more meetings, clear the flag
-    // This allows the dialog to show again next session if new meetings appear
     if (recoverableMeetings.length === 0) {
       sessionStorage.removeItem('recovery_dialog_shown');
     }
@@ -254,6 +261,21 @@ export default function Home() {
         onOpenWithOtherKey={openWithOtherKey}
         onLoadPreview={loadMeetingTranscripts}
       />
+      {recoverableMeetings.length > 0 && !showRecoveryDialog && !recordingState.isRecording && (
+        <div
+          role="status"
+          className="flex items-center justify-between gap-3 border-b border-[var(--af-border)] bg-[var(--af-bg)] px-4 py-2 text-sm"
+        >
+          <span>{t('interruptedRecordings', { count: recoverableMeetings.length })}</span>
+          <button
+            type="button"
+            onClick={() => setShowRecoveryDialog(true)}
+            className="rounded-md border border-[var(--af-border)] px-3 py-1 font-medium hover:bg-[var(--af-hover)]"
+          >
+            {t('interruptedRecordingsOpen')}
+          </button>
+        </div>
+      )}
       <div className="flex flex-1 overflow-hidden">
         <TranscriptPanel
           isProcessingStop={isProcessingStop}
