@@ -6,6 +6,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { DeviceSelection, SelectedDevices } from '@/components/DeviceSelection';
 import { toast } from 'sonner';
 import { useConfig } from '@/contexts/ConfigContext';
+import { toastFailure } from '@/lib/failure';
 import { usePlatform } from '@/hooks/usePlatform';
 import {
   lockedRecordingSwitch,
@@ -227,10 +228,7 @@ export function RecordingSettings({ onSave }: RecordingSettingsProps) {
     try {
       await invoke('open_recordings_folder');
     } catch (error) {
-      console.error('Failed to open recordings folder:', error);
-      toast.error(t('openRecordingsFolderFailed'), {
-        description: String(error),
-      });
+      toastFailure(t('openRecordingsFolderFailed'), 'recordings-folder-open', error);
     }
   };
 
@@ -250,10 +248,7 @@ export function RecordingSettings({ onSave }: RecordingSettingsProps) {
       onSave?.(newPreferences);
       toast.success(t('recordingsFolderUpdated'));
     } catch (error) {
-      console.error('Failed to change recordings folder:', error);
-      toast.error(t('recordingsFolderUpdateFailed'), {
-        description: String(error),
-      });
+      toastFailure(t('recordingsFolderUpdateFailed'), 'recordings-folder-change', error);
     } finally {
       setIsChoosingFolder(false);
     }
@@ -299,10 +294,12 @@ export function RecordingSettings({ onSave }: RecordingSettingsProps) {
         toast.success(t('preferenceSaved'));
       }
     } catch (error) {
-      // The backend's text is English and says nothing the owner can act on.
-      console.error('Failed to save recording preferences:', error);
       setPreferences(savedRef.current);
-      toast.error(t(change === 'devices' ? 'devicePreferencesSaveFailed' : 'preferenceSaveFailed'));
+      toastFailure(
+        t(change === 'devices' ? 'devicePreferencesSaveFailed' : 'preferenceSaveFailed'),
+        'recording-preferences-save',
+        error,
+      );
     } finally {
       setSaving(false);
     }
