@@ -33,6 +33,15 @@ import {
 } from '@/components/ui/command';
 import { cn, isOllamaNotInstalledError } from '@/lib/utils';
 import { toast } from 'sonner';
+import { logFailure, toastFailure } from '@/lib/failure';
+
+/**
+ * The text "Ollama is not installed" is recognised from. Only a JavaScript
+ * error is looked at, as before: a command rejects with a string, and its
+ * "connection refused" is the same for an Ollama that is installed but not
+ * running, which the "not installed" prompt would misdescribe.
+ */
+const ollamaReason = (err: unknown) => (err instanceof Error ? err.message : '');
 
 export interface ModelConfig {
   provider: 'ollama' | 'groq' | 'claude' | 'openai' | 'openrouter' | 'builtin-ai' | 'custom-openai';
@@ -445,10 +454,9 @@ export function ModelSettingsModal({
 
     // Validate URL if provided
     if (trimmedEndpoint && !validateOllamaEndpoint(trimmedEndpoint)) {
-      const errorMsg = t('invalidOllamaEndpoint');
-      setError(errorMsg);
+      setError(t('invalidOllamaEndpoint'));
       if (!silent) {
-        toast.error(errorMsg);
+        toast.error(t('invalidOllamaEndpoint'));
       }
       return;
     }
@@ -468,20 +476,17 @@ export function ModelSettingsModal({
       // Successfully fetched models, Ollama is installed
       setOllamaNotInstalled(false);
     } catch (err) {
-      const errorMsg = err instanceof Error ? err.message : t('loadOllamaModelsFailed');
-      setError(errorMsg);
+      setError(t('loadOllamaModelsFailed'));
 
-      // Check if error indicates Ollama is not installed
-      if (isOllamaNotInstalledError(errorMsg)) {
-        setOllamaNotInstalled(true);
-      } else {
-        setOllamaNotInstalled(false);
-      }
+      setOllamaNotInstalled(isOllamaNotInstalledError(ollamaReason(err)));
 
+      // The silent load runs whenever the window opens; without Ollama it
+      // fails every time and is not worth a line in the log.
       if (!silent) {
-        toast.error(errorMsg);
+        toastFailure(t('loadOllamaModelsFailed'), 'ollama-models-load', err);
+      } else {
+        console.error('[ollama-models-load]', err);
       }
-      console.error('Error loading models:', err);
     } finally {
       setIsLoadingOllama(false);
     }
@@ -521,10 +526,8 @@ export function ModelSettingsModal({
       const data = (await invoke('get_openrouter_models')) as OpenRouterModel[];
       setOpenRouterModels(data);
     } catch (err) {
-      console.error('Error loading OpenRouter models:', err);
-      setOpenRouterError(
-        err instanceof Error ? err.message : t('loadOpenRouterModelsFailed')
-      );
+      logFailure('openrouter-models-load', err);
+      setOpenRouterError(t('loadOpenRouterModelsFailed'));
     } finally {
       setIsLoadingOpenRouter(false);
     }
@@ -711,8 +714,7 @@ export function ModelSettingsModal({
       });
       toast.success(result.message || t('connectionSuccessful'));
     } catch (err) {
-      const errorMsg = err instanceof Error ? err.message : String(err);
-      toast.error(errorMsg);
+      toastFailure(t('connectionFailed'), 'custom-openai-test', err);
     } finally {
       setIsTestingConnection(false);
     }
@@ -753,11 +755,10 @@ export function ModelSettingsModal({
       // Note: Model is NOT auto-selected - user must explicitly choose it
       // This respects the database as the single source of truth
     } catch (err) {
-      const errorMsg = err instanceof Error ? err.message : t('downloadModelFailed');
-      console.error('Error downloading model:', err);
+      logFailure('ollama-model-download', err);
 
       // Check if Ollama is not installed and show appropriate error
-      if (isOllamaNotInstalledError(errorMsg)) {
+      if (isOllamaNotInstalledError(ollamaReason(err))) {
         toast.error(t('ollamaNotInstalledTitle'), {
           description: t('ollamaNotInstalledForDownload'),
           duration: 7000,
@@ -785,9 +786,7 @@ export function ModelSettingsModal({
       toast.success(t('modelDeleted', { model: modelName }));
       await fetchOllamaModels(true); // Refresh list
     } catch (err) {
-      const errorMsg = err instanceof Error ? err.message : t('deleteModelFailed');
-      toast.error(errorMsg);
-      console.error('Error deleting model:', err);
+      toastFailure(t('deleteModelFailed'), 'ollama-model-delete', err);
     }
   };
 
@@ -990,6 +989,22 @@ export function ModelSettingsModal({
                   ? t('remoteEndpointBlocked')
                   : t('remoteEndpointNotice')}
             </p>
+          )}
+          {/* A failed load leaves the model list empty; say so and let the
+              owner try again (choosing the provider again does not reload). */}
+          {modelConfig.provider === 'openrouter' && openRouterError && !isLoadingOpenRouter && (
+            <div className="mt-2 flex items-center gap-2 text-xs text-red-600" role="alert">
+              <span>{openRouterError}</span>
+              <Button
+                type="button"
+                variant="link"
+                size="sm"
+                className="h-auto p-0 text-xs"
+                onClick={() => loadOpenRouterModels()}
+              >
+                {t('modelRetry')}
+              </Button>
+            </div>
           )}
         </div>
 

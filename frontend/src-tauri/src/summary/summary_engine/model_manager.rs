@@ -495,6 +495,18 @@ impl ModelManager {
             0
         };
 
+        // Only what is left has to fit. A server that ignores the resume
+        // sends the whole file, but the file is truncated first, so the
+        // same space is enough. A part already here stays for the resume:
+        // removing it would free as much as it then asks to download.
+        if let Err(error) = crate::disk_space::ensure_room(
+            &self.models_dir,
+            model_def.size_bytes.saturating_sub(existing_size),
+        ) {
+            self.fail_download(model_name, &control, error.to_string()).await;
+            return Err(error);
+        }
+
         // Download the file with optimized client settings
         let client = match Client::builder()
             .tcp_nodelay(true) // Disable Nagle's algorithm for faster streaming
@@ -681,8 +693,20 @@ impl ModelManager {
             };
             let chunk_len = chunk.len() as u64;
             if let Err(error) = writer.write_all(&chunk).await {
-                self.fail_download(model_name, &control, format!("Error writing model file: {}", error)).await;
-                return Err(anyhow!("Error writing to file: {}", error));
+                let error = crate::disk_space::write_error(
+                    error,
+                    &self.models_dir,
+                    model_def.size_bytes.saturating_sub(downloaded),
+                    "Error writing model file",
+                );
+                drop(writer);
+                if crate::disk_space::is_no_space(&error) {
+                    self.fail_for_lack_of_space(model_name, &control, &file_path, &error)
+                        .await;
+                } else {
+                    self.fail_download(model_name, &control, error.to_string()).await;
+                }
+                return Err(error);
             }
 
             downloaded += chunk_len;
@@ -745,8 +769,20 @@ impl ModelManager {
         }
 
         if let Err(error) = writer.flush().await {
-            self.fail_download(model_name, &control, format!("Failed to flush model file: {}", error)).await;
-            return Err(error.into());
+            let error = crate::disk_space::write_error(
+                error,
+                &self.models_dir,
+                model_def.size_bytes.saturating_sub(downloaded),
+                "Failed to flush model file",
+            );
+            drop(writer);
+            if crate::disk_space::is_no_space(&error) {
+                self.fail_for_lack_of_space(model_name, &control, &file_path, &error)
+                    .await;
+            } else {
+                self.fail_download(model_name, &control, error.to_string()).await;
+            }
+            return Err(error);
         }
         drop(writer);
 
@@ -902,6 +938,27 @@ impl ModelManager {
         }
         drop(models);
         self.release_download(model_name, control).await;
+    }
+
+    /// A download stopped by a full disk. The unfinished file is removed:
+    /// kept for a resume, it would only hold the space a retry needs.
+    async fn fail_for_lack_of_space(
+        &self,
+        model_name: &str,
+        control: &Arc<DownloadControl>,
+        file_path: &PathBuf,
+        error: &anyhow::Error,
+    ) {
+        match fs::remove_file(file_path).await {
+            Ok(()) => log::info!("Removed unfinished download {}", file_path.display()),
+            Err(remove) if remove.kind() == std::io::ErrorKind::NotFound => {}
+            Err(remove) => log::warn!(
+                "Could not remove unfinished download {}: {}",
+                file_path.display(),
+                remove
+            ),
+        }
+        self.fail_download(model_name, control, error.to_string()).await;
     }
 
     async fn finish_cancelled_download(

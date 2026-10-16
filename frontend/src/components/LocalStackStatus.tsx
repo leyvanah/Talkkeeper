@@ -15,6 +15,7 @@ import {
   getWhisperBackend,
   type TranscriptionAccelerationStatus,
 } from '@/lib/transcription-acceleration';
+import { toastFailure } from '@/lib/failure';
 
 type StackStatus = TranscriptionAccelerationStatus & {
   recording: boolean;
@@ -81,8 +82,7 @@ export function LocalStackStatus() {
       const s = await invoke<StackStatus>('get_local_stack_status');
       setStatus(s);
     } catch (e) {
-      console.error('get_local_stack_status failed', e);
-      toast.error(t('localStackReadFailed'));
+      toastFailure(t('localStackReadFailed'), 'local-stack-status', e);
     }
   }, []);
 
@@ -99,7 +99,7 @@ export function LocalStackStatus() {
       toast.success(t('sttUnloaded'));
       await refresh();
     } catch (e) {
-      toast.error(typeof e === 'string' ? e : t('sttUnloadFailed'));
+      toastFailure(t('sttUnloadFailed'), 'stt-unload', e);
     } finally {
       setBusy(false);
     }
@@ -112,7 +112,7 @@ export function LocalStackStatus() {
       toast.success(t('memoryFreed'));
       await refresh();
     } catch (e) {
-      toast.error(typeof e === 'string' ? e : t('freeAllFailed'));
+      toastFailure(t('freeAllFailed'), 'models-unload', e);
     } finally {
       setBusy(false);
     }

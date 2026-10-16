@@ -39,6 +39,7 @@ pub mod clipboard;
 pub mod config;
 pub mod console_utils;
 pub mod crash_report;
+pub mod disk_space;
 pub mod database;
 pub mod diarization;
 pub mod notifications;
@@ -66,6 +67,7 @@ pub mod security;
 pub mod state;
 pub mod summary;
 pub mod tray;
+pub mod ui_language;
 pub mod utils;
 pub mod whisper_engine;
 
@@ -163,7 +165,6 @@ async fn start_recording<R: Runtime>(
             if let Err(e) = notifications::commands::show_recording_started_notification(
                 &app,
                 &notification_manager_state,
-                meeting_name.clone(),
             )
             .await
             {
@@ -321,9 +322,6 @@ async fn start_recording_with_devices_and_meeting<R: Runtime>(
     log_info!("🚀 CALLED start_recording_with_devices_and_meeting - Mic: {:?}, System: {:?}, Meeting: {:?}",
              mic_device_name, system_device_name, meeting_name);
 
-    // Clone meeting_name for notification use later
-    let meeting_name_for_notification = meeting_name.clone();
-
     // Call the recording module functions that support meeting names
     let recording_result = match (mic_device_name.clone(), system_device_name.clone()) {
         (None, None) => {
@@ -361,7 +359,6 @@ async fn start_recording_with_devices_and_meeting<R: Runtime>(
             if let Err(e) = notifications::commands::show_recording_started_notification(
                 &app,
                 &notification_manager_state,
-                meeting_name_for_notification.clone(),
             )
             .await
             {
@@ -455,6 +452,9 @@ pub fn run() {
             log::info!("Application setup complete");
 
             // Initialize system tray
+            // The language the window last chose, so the tray is drawn in it
+            // before the window has loaded.
+            crate::ui_language::load();
             if let Err(e) = tray::create_tray(_app.handle()) {
                 log::error!("Failed to create system tray: {}", e);
             }
@@ -599,9 +599,11 @@ pub fn run() {
             }
         })
         .invoke_handler(tauri::generate_handler![
+            logging::log_frontend_failure,
             security::commands::security_status,
             network_policy::get_local_only_mode,
             network_policy::set_local_only_mode,
+            ui_language::set_ui_language,
             clipboard::copy_text_privately,
             security::commands::security_setup,
             security::commands::security_unlock,
@@ -653,7 +655,6 @@ pub fn run() {
             whisper_engine::commands::force_unload_stt_models,
             whisper_engine::commands::force_unload_all_models,
             whisper_engine::commands::get_local_stack_status,
-            whisper_engine::commands::get_cuda_reconfiguration_status,
             whisper_engine::commands::whisper_has_available_models,
             whisper_engine::commands::whisper_validate_model_ready,
             whisper_engine::commands::whisper_transcribe_audio,
@@ -749,6 +750,7 @@ pub fn run() {
             diarization::diarization_models_available,
             diarization::diarization_model_directory,
             diarization::diarization_download_size,
+            disk_space::check_model_download_space,
             diarization::download_diarization_models,
             diarization::diarize_meeting,
             diarization::diarization_has_device_tracks,

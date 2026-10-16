@@ -1,17 +1,19 @@
 import React, { useEffect, useState } from 'react';
-import { useTranslations } from 'next-intl';
+import { useLocale, useTranslations } from 'next-intl';
 import { invoke } from '@tauri-apps/api/core';
-import { AlertTriangle, Cpu, Info, RefreshCw, Zap } from 'lucide-react';
+import { Cpu, Info, Zap } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import {
   formatWhisperBackend,
   getWhisperBackend,
-  type CudaReconfigurationStatus,
   type TranscriptionAccelerationStatus,
   type WhisperBackend,
 } from '@/lib/transcription-acceleration';
 import { OnboardingContainer } from '../OnboardingContainer';
 import { useOnboarding, type SttEngine } from '@/contexts/OnboardingContext';
+import { onboardingDownloadMb } from '@/lib/onboarding-summary-model';
+import { formatDiskSize } from '@/lib/disk-space';
+import { useDiskSpaceText } from '@/hooks/useDiskSpaceText';
 import {
   Tooltip,
   TooltipContent,
@@ -21,27 +23,40 @@ import {
 
 export function SetupOverviewStep() {
   const t = useTranslations('onboarding');
-  const { goNext, sttEngine, setSttEngine } = useOnboarding();
+  const locale = useLocale();
+  const diskSpaceText = useDiskSpaceText();
+  const {
+    goNext,
+    sttEngine,
+    setSttEngine,
+    sttDownloaded,
+    selectedSummaryModel,
+    recommendedSummaryModel,
+    summaryModelDownloaded,
+  } = useOnboarding();
+  const [spaceError, setSpaceError] = useState<string | null>(null);
+  const [checkingSpace, setCheckingSpace] = useState(false);
+  // Both downloads, before the first one starts: recognition fetched only
+  // for the summary model to run out of space halfway helps nobody.
+  const downloadBytes =
+    onboardingDownloadMb({
+      sttEngine,
+      sttDownloaded,
+      summaryModel: selectedSummaryModel || recommendedSummaryModel,
+      summaryDownloaded: summaryModelDownloaded,
+    }) * 1024 * 1024;
   const [isMac, setIsMac] = useState(false);
   const [whisperBackend, setWhisperBackend] = useState<WhisperBackend | null | undefined>();
-  const [cudaStatus, setCudaStatus] = useState<CudaReconfigurationStatus | null>(null);
-  const [checkingAcceleration, setCheckingAcceleration] = useState(false);
 
+  // Which recognition backend this build has. There is one build per
+  // release, so this is a fact to show, not something to change here.
   const checkAcceleration = async () => {
-    setCheckingAcceleration(true);
     try {
-      const [status, cuda] = await Promise.all([
-        invoke<TranscriptionAccelerationStatus>('get_local_stack_status'),
-        invoke<CudaReconfigurationStatus>('get_cuda_reconfiguration_status'),
-      ]);
+      const status = await invoke<TranscriptionAccelerationStatus>('get_local_stack_status');
       setWhisperBackend(getWhisperBackend(status));
-      setCudaStatus(cuda);
     } catch (error) {
       console.error('Failed to detect transcription acceleration:', error);
       setWhisperBackend(null);
-      setCudaStatus(null);
-    } finally {
-      setCheckingAcceleration(false);
     }
   };
 
@@ -72,7 +87,25 @@ export function SetupOverviewStep() {
     },
   ];
 
-  const handleContinue = () => {
+  const handleContinue = async () => {
+    setSpaceError(null);
+    if (downloadBytes > 0) {
+      setCheckingSpace(true);
+      try {
+        await invoke('check_model_download_space', { downloadBytes });
+      } catch (error) {
+        const text = diskSpaceText(error);
+        if (text) {
+          setSpaceError(text);
+          return;
+        }
+        // Not being able to tell is no reason to stop: each download checks
+        // again before its first byte.
+        console.error('Could not check free disk space:', error);
+      } finally {
+        setCheckingSpace(false);
+      }
+    }
     goNext();
   };
 
@@ -82,22 +115,7 @@ export function SetupOverviewStep() {
     }).catch((error) => console.error('Failed to open GitHub issues:', error));
   };
 
-  const openNvidiaDrivers = () => {
-    invoke('open_external_url', {
-      url: 'https://www.nvidia.com/Download/index.aspx',
-    }).catch((error) => console.error('Failed to open NVIDIA drivers:', error));
-  };
-
-  const openLatestSetup = () => {
-    if (!cudaStatus?.setupDownloadUrl) return;
-    invoke('open_external_url', {
-      url: cudaStatus.setupDownloadUrl,
-    }).catch((error) => console.error('Failed to open latest Talkkeeper setup:', error));
-  };
-
-  const accelerationLabel = cudaStatus?.reconfigurationRequired
-    ? t('setupCudaAvailable')
-    : whisperBackend === undefined
+  const accelerationLabel = whisperBackend === undefined
     ? t('setupAccelerationDetecting')
     : whisperBackend === null
       ? t('setupAccelerationUnknown')
@@ -109,9 +127,6 @@ export function SetupOverviewStep() {
       : whisperBackend === 'CPU'
         ? t('setupAccelerationCpu')
         : t('setupAccelerationAuto');
-  const showCudaNotice = cudaStatus?.driverUpdateRequired || cudaStatus?.reconfigurationRequired;
-  const cudaProbeFailed = cudaStatus?.driverState === 'query-failed';
-  const cudaBuildInstalled = cudaStatus?.compiledBackend.toLowerCase() === 'cuda';
 
   return (
     <OnboardingContainer
@@ -197,61 +212,21 @@ export function SetupOverviewStep() {
           </div>
         </div>
 
-        {showCudaNotice && (
-          <div
-            role="status"
-            className="w-full max-w-md rounded-lg border border-amber-300 bg-amber-50 p-4 text-amber-950"
-          >
-            <div className="flex items-start gap-3">
-              <AlertTriangle className="mt-0.5 h-5 w-5 shrink-0 text-amber-600" />
-              <div className="min-w-0 flex-1">
-                <p className="text-sm font-semibold">
-                  {cudaStatus?.reconfigurationRequired
-                    ? t('setupCudaReady')
-                    : cudaProbeFailed
-                      ? t('setupCudaUnverified')
-                      : t('setupCudaDriverNeeded')}
-                </p>
-                <p className="mt-1 text-xs leading-5 text-amber-900">
-                  {cudaStatus?.reconfigurationRequired
-                    ? t('setupCudaRerunSetup', { backend: formatWhisperBackend(whisperBackend ?? 'CPU') })
-                    : cudaProbeFailed
-                      ? t('setupCudaProbeFailed', { suffix: cudaBuildInstalled ? '' : t('setupCudaProbeFailedSuffix') })
-                      : cudaBuildInstalled
-                        ? t('setupCudaBuildNoDriver')
-                        : t('setupCudaNoDriver')}
-                </p>
-                <div className="mt-3 flex flex-wrap gap-2">
-                  <Button
-                    type="button"
-                    size="sm"
-                    variant="outline"
-                    onClick={cudaStatus?.reconfigurationRequired ? openLatestSetup : openNvidiaDrivers}
-                    className="border-amber-400 bg-white text-amber-950 hover:bg-amber-100"
-                  >
-                    {cudaStatus?.reconfigurationRequired ? t('setupDownloadCuda') : t('setupGetNvidiaDriver')}
-                  </Button>
-                  <Button
-                    type="button"
-                    size="sm"
-                    variant="ghost"
-                    disabled={checkingAcceleration}
-                    onClick={() => void checkAcceleration()}
-                    className="text-amber-950 hover:bg-amber-100"
-                  >
-                    <RefreshCw className={`mr-1.5 h-3.5 w-3.5 ${checkingAcceleration ? 'animate-spin' : ''}`} />
-                    {t('setupRecheck')}
-                  </Button>
-                </div>
-              </div>
-            </div>
-          </div>
-        )}
-
         {/* CTA Section */}
         <div className="w-full max-w-xs space-y-4">
+          {downloadBytes > 0 && (
+            <p className="text-center text-xs text-gray-500">
+              {t('setupDownloadTotal', { size: formatDiskSize(downloadBytes, locale) })}
+            </p>
+          )}
+          {spaceError && (
+            <p role="alert" className="text-center text-sm text-red-600">
+              {spaceError}
+            </p>
+          )}
           <Button
-            onClick={handleContinue}
+            onClick={() => void handleContinue()}
+            disabled={checkingSpace}
             className="w-full h-11 bg-gray-900 hover:bg-gray-800 text-white"
           >
             {t('setupLetsGo')}

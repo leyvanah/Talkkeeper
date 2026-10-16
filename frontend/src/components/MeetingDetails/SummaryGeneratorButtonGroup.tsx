@@ -33,6 +33,7 @@ import { useState, useEffect, useRef, ReactNode } from 'react';
 import { useTranslations } from 'next-intl';
 import { isOllamaNotInstalledError } from '@/lib/utils';
 import { BuiltInModelInfo } from '@/lib/builtin-ai';
+import { toastFailure } from '@/lib/failure';
 
 /** The summary's language, as the panel shows and changes it. */
 export interface SummaryLanguageChoice {
@@ -194,8 +195,8 @@ export function SummaryGeneratorButtonGroup({
       }
 
       if (status.type === 'error') {
-        toast.error(t('modelErrorTitle'), {
-          description: status.Error || t('modelErrorDescription'),
+        toastFailure(t('modelErrorTitle'), 'builtin-model-status', status.Error, {
+          description: t('modelErrorDescription'),
           duration: 5000,
         });
         setSettingsDialogOpen(true);
@@ -211,10 +212,7 @@ export function SummaryGeneratorButtonGroup({
 
     } catch (error) {
       console.error('Error checking built-in AI models:', error);
-      toast.error(t('modelStatusCheckFailed'), {
-        description: error instanceof Error ? error.message : String(error),
-        duration: 5000,
-      });
+      toastFailure(t('modelStatusCheckFailed'), 'builtin-model-check', error, { duration: 5000 });
     } finally {
       setIsCheckingModels(false);
     }
@@ -268,7 +266,7 @@ export function SummaryGeneratorButtonGroup({
         );
       } else {
         // Other error - generic message
-        toast.error(t('ollamaCheckFailed'), { duration: 5000 });
+        toastFailure(t('ollamaCheckFailed'), 'ollama-check', error, { duration: 5000 });
       }
       setSettingsDialogOpen(true);
     } finally {

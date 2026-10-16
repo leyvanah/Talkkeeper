@@ -6,6 +6,7 @@ import { Button } from './ui/button';
 import { Input } from './ui/input';
 import { Label } from './ui/label';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from './ui/select';
+import { logFailure } from '@/lib/failure';
 
 export interface ExternalSttConfig {
     url: string;
@@ -80,7 +81,6 @@ export function ExternalSttSettings({ isSelected, disabled, onSelect }: External
         setError(null);
     }, []);
 
-    const describeError = (raised: unknown) => (typeof raised === 'string' ? raised : String(raised));
 
     const save = async () => {
         setIsSaving(true);
@@ -96,7 +96,8 @@ export function ExternalSttSettings({ isSelected, disabled, onSelect }: External
                 await onSelect(externalSttLabel(config));
             }
         } catch (saveError) {
-            setError(describeError(saveError));
+            logFailure('external-stt-save', saveError);
+            setError(t('externalSttSaveFailed'));
         } finally {
             setIsSaving(false);
         }
@@ -110,7 +111,8 @@ export function ExternalSttSettings({ isSelected, disabled, onSelect }: External
             const result = await invoke<ExternalSttTestResult>('api_test_external_stt', { config });
             setTestMessage(t('externalSttTestOk', { ms: result.latencyMs }));
         } catch (testError) {
-            setError(t('externalSttTestFailed', { reason: describeError(testError) }));
+            logFailure('external-stt-test', testError);
+            setError(t('externalSttTestFailed'));
         } finally {
             setIsTesting(false);
         }
