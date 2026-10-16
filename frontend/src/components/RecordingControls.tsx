@@ -135,8 +135,10 @@ export const RecordingControls: React.FC<RecordingControlsProps> = ({
     return `${minutes}:${seconds.toString().padStart(2, '0')}`;
   };
 
-  // Elapsed timer for the in-app bar, mirroring the floating compact bar.
-  const elapsedSeconds = Math.max(0, Math.floor(recordingState.recordingDuration ?? 0));
+  // Elapsed timer for the in-app bar, mirroring the floating compact bar and
+  // the status line: time recorded, so it stands still while paused.
+  const shownDuration = recordingState.activeDuration ?? recordingState.recordingDuration;
+  const elapsedSeconds = Math.max(0, Math.floor(shownDuration ?? 0));
   const formatElapsed = (totalSeconds: number) => {
     const h = Math.floor(totalSeconds / 3600);
     const m = Math.floor((totalSeconds % 3600) / 60);
@@ -368,11 +370,11 @@ export const RecordingControls: React.FC<RecordingControlsProps> = ({
   // bar's expand button so the two are one control surface in two sizes; the
   // current duration seeds the bar so its timer continues rather than resets.
   const collapseToBar = useCallback(() => {
-    const elapsed = Math.max(0, Math.floor(recordingState.recordingDuration ?? 0));
+    const elapsed = Math.max(0, Math.floor(shownDuration ?? 0));
     invoke('enter_compact_mode', { elapsedSeconds: elapsed }).catch((e) =>
       console.error('Failed to enter compact mode:', e)
     );
-  }, [recordingState.recordingDuration]);
+  }, [shownDuration]);
 
   useEffect(() => {
     return () => {
