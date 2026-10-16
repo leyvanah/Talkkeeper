@@ -12,7 +12,7 @@ import MainContent from '@/components/MainContent'
 import { Toaster, toast } from 'sonner'
 import "sonner/dist/styles.css"
 import { useState, useEffect, useCallback } from 'react'
-import { usePathname } from 'next/navigation'
+import { usePathname, useRouter } from 'next/navigation'
 import { listen, UnlistenFn } from '@tauri-apps/api/event'
 import { invoke } from '@tauri-apps/api/core'
 import { applyAppTheme, getSavedAppTheme } from '@/lib/app-theme'
@@ -123,6 +123,7 @@ export default function RootLayout({
   // location directly made the server draw the full app chrome and the client
   // the bare bar, which React reported as a hydration failure.
   const pathname = usePathname()
+  const router = useRouter()
   const isMiniBar = pathname?.startsWith('/minibar') ?? false
 
   const [showOnboarding, setShowOnboarding] = useState(false)
@@ -186,8 +187,11 @@ export default function RootLayout({
     }
   }, []);
   useEffect(() => {
-    if (!startupResolved || startupError || pendingCrashReport) return
-    // Listen for tray recording toggle request
+    if (isMiniBar || !startupResolved || startupError || pendingCrashReport) return
+    // Start from the tray's menu. The recording is started by the home page
+    // (useRecordingStart), so on another page the app navigates there first,
+    // in place: a page reload used to start before the settings had loaded and
+    // checked the default engine instead of the chosen one.
     const unlisten = listen('request-recording-toggle', () => {
       console.log('[Layout] Received request-recording-toggle from tray');
 
@@ -196,17 +200,22 @@ export default function RootLayout({
         toast.error(m.completeSetupFirst, {
           description: m.completeSetupFirstOnboarding
         });
-      } else {
-        // If in main app, forward to useRecordingStart via window event
-        console.log('[Layout] Forwarding to start-recording-from-sidebar');
+      } else if (pathname === '/') {
         window.dispatchEvent(new CustomEvent('start-recording-from-sidebar'));
+      } else {
+        try {
+          sessionStorage.setItem('autoStartRecording', 'true');
+        } catch {
+          /* the start is then left to the owner */
+        }
+        router.push('/');
       }
     });
 
     return () => {
       unlisten.then(fn => fn());
     };
-  }, [showOnboarding, startupResolved, startupError, pendingCrashReport]);
+  }, [isMiniBar, pathname, router, showOnboarding, startupResolved, startupError, pendingCrashReport]);
 
   // Meeting Detection: prompt to start recording when a meeting app is detected.
   useEffect(() => {
