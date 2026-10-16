@@ -451,10 +451,41 @@ Var MeetilyCudaNotice
   DetailPrint "────────────────────────────────────────"
 !macroend
 
-!macro NSIS_HOOK_PREUNINSTALL
-  DetailPrint "Stopping Talkkeeper if it is still running…"
-  nsExec::ExecToLog 'taskkill /IM meetily.exe /F'
-  Pop $0
+; Waits until Talkkeeper is no longer running, and never closes it itself.
+;
+; A forced kill ends a recording without stopping it, so the meeting is not
+; saved and the tail of the audio can be lost. Instead the owner is asked to
+; stop the recording and quit from the tray, then to retry; Cancel leaves
+; everything as it was. A silent run cannot ask, so it gives up with an error
+; and changes nothing. This replaces both Tauri's CheckIfAppIsRunning, which
+; kills on OK (and without asking in silent and passive runs), and the
+; `taskkill /F` this file used to run before uninstalling.
+;
+; Inside a section, Abort stops the install or uninstall; inside a page's leave
+; function it keeps the owner on that page.
+!macro Talkkeeper_WaitForAppToClose
+  !define TkWaitID ${__LINE__}
+  tk_wait_check_${TkWaitID}:
+  !if "${INSTALLMODE}" == "currentUser"
+    nsis_tauri_utils::FindProcessCurrentUser "${MAINBINARYNAME}.exe"
+  !else
+    nsis_tauri_utils::FindProcess "${MAINBINARYNAME}.exe"
+  !endif
+  Pop $R0
+  ${If} $R0 = 0
+    IfSilent 0 tk_wait_ask_${TkWaitID}
+      System::Call 'kernel32::AttachConsole(i -1)i.r0'
+      ${If} $0 <> 0
+        System::Call 'kernel32::GetStdHandle(i -11)i.r0'
+        System::call 'kernel32::SetConsoleTextAttribute(i r0, i 0x0004)' ; red
+        FileWrite $0 "$(tkAppRunningSilent)$\n"
+      ${EndIf}
+      Abort
+    tk_wait_ask_${TkWaitID}:
+      MessageBox MB_RETRYCANCEL|MB_ICONEXCLAMATION "$(tkAppRunning)" IDRETRY tk_wait_check_${TkWaitID}
+      Abort
+  ${EndIf}
+  !undef TkWaitID
 !macroend
 
 !macro NSIS_HOOK_POSTUNINSTALL
