@@ -16,6 +16,7 @@ import { useConfig } from '@/contexts/ConfigContext';
 import { invoke } from '@tauri-apps/api/core';
 import { toast } from 'sonner';
 import { Dialog, DialogContent, DialogTitle } from '@/components/ui/dialog';
+import { toastFailure } from '@/lib/failure';
 
 
 interface TranscriptButtonGroupProps {
@@ -165,8 +166,7 @@ export function TranscriptButtonGroup({
         await onRefetchTranscripts();
       }
     } catch (e) {
-      const msg = e instanceof Error ? e.message : String(e);
-      toast.error(t('speakerIdentificationFailed'), { id: toastId, description: msg });
+      toastFailure(t('speakerIdentificationFailed'), 'speaker-identify', e, { id: toastId });
     } finally {
       setIsDiarizing(false);
     }

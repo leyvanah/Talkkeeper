@@ -31,6 +31,8 @@ import {
   UserRound,
 } from 'lucide-react';
 import type { PersonProfile } from '@/types';
+import { logFailure } from '@/lib/failure';
+import { failureText } from '@/lib/failure-text';
 
 // The overview prompt is localized too, so the model answers in the UI language.
 type Translate = (key: string, values?: Record<string, string | number>) => string;
@@ -165,8 +167,8 @@ function PersonProfileContent() {
       setCustomPrompt(value);
       setPromptOpen(false);
     } catch (error) {
-      console.error('Failed to save the overview request:', error);
-      setPromptError(t('overviewPromptSaveFailed', { error: error instanceof Error ? error.message : String(error) }));
+      logFailure('person-overview-prompt-save', error);
+      setPromptError(t('overviewPromptSaveFailed'));
     } finally {
       setPromptSaving(false);
     }
@@ -195,8 +197,10 @@ function PersonProfileContent() {
       })
       .catch((error) => {
         if (cancelled) return;
-        console.error('Failed to load person profile:', error);
-        setLoadError(error instanceof Error ? error.message : String(error));
+        logFailure('person-profile-load', error);
+        // Only a missing row means the person is gone; a closed archive or a
+        // database that did not open must not say so.
+        setLoadError(failureText(error) === 'Person not found' ? t('loadFailedDetail') : t('loadFailedRetryDetail'));
       })
       .finally(() => {
         if (!cancelled) setLoading(false);
@@ -218,8 +222,8 @@ function PersonProfileContent() {
       setNotesSaved(true);
       window.setTimeout(() => setNotesSaved(false), 1800);
     } catch (error) {
-      console.error('Failed to save person notes:', error);
-      setNotesError(error instanceof Error ? error.message : String(error));
+      logFailure('person-notes-save', error);
+      setNotesError(t('notesSaveFailed'));
     } finally {
       setSavingNotes(false);
     }
@@ -236,8 +240,8 @@ function PersonProfileContent() {
       });
       setOverview(answer);
     } catch (error) {
-      console.error('Failed to generate person overview:', error);
-      setOverviewError(error instanceof Error ? error.message : String(error));
+      logFailure('person-overview', error);
+      setOverviewError(t('overviewFailed'));
     } finally {
       setOverviewLoading(false);
     }
@@ -258,8 +262,8 @@ function PersonProfileContent() {
         message.id === id ? { ...message, answer, status: 'complete' } : message
       )));
     } catch (error) {
-      console.error('Failed to ask about person:', error);
-      const message = error instanceof Error ? error.message : String(error);
+      logFailure('person-ask', error);
+      const message = t('askFailed');
       setHistory((current) => current.map((item) => (
         item.id === id ? { ...item, answer: message, status: 'error' } : item
       )));
@@ -364,7 +368,7 @@ function PersonProfileContent() {
                     <div className="prose prose-sm max-w-none leading-relaxed text-[var(--af-text-2)] dark:prose-invert prose-headings:text-[var(--af-text)] prose-strong:text-[var(--af-text)] prose-p:my-2 prose-ul:my-2">
                       <ReactMarkdown remarkPlugins={[remarkGfm]}>{overview}</ReactMarkdown>
                     </div>
-                    {overviewError && <p className="mt-4 rounded-lg bg-red-500/10 px-3 py-2 text-xs text-red-400">{t('regenerationFailed', { error: overviewError })}</p>}
+                    {overviewError && <p className="mt-4 rounded-lg bg-red-500/10 px-3 py-2 text-xs text-red-400">{t('overviewRegenerateFailed')}</p>}
                   </>
                 ) : (
                   <div className="rounded-xl border border-dashed border-[var(--af-border-strong)] px-5 py-8 text-center">
@@ -537,7 +541,7 @@ function PersonProfileContent() {
                         {message.status === 'pending' ? (
                           <span className="inline-flex items-center gap-2 text-[var(--af-text-3)]"><Loader2 className="h-3.5 w-3.5 animate-spin" /> {t('checkingRecords')}</span>
                         ) : message.status === 'error' ? (
-                          <>{t('couldNotAnswer', { error: message.answer })}</>
+                          <>{message.answer}</>
                         ) : (
                           <div className="prose prose-xs max-w-none text-[var(--af-text-2)] dark:prose-invert prose-strong:text-[var(--af-text)] prose-p:my-1 prose-ul:my-1">
                             <ReactMarkdown remarkPlugins={[remarkGfm]}>{message.answer}</ReactMarkdown>

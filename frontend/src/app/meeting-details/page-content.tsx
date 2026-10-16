@@ -23,6 +23,7 @@ import { useConfig } from '@/contexts/ConfigContext';
 import { usePostCall } from '@/contexts/PostCallContext';
 import { MeetingExportDialog } from '@/components/MeetingDetails/MeetingExportDialog';
 import { SummaryRegenerationDialog } from '@/components/MeetingDetails/SummaryRegenerationDialog';
+import { toastFailure } from '@/lib/failure';
 
 // Page remounts join the same backend-start attempt. Only accepted attempts are
 // persisted in sessionStorage below; failed preflight attempts remain retryable.
@@ -132,8 +133,7 @@ export default function PageContent({
 
       toast.success(t('modelSettingsSaved'));
     } catch (error) {
-      console.error('Failed to save model config:', error);
-      toast.error(t('modelSettingsSaveFailed'));
+      toastFailure(t('modelSettingsSaveFailed'), 'model-config-save', error);
     }
   };
 

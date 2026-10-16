@@ -62,6 +62,7 @@ import {
   sidebarFromDrag,
 } from '@/lib/panel-layout';
 import { ComplianceNotification } from '../ComplianceNotification';
+import { toastFailure } from '@/lib/failure';
 
 /** Which folders were left open, so the tree looks the same after a restart. */
 const EXPANDED_FOLDERS_KEY = 'meetily_expanded_folders';
@@ -385,10 +386,7 @@ const Sidebar: React.FC = () => {
         router.push('/');
       }
     } catch (error) {
-      console.error('Failed to delete meeting:', error);
-      toast.error(t('deleteMeetingFailed'), {
-        description: error instanceof Error ? error.message : String(error)
-      });
+      toastFailure(t('deleteMeetingFailed'), 'meeting-delete', error);
     }
   };
 
@@ -523,10 +521,7 @@ const Sidebar: React.FC = () => {
       setEditModalState({ isOpen: false, meetingId: null, currentTitle: '' });
       setEditingTitle('');
     } catch (error) {
-      console.error('Failed to update meeting title:', error);
-      toast.error(t('titleUpdateFailed'), {
-        description: error instanceof Error ? error.message : String(error)
-      });
+      toastFailure(t('titleUpdateFailed'), 'meeting-title-update', error);
     }
   };
 
@@ -578,10 +573,7 @@ const Sidebar: React.FC = () => {
       }
       setClientDialog(null);
     } catch (error) {
-      console.error('Failed to save client:', error);
-      toast.error(t('clientSaveFailed'), {
-        description: error instanceof Error ? error.message : String(error),
-      });
+      toastFailure(t('clientSaveFailed'), 'client-save', error);
     }
   };
 
@@ -596,10 +588,7 @@ const Sidebar: React.FC = () => {
           : undefined,
       });
     } catch (error) {
-      console.error('Failed to delete client:', error);
-      toast.error(t('clientDeleteFailed'), {
-        description: error instanceof Error ? error.message : String(error),
-      });
+      toastFailure(t('clientDeleteFailed'), 'client-delete', error);
     }
     setClientDeleteState(null);
   };
