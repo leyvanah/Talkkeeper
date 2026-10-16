@@ -11,6 +11,7 @@ import { Download, RefreshCw, BadgeAlert, Trash2 } from 'lucide-react';
 import { toast } from 'sonner';
 import { formatSummaryModelSizeLabelFromMb } from '@/lib/onboarding-summary-model';
 import { toastFailure } from '@/lib/failure';
+import { useDiskSpaceText } from '@/hooks/useDiskSpaceText';
 
 interface ModelInfo {
   name: string;
@@ -44,6 +45,7 @@ export function BuiltInModelManager({
 }: BuiltInModelManagerProps) {
   const t = useTranslations('settings');
   const tc = useTranslations('common');
+  const diskSpaceText = useDiskSpaceText();
   const [models, setModels] = useState<ModelInfo[]>([]);
   const [isLoading, setIsLoading] = useState<boolean>(false);
   const [hasFetched, setHasFetched] = useState<boolean>(false);
@@ -220,7 +222,13 @@ export function BuiltInModelManager({
       }
 
       // For real errors, show toast and remove from downloading
-      toastFailure(t('modelDownloadFailed', { model: modelName }), 'builtin-model-download', error);
+      const noSpace = diskSpaceText(errorMsg);
+      toastFailure(
+        t('modelDownloadFailed', { model: modelName }),
+        'builtin-model-download',
+        error,
+        noSpace ? { description: noSpace } : undefined,
+      );
 
       setDownloadingModels((prev) => {
         const newSet = new Set(prev);
@@ -464,7 +472,9 @@ export function BuiltInModelManager({
                 {(isError || isCorrupted || isIncomplete) && (
                   <p className="mb-1 text-xs text-red-600">
                     {isError
-                      ? t('modelErrorOccurred')
+                      ? (typeof model.status === 'object' && 'Error' in model.status
+                          ? diskSpaceText((model.status as any).Error)
+                          : null) ?? t('modelErrorOccurred')
                       : isCorrupted
                       ? t('modelFileCorrupted')
                       : isIncomplete

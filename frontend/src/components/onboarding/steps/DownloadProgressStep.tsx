@@ -8,15 +8,13 @@ import { OnboardingContainer } from '../OnboardingContainer';
 import { useOnboarding } from '@/contexts/OnboardingContext';
 import { toast } from 'sonner';
 import { motion, AnimatePresence } from 'framer-motion';
-import { getSummaryModelSizeLabel, getSummaryModelSizeMb } from '@/lib/onboarding-summary-model';
+import { getSummaryModelSizeLabel, getSummaryModelSizeMb, STT_DOWNLOAD_MB } from '@/lib/onboarding-summary-model';
 import { GIGAAM_MODEL_NAME } from '@/components/GigaamModelManager';
 import { logFailure } from '@/lib/failure';
 import { failureText } from '@/lib/failure-text';
+import { useDiskSpaceText } from '@/hooks/useDiskSpaceText';
 
 const PARAKEET_MODEL = 'parakeet-tdt-0.6b-v3-int8';
-
-// Download sizes shown before the first progress event arrives
-const STT_SIZE_MB = { parakeet: 670, gigaam: 215 } as const;
 
 type DownloadStatus = 'waiting' | 'downloading' | 'completed' | 'error';
 
@@ -31,6 +29,7 @@ interface DownloadState {
 
 export function DownloadProgressStep() {
   const t = useTranslations('onboarding');
+  const diskSpaceText = useDiskSpaceText();
   const {
     goNext,
     selectedSummaryModel,
@@ -51,7 +50,7 @@ export function DownloadProgressStep() {
     status: sttDownloaded ? 'completed' : 'waiting',
     progress: sttDownloaded ? 100 : 0,
     downloadedMb: 0,
-    totalMb: STT_SIZE_MB[sttEngine],
+    totalMb: STT_DOWNLOAD_MB[sttEngine],
     speedMbps: 0,
   });
 
@@ -107,7 +106,7 @@ export function DownloadProgressStep() {
       }));
 
       toast.error(t('dlRetryFailed'), {
-        description: t('dlFailedHint'),
+        description: diskSpaceText(error) ?? t('dlFailedHint'),
       });
     } finally {
       // Allow retry again after 2 seconds
@@ -155,7 +154,7 @@ export function DownloadProgressStep() {
       }));
 
       toast.error(t('dlSummaryRetryFailed'), {
-        description: t('dlFailedHint'),
+        description: diskSpaceText(error) ?? t('dlFailedHint'),
       });
     } finally {
       // Allow retry again after 2 seconds
@@ -523,7 +522,7 @@ export function DownloadProgressStep() {
       {state.status === 'error' && state.error && (
         <div className="mt-2 p-3 bg-red-50 border border-red-200 rounded-md">
           <p className="text-sm text-red-600 font-medium">{t('dlDownloadError')}</p>
-          <p className="text-xs text-red-500 mt-1">{t('dlFailedHint')}</p>
+          <p className="text-xs text-red-500 mt-1">{diskSpaceText(state.error) ?? t('dlFailedHint')}</p>
           {(step === 1 || step === 2) && (
             <button
               onClick={step === 1 ? handleRetryDownload : handleRetrySummaryDownload}
@@ -557,7 +556,7 @@ export function DownloadProgressStep() {
             sttEngine === 'gigaam' ? GIGAAM_MODEL_NAME : PARAKEET_MODEL,
             <Mic className="w-5 h-5 text-gray-600" />,
             sttState,
-            `~${STT_SIZE_MB[sttEngine]} MB`
+            `~${STT_DOWNLOAD_MB[sttEngine]} MB`
           )}
 
           {renderDownloadCard(

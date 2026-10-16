@@ -163,6 +163,7 @@ pub struct RecordingPreferences {
     pub system_gain: f32,
     /// Cancel the speakers' echo out of the microphone channel (default on).
     /// Only has an effect while both the mic and system channels are recording.
+    /// Follows `echo_mode`; see `normalized`.
     #[serde(default = "default_echo_cancellation")]
     pub echo_cancellation: bool,
     /// Drop microphone text that only repeats what the system channel just said
@@ -176,14 +177,20 @@ pub struct RecordingPreferences {
     /// Let Windows cancel the echo instead of doing it ourselves (default
     /// on, Windows only). Turn it off to record the room as it sounds,
     /// without the noise suppression and gain that come with the mode.
+    /// Follows `echo_mode`; see `normalized`.
     #[serde(default = "default_system_echo_cancellation")]
     pub system_echo_cancellation: bool,
     /// Open the microphone a second time and read that stream only for when
     /// the owner is speaking, so his voice survives talking over the other
     /// person (default off, Windows only). The recorded microphone is then
-    /// the ordinary one, room and all.
+    /// the ordinary one, room and all. Only with the built-in canceller.
     #[serde(default)]
     pub own_speech_detector: bool,
+    /// How the speakers' echo is kept out of the microphone. Absent in a
+    /// store written before the choice existed; `normalized` then reads it
+    /// from the switches above.
+    #[serde(default)]
+    pub echo_mode: Option<EchoMode>,
     /// Recognise speech while recording, for the text on screen (default on).
     /// Off, a recording is only sound, like a dictaphone: its text is made
     /// afterwards, and the machine is left alone while it runs.
@@ -233,10 +240,72 @@ impl Default for RecordingPreferences {
             single_remote_speaker: true,
             system_echo_cancellation: true,
             own_speech_detector: false,
+            echo_mode: Some(EchoMode::Windows),
             live_transcription: true,
             #[cfg(target_os = "macos")]
             system_audio_backend: Some("coreaudio".to_string()),
         }
+    }
+}
+
+/// How the speakers' echo is kept out of the microphone.
+///
+/// One choice, where there used to be three switches that overrode each
+/// other while all reading "on": the own-speech detector turned Windows'
+/// cleaning off, and our canceller stood aside whenever Windows' ran.
+#[derive(Debug, Serialize, Deserialize, Clone, Copy, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum EchoMode {
+    /// Windows cleans the microphone, as on a video call. Where it cannot
+    /// (an older Windows, a driver without the mode), our own canceller
+    /// does it for that recording.
+    Windows,
+    /// Our own canceller on the ordinary microphone, optionally with the
+    /// own-speech detector.
+    Builtin,
+    /// Nothing is removed: for headphones, where there is no echo.
+    Off,
+}
+
+impl EchoMode {
+    /// What the separate switches actually did, for a store written before
+    /// the choice existed. The detector always kept the ordinary microphone,
+    /// whatever the Windows switch said.
+    fn from_switches(system: bool, ours: bool, own_speech_detector: bool) -> Self {
+        if own_speech_detector {
+            EchoMode::Builtin
+        } else if system {
+            EchoMode::Windows
+        } else if ours {
+            EchoMode::Builtin
+        } else {
+            EchoMode::Off
+        }
+    }
+}
+
+impl RecordingPreferences {
+    /// The preferences made consistent: the switches say exactly what the
+    /// echo choice does, and a recording keeps at least one of sound and
+    /// text — with both off a meeting would be saved empty.
+    pub fn normalized(mut self) -> Self {
+        let mode = self.echo_mode.unwrap_or_else(|| {
+            EchoMode::from_switches(
+                self.system_echo_cancellation,
+                self.echo_cancellation,
+                self.own_speech_detector,
+            )
+        });
+        self.echo_mode = Some(mode);
+        self.system_echo_cancellation = mode == EchoMode::Windows;
+        self.echo_cancellation = mode != EchoMode::Off;
+        self.own_speech_detector = self.own_speech_detector && mode == EchoMode::Builtin;
+
+        if !self.auto_save && !self.live_transcription {
+            warn!("Neither audio nor live text was kept; turning live text back on");
+            self.live_transcription = true;
+        }
+        self
     }
 }
 
@@ -558,6 +627,7 @@ pub async fn load_recording_preferences<R: Runtime>(
     } else {
         prefs
     };
+    let prefs = prefs.normalized();
 
     set_mic_gain_runtime(prefs.mic_gain);
     set_system_gain_runtime(prefs.system_gain);
@@ -566,10 +636,10 @@ pub async fn load_recording_preferences<R: Runtime>(
     set_single_remote_speaker_runtime(prefs.single_remote_speaker);
     set_system_echo_cancellation_runtime(prefs.system_echo_cancellation);
     set_own_speech_detector_runtime(prefs.own_speech_detector);
-    info!("Loaded recording preferences: save_folder={:?}, auto_save={}, format={}, mic={:?}, system={:?}, mic_gain={:.2}, system_gain={:.2}",
+    info!("Loaded recording preferences: save_folder={:?}, auto_save={}, format={}, mic={:?}, system={:?}, mic_gain={:.2}, system_gain={:.2}, echo={:?}, own_speech_detector={}",
           prefs.save_folder, prefs.auto_save, prefs.file_format,
            prefs.preferred_mic_device, prefs.preferred_system_device, prefs.mic_gain,
-           prefs.system_gain);
+           prefs.system_gain, prefs.echo_mode, prefs.own_speech_detector);
     Ok(prefs)
 }
 
@@ -596,17 +666,18 @@ pub async fn save_recording_preferences<R: Runtime>(
     app: &AppHandle<R>,
     preferences: &RecordingPreferences,
 ) -> Result<()> {
-    let mut preferences = preferences.clone();
+    let mut preferences = preferences.clone().normalized();
     preferences.mic_gain = preferences.mic_gain.clamp(0.5, 3.0);
     preferences.system_gain = preferences.system_gain.clamp(0.5, 3.0);
     // Validate first so a bad custom path is never persisted and reused on the
     // next recording startup.
     ensure_recordings_directory(&preferences.save_folder)?;
 
-    info!("Saving recording preferences: save_folder={:?}, auto_save={}, format={}, mic={:?}, system={:?}, mic_gain={:.2}, system_gain={:.2}",
+    info!("Saving recording preferences: save_folder={:?}, auto_save={}, format={}, mic={:?}, system={:?}, mic_gain={:.2}, system_gain={:.2}, echo={:?}, own_speech_detector={}",
           preferences.save_folder, preferences.auto_save, preferences.file_format,
            preferences.preferred_mic_device, preferences.preferred_system_device,
-           preferences.mic_gain, preferences.system_gain);
+           preferences.mic_gain, preferences.system_gain, preferences.echo_mode,
+           preferences.own_speech_detector);
 
     // Get or create store
     let store = app
@@ -963,6 +1034,101 @@ mod tests {
         .expect("legacy preferences should deserialize");
 
         assert_eq!(preferences.system_gain, 1.0);
+    }
+
+    fn stored(fields: serde_json::Value) -> RecordingPreferences {
+        let mut value = serde_json::json!({
+            "save_folder": "recordings",
+            "auto_save": true,
+            "file_format": "mp4"
+        });
+        value
+            .as_object_mut()
+            .unwrap()
+            .extend(fields.as_object().unwrap().clone());
+        serde_json::from_value::<RecordingPreferences>(value)
+            .unwrap()
+            .normalized()
+    }
+
+    /// A store from before the echo choice gets the mode its switches
+    /// actually produced, not the one they appeared to say.
+    #[test]
+    fn old_echo_switches_become_the_mode_they_ran_as() {
+        let cases = [
+            // (Windows, ours, detector) -> mode
+            ((true, true, false), EchoMode::Windows),
+            ((true, false, false), EchoMode::Windows),
+            ((false, true, false), EchoMode::Builtin),
+            ((false, false, false), EchoMode::Off),
+            // The detector kept the ordinary microphone even with Windows "on".
+            ((true, true, true), EchoMode::Builtin),
+            ((false, false, true), EchoMode::Builtin),
+        ];
+        for ((system, ours, detector), expected) in cases {
+            let preferences = stored(serde_json::json!({
+                "system_echo_cancellation": system,
+                "echo_cancellation": ours,
+                "own_speech_detector": detector
+            }));
+            assert_eq!(
+                preferences.echo_mode,
+                Some(expected),
+                "switches {:?}",
+                (system, ours, detector)
+            );
+        }
+        // Missing altogether, the defaults: Windows.
+        assert_eq!(stored(serde_json::json!({})).echo_mode, Some(EchoMode::Windows));
+    }
+
+    /// Whatever the switches say, the mode decides what runs.
+    #[test]
+    fn echo_mode_sets_the_switches_the_capture_reads() {
+        let windows = stored(serde_json::json!({
+            "echo_mode": "windows",
+            "system_echo_cancellation": false,
+            "echo_cancellation": false,
+            "own_speech_detector": true
+        }));
+        assert!(windows.system_echo_cancellation);
+        // Ours stays ready: it takes over where Windows cannot clean.
+        assert!(windows.echo_cancellation);
+        assert!(!windows.own_speech_detector);
+
+        let builtin = stored(serde_json::json!({
+            "echo_mode": "builtin",
+            "system_echo_cancellation": true,
+            "own_speech_detector": true
+        }));
+        assert!(!builtin.system_echo_cancellation);
+        assert!(builtin.echo_cancellation);
+        assert!(builtin.own_speech_detector);
+
+        let off = stored(serde_json::json!({
+            "echo_mode": "off",
+            "system_echo_cancellation": true,
+            "echo_cancellation": true,
+            "own_speech_detector": true
+        }));
+        assert!(!off.system_echo_cancellation);
+        assert!(!off.echo_cancellation);
+        assert!(!off.own_speech_detector);
+    }
+
+    /// With neither audio nor live text, a meeting is saved empty.
+    #[test]
+    fn audio_and_live_text_are_never_both_off() {
+        let preferences = stored(serde_json::json!({
+            "auto_save": false,
+            "live_transcription": false
+        }));
+        assert!(preferences.live_transcription);
+        assert!(!preferences.auto_save);
+
+        let sound_only = stored(serde_json::json!({ "live_transcription": false }));
+        assert!(sound_only.auto_save);
+        assert!(!sound_only.live_transcription);
     }
 
     #[test]

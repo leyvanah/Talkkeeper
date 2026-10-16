@@ -17,6 +17,7 @@ import {
 import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from '@/components/ui/accordion';
 import { logFailure, toastFailure } from '@/lib/failure';
 import { failureText } from '@/lib/failure-text';
+import { useDiskSpaceText } from '@/hooks/useDiskSpaceText';
 
 interface ModelManagerProps {
   selectedModel?: string;
@@ -32,6 +33,7 @@ export function ModelManager({
   autoSave = false
 }: ModelManagerProps) {
   const t = useTranslations('settings');
+  const diskSpaceText = useDiskSpaceText();
   const [models, setModels] = useState<ModelInfo[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -200,7 +202,8 @@ export function ModelManager({
       unlistenError = await listen<{ modelName: string; error: string }>(
         'model-download-error',
         (event) => {
-          const { modelName, error } = event.payload;
+          const { modelName } = event.payload;
+          const error = diskSpaceText(event.payload.error) ?? event.payload.error;
           const displayName = getDisplayName(modelName);
 
           setModels(prevModels =>
@@ -319,7 +322,7 @@ export function ModelManager({
       });
 
       logFailure('whisper-model-download', err);
-      const errorMessage = failureText(err);
+      const errorMessage = diskSpaceText(err) ?? failureText(err);
       setModels(prev =>
         prev.map(model =>
           model.name === modelName ? { ...model, status: { Error: errorMessage } } : model
