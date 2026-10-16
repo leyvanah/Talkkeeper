@@ -195,13 +195,16 @@ export function TranscriptRecovery({
     try {
       const result = await onRecover(selectedMeetingId);
       console.log('Recovery successful:', result);
-      // The list still holds the recording just recovered. With others
-      // left, the dialog stays and moves on to the next one.
-      if (recoverableMeetings.length <= 1) {
+      // With others left, the dialog stays and moves on to the next one.
+      // Selected here: the list dropped the recovered recording while it was
+      // still selected, so the auto-select effect has already run and passed.
+      // `recoverableMeetings` is the list from before, with that recording in
+      // it, hence the filter by id.
+      const next = recoverableMeetings.find((m) => m.meetingId !== selectedMeetingId);
+      if (!next) {
         onClose();
       } else {
-        setSelectedMeetingId(null);
-        setPreviewTranscripts([]);
+        void handleMeetingSelect(next.meetingId);
       }
     } catch (error) {
       // The caller has already said what went wrong.
