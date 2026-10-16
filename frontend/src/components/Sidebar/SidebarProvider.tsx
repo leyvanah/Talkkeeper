@@ -274,14 +274,16 @@ export function SidebarProvider({ children }: { children: React.ReactNode }) {
   // "New Recording" only opens the home/ready screen. The user must still tap
   // the red mic button to actually start capture — auto-start was surprising.
   // (Meeting-detection toasts still fire start-recording-from-sidebar separately.)
+  // During a recording the same screen holds its live transcript and notes,
+  // so the button leads back there rather than going dead.
   const handleRecordingToggle = () => {
-    if (isRecording) return;
-
-    // Clear any leftover auto-start flag from older builds / detection paths.
-    try {
-      sessionStorage.removeItem('autoStartRecording');
-    } catch {
-      /* ignore */
+    if (!isRecording) {
+      // Clear any leftover auto-start flag from older builds / detection paths.
+      try {
+        sessionStorage.removeItem('autoStartRecording');
+      } catch {
+        /* ignore */
+      }
     }
 
     if (pathname !== '/') {
