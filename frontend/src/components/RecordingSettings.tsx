@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { useTranslations } from 'next-intl';
 import { Switch } from '@/components/ui/switch';
 import { FolderCog, FolderOpen } from 'lucide-react';
@@ -105,6 +105,9 @@ export function RecordingSettings({ onSave }: RecordingSettingsProps) {
     own_speech_detector: false,
     live_transcription: true,
   });
+  // What the settings hold: as loaded, then as last written. A failed save
+  // puts the screen back to this.
+  const savedRef = useRef(preferences);
   const isWindows = usePlatform() === 'windows';
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -117,6 +120,7 @@ export function RecordingSettings({ onSave }: RecordingSettingsProps) {
       try {
         const prefs = await invoke<RecordingPreferences>('get_recording_preferences');
         setPreferences(prefs);
+        savedRef.current = prefs;
       } catch (error) {
         console.error('Failed to load recording preferences:', error);
         // If loading fails, get default folder path
@@ -152,7 +156,7 @@ export function RecordingSettings({ onSave }: RecordingSettingsProps) {
   const handleAutoSaveToggle = async (enabled: boolean) => {
     const newPreferences = { ...preferences, auto_save: enabled };
     setPreferences(newPreferences);
-    await savePreferences(newPreferences);
+    await savePreferences(newPreferences, 'setting');
   };
 
   const handleEchoModeChange = async (echo_mode: EchoMode) => {
@@ -164,45 +168,49 @@ export function RecordingSettings({ onSave }: RecordingSettingsProps) {
       own_speech_detector: echo_mode === 'builtin' ? preferences.own_speech_detector : false,
     };
     setPreferences(newPreferences);
-    await savePreferences(newPreferences);
+    await savePreferences(newPreferences, 'setting');
   };
 
   const handleOwnSpeechDetectorToggle = async (enabled: boolean) => {
     const newPreferences = { ...preferences, own_speech_detector: enabled };
     setPreferences(newPreferences);
-    await savePreferences(newPreferences);
+    await savePreferences(newPreferences, 'setting');
   };
 
   const handleLiveTranscriptionToggle = async (enabled: boolean) => {
     const newPreferences = { ...preferences, live_transcription: enabled };
     setPreferences(newPreferences);
-    await savePreferences(newPreferences);
+    await savePreferences(newPreferences, 'setting');
   };
 
   const handleSingleRemoteSpeakerToggle = async (enabled: boolean) => {
     const newPreferences = { ...preferences, single_remote_speaker: enabled };
     setPreferences(newPreferences);
-    await savePreferences(newPreferences);
+    await savePreferences(newPreferences, 'setting');
   };
 
   const handleEchoTextFilterToggle = async (enabled: boolean) => {
     const newPreferences = { ...preferences, echo_text_filter: enabled };
     setPreferences(newPreferences);
-    await savePreferences(newPreferences);
+    await savePreferences(newPreferences, 'setting');
   };
 
   const handleMicGainChange = async (value: number) => {
     const mic_gain = Math.min(3, Math.max(0.5, value));
+    // Letting go of the slider and leaving it both land here.
+    if (mic_gain === (savedRef.current.mic_gain ?? 1)) return;
     const newPreferences = { ...preferences, mic_gain };
     setPreferences(newPreferences);
-    await savePreferences(newPreferences);
+    await savePreferences(newPreferences, 'quiet');
   };
 
   const handleSystemGainChange = async (value: number) => {
     const system_gain = Math.min(3, Math.max(0.5, value));
+    // Letting go of the slider and leaving it both land here.
+    if (system_gain === (savedRef.current.system_gain ?? 1)) return;
     const newPreferences = { ...preferences, system_gain };
     setPreferences(newPreferences);
-    await savePreferences(newPreferences);
+    await savePreferences(newPreferences, 'quiet');
   };
 
   const handleDeviceChange = async (devices: SelectedDevices) => {
@@ -212,7 +220,7 @@ export function RecordingSettings({ onSave }: RecordingSettingsProps) {
       preferred_system_device: devices.systemDevice
     };
     setPreferences(newPreferences);
-    await savePreferences(newPreferences);
+    await savePreferences(newPreferences, 'devices');
   };
 
   const handleOpenFolder = async () => {
@@ -236,6 +244,7 @@ export function RecordingSettings({ onSave }: RecordingSettingsProps) {
 
       const newPreferences = { ...preferences, save_folder: selectedFolder };
       await invoke('set_recording_preferences', { preferences: newPreferences });
+      savedRef.current = newPreferences;
       setPreferences(newPreferences);
       updateRecordingsLocation(selectedFolder);
       onSave?.(newPreferences);
@@ -264,23 +273,36 @@ export function RecordingSettings({ onSave }: RecordingSettingsProps) {
     }
   };
 
-  const savePreferences = async (prefs: RecordingPreferences) => {
+  /**
+   * Saves the tab's preferences. The toast says what was changed: the devices
+   * name the devices, a switch says it was saved, a slider says nothing. When
+   * saving fails the screen goes back to what is actually saved, rather than
+   * showing a choice the settings do not hold.
+   */
+  const savePreferences = async (
+    prefs: RecordingPreferences,
+    change: 'devices' | 'setting' | 'quiet',
+  ) => {
     setSaving(true);
     try {
       await invoke('set_recording_preferences', { preferences: prefs });
+      savedRef.current = prefs;
       onSave?.(prefs);
 
-      // Show success toast with device details
-      const micDevice = prefs.preferred_mic_device || t('deviceDefault');
-      const systemDevice = prefs.preferred_system_device || t('deviceDefault');
-      toast.success(t('devicePreferencesSaved'), {
-        description: t('devicesSelectedDescription', { mic: micDevice, system: systemDevice })
-      });
+      if (change === 'devices') {
+        const micDevice = prefs.preferred_mic_device || t('deviceDefault');
+        const systemDevice = prefs.preferred_system_device || t('deviceDefault');
+        toast.success(t('devicePreferencesSaved'), {
+          description: t('devicesSelectedDescription', { mic: micDevice, system: systemDevice })
+        });
+      } else if (change === 'setting') {
+        toast.success(t('preferenceSaved'));
+      }
     } catch (error) {
+      // The backend's text is English and says nothing the owner can act on.
       console.error('Failed to save recording preferences:', error);
-      toast.error(t('devicePreferencesSaveFailed'), {
-        description: error instanceof Error ? error.message : String(error)
-      });
+      setPreferences(savedRef.current);
+      toast.error(t(change === 'devices' ? 'devicePreferencesSaveFailed' : 'preferenceSaveFailed'));
     } finally {
       setSaving(false);
     }
