@@ -173,6 +173,8 @@ export function SecuritySettings() {
           return t('errorLocked')
         case 'fieldVerificationFailed':
           return t('errorFieldVerificationFailed')
+        case 'fieldVerificationIncomplete':
+          return t('errorFieldVerificationIncomplete')
         case 'backupDeleteFailed':
           return t('errorBackupDeleteFailed')
         default:
