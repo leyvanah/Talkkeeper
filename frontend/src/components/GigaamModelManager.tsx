@@ -34,9 +34,11 @@ interface GigaamModelManagerProps {
     isSelected: boolean;
     disabled?: boolean;
     onSelect: (modelName: string) => void | Promise<unknown>;
+    /** The one model this list recommends; the card then says so instead of its own label. */
+    recommended?: boolean;
 }
 
-export function GigaamModelManager({ isSelected, disabled, onSelect }: GigaamModelManagerProps) {
+export function GigaamModelManager({ isSelected, disabled, onSelect, recommended }: GigaamModelManagerProps) {
     const t = useTranslations('settings');
     const diskSpaceText = useDiskSpaceText();
     const [status, setStatus] = useState<GigaamModelStatus | null>(null);
@@ -152,9 +154,15 @@ export function GigaamModelManager({ isSelected, disabled, onSelect }: GigaamMod
                     <div>
                         <div className="flex flex-wrap items-center gap-2">
                             <h4 className="font-semibold">GigaAM v3</h4>
-                            <span className="rounded-full bg-sky-500/10 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-sky-400">
-                                {t('gigaamBadge')}
-                            </span>
+                            {recommended ? (
+                                <span className="rounded-full bg-emerald-500/10 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-emerald-500">
+                                    {t('badgeRecommendedLive')}
+                                </span>
+                            ) : (
+                                <span className="rounded-full bg-sky-500/10 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-sky-400">
+                                    {t('gigaamBadge')}
+                                </span>
+                            )}
                         </div>
                         <p className="mt-1 text-sm text-[var(--af-text-2)]">
                             {t('gigaamDescription')}
