@@ -7,6 +7,7 @@ import { listen, UnlistenFn } from "@tauri-apps/api/event"
 import { toast } from "sonner"
 import { Users, CheckCircle2, AlertCircle, FolderOpen, Download, Loader2 } from "lucide-react"
 import { Button } from "./ui/button"
+import { toastFailure } from '@/lib/failure';
 import { useDiskSpaceText } from "@/hooks/useDiskSpaceText"
 
 interface DownloadProgress {
@@ -73,8 +74,13 @@ export function DiarizationSettings() {
       });
       refresh();
     } catch (e) {
-      const msg = diskSpaceText(e) ?? (e instanceof Error ? e.message : String(e));
-      toast.error(t('diarizationDownloadFailed'), { description: msg });
+      const noSpace = diskSpaceText(e);
+      toastFailure(
+        t('diarizationDownloadFailed'),
+        'diarization-download',
+        e,
+        noSpace ? { description: noSpace } : undefined,
+      );
     } finally {
       if (unlistenRef.current) {
         unlistenRef.current();

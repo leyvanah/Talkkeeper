@@ -10,6 +10,7 @@ import { cn } from '@/lib/utils';
 import { Download, RefreshCw, BadgeAlert, Trash2 } from 'lucide-react';
 import { toast } from 'sonner';
 import { formatSummaryModelSizeLabelFromMb } from '@/lib/onboarding-summary-model';
+import { toastFailure } from '@/lib/failure';
 import { useDiskSpaceText } from '@/hooks/useDiskSpaceText';
 
 interface ModelInfo {
@@ -224,8 +225,10 @@ export function BuiltInModelManager({
 
       // For real errors, show toast and remove from downloading
       const noSpace = diskSpaceText(errorMsg);
-      toast.error(
+      toastFailure(
         t('modelDownloadFailed', { model: modelName }),
+        'builtin-model-download',
+        error,
         noSpace ? { description: noSpace } : undefined,
       );
 
@@ -470,8 +473,8 @@ export function BuiltInModelManager({
                 )}
                 {(isError || isCorrupted || isIncomplete) && (
                   <p className="mb-1 text-xs text-red-600">
-                    {model.status.type === 'error' && model.status.message
-                      ? diskSpaceText(model.status.message) ?? model.status.message
+                    {model.status.type === 'error'
+                      ? (model.status.message ? diskSpaceText(model.status.message) : null) ?? t('modelErrorOccurred')
                       : isCorrupted
                       ? t('modelFileCorrupted')
                       : isIncomplete
