@@ -879,6 +879,8 @@ Function PageLeaveReinstall
   ${EndIf}
 
   reinst_uninstall:
+    ; Before the old uninstaller runs: older versions of it still kill the app.
+    !insertmacro Talkkeeper_WaitForAppToClose
     HideWindow
     ClearErrors
 
@@ -949,6 +951,10 @@ Var DeleteAppDataCheckboxState
 ; Whether the key reached its copy, and so whether the data may be wiped.
 Var KeyRescued
 !define /ifndef WS_EX_LAYOUTRTL         0x00400000
+; Where the recordings live; the body is in installer-hooks.nsh.
+Function un.Talkkeeper_FindRecordings
+  !insertmacro Talkkeeper_FindRecordingsBody
+FunctionEnd
 !define MUI_PAGE_CUSTOMFUNCTION_SHOW un.ConfirmShow
 Function un.ConfirmShow ; Add add a `Delete app data` check box
   ; $1 inner dialog HWND
@@ -982,6 +988,8 @@ FunctionEnd
 !define MUI_PAGE_CUSTOMFUNCTION_LEAVE un.ConfirmLeave
 Function un.ConfirmLeave
   SendMessage $DeleteAppDataCheckbox ${BM_GETCHECK} 0 0 $DeleteAppDataCheckboxState
+  ; The warning below names the recordings folder.
+  Call un.Talkkeeper_FindRecordings
   ; Deleting the data takes the key to every recording with it, while the
   ; recordings themselves stay on disk. Say so plainly, and make it its own
   ; yes rather than a tick box read in passing.
@@ -1209,7 +1217,7 @@ Section Install
     !insertmacro NSIS_HOOK_PREINSTALL
   !endif
 
-  !insertmacro CheckIfAppIsRunning "${MAINBINARYNAME}.exe" "${PRODUCTNAME}"
+  !insertmacro Talkkeeper_WaitForAppToClose
 
   ; Copy main executable
   File "${MAINBINARYSRCPATH}"
@@ -1384,7 +1392,7 @@ Section Uninstall
     !insertmacro NSIS_HOOK_PREUNINSTALL
   !endif
 
-  !insertmacro CheckIfAppIsRunning "${MAINBINARYNAME}.exe" "${PRODUCTNAME}"
+  !insertmacro Talkkeeper_WaitForAppToClose
 
   ; Delete the app directory and its content from disk
   ; Copy main executable
