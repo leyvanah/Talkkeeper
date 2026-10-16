@@ -71,6 +71,7 @@
     },
     "bundle": {
         "active": true,
+        "publisher": "meetily",
         "targets": [
             "nsis"
         ],

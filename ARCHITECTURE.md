@@ -750,6 +750,13 @@ folders and the window profile. `app_identity::migrate` copies Talkkeeper's
 settings out of the old folders on the first start and, in a release build,
 removes them when nothing in them belongs to anyone else.
 
+The installer's publisher stays `meetily` (`bundle.publisher`, pinned by a
+test). Tauri would otherwise take it from the new identifier, and the NSIS
+template keys the previous install folder, the reinstall path and the
+installer language on `HKCU\Software\<publisher>\Talkkeeper`: an update
+would no longer find where an earlier version was installed. It moves
+together with the executable's name.
+
 Setup and updater runs recreate Start Menu shortcuts (and any existing desktop shortcut) with `meetily.exe,0` as the
 explicit icon source, then call `SHChangeNotify`; application startup must not
 replace those installer-owned shortcuts with PNG-backed WScript shortcuts.

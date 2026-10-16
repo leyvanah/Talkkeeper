@@ -331,6 +331,17 @@ mod tests {
     }
 
     #[test]
+    fn the_installer_keeps_the_publisher_of_earlier_versions() {
+        // The NSIS template keys the install folder, the installer language and
+        // the reinstall path on `Software\<publisher>\Talkkeeper`. Unset, Tauri
+        // takes the publisher from the identifier ("github"), and an update would
+        // no longer find the folder an earlier version was installed into.
+        let config: serde_json::Value =
+            serde_json::from_str(include_str!("../tauri.conf.json")).unwrap();
+        assert_eq!(config["bundle"]["publisher"], "meetily");
+    }
+
+    #[test]
     fn settings_and_local_storage_move_and_the_old_folders_go() {
         let temp = tempfile::tempdir().unwrap();
         let (roaming, local) = (temp.path().join("roaming"), temp.path().join("local"));
