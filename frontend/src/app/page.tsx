@@ -3,6 +3,7 @@
 import { useState, useEffect } from 'react';
 import { useTranslations } from 'next-intl';
 import { useWindowTitle } from '@/components/AppHeader';
+import { showsRecordingName } from '@/lib/home-title';
 import { motion } from 'framer-motion';
 import { RecordingControls } from '@/components/RecordingControls';
 import { useSidebar } from '@/components/Sidebar/SidebarProvider';
@@ -42,15 +43,15 @@ export default function Home() {
   // Use contexts for state management
   const { meetingTitle } = useTranscripts();
 
-  // What is on screen, for the window header and the taskbar.
-  // Before a recording has a name, the page is simply where a new one starts.
   const ts = useTranslations('sidebar');
-  useWindowTitle(meetingTitle || ts('newRecording'));
   const { transcriptModelConfig, selectedDevices } = useConfig();
   const recordingState = useRecordingState();
 
   // Extract status from global state
   const { status, isStopping, isProcessing, isSaving } = recordingState;
+
+  // What is on screen, for the window header and the taskbar.
+  useWindowTitle(showsRecordingName(recordingState.isRecording, status) && meetingTitle ? meetingTitle : ts('newRecording'));
 
   // The owner's notes, written beside the recording and kept with it.
   const recordingNotes = useRecordingNotes(recordingState.isRecording);
