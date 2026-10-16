@@ -19,9 +19,9 @@
 
 import { useCallback, useEffect, useLayoutEffect, useRef, useState, type CSSProperties, type KeyboardEvent } from 'react';
 import { useTranslations } from 'next-intl';
-import { toast } from 'sonner';
 import type { MeetingNote, NotesSource } from '@/hooks/useMeetingNotes';
 import { recordingPosition } from '@/hooks/useMeetingNotes';
+import { toastFailure } from '@/lib/failure';
 
 /** `MM:SS`, or `H:MM:SS` past the hour — as the transcript shows time. */
 export function noteClock(seconds: number): string {
@@ -96,8 +96,7 @@ function EditorBody({ source, live, onSeek, compact = false }: NotesEditorProps)
   const enqueue = useCallback(
     (work: () => Promise<void>) => {
       queue.current = queue.current.then(work).catch((error) => {
-        console.error('[Notes] Could not save a note:', error);
-        toast.error(t('saveFailed'), { description: typeof error === 'string' ? error : String(error) });
+        toastFailure(t('saveFailed'), 'note-save', error);
       });
     },
     [t],

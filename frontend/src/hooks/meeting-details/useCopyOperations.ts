@@ -5,6 +5,7 @@ import { BlockNoteSummaryViewRef } from '@/components/AISummary/BlockNoteSummary
 import { toast } from 'sonner';
 import { invoke as invokeTauri } from '@tauri-apps/api/core';
 import { exportSummaryAs, ExportFormat } from '@/lib/exportSummary';
+import { toastFailure } from '@/lib/failure';
 import { copyText } from '@/lib/private-clipboard';
 
 export type MeetingExportContent = 'transcript' | 'summary' | 'both';
@@ -99,8 +100,7 @@ export function useCopyOperations({
       console.log(`✅ Fetched ${allData.transcripts.length} transcripts from database for copying`);
       return allData.transcripts;
     } catch (error) {
-      console.error('❌ Error fetching all transcripts:', error);
-      toast.error(t('fetchTranscriptsFailed'));
+      toastFailure(t('fetchTranscriptsFailed'), 'transcripts-fetch', error);
       return [];
     }
   }, [t]);
@@ -138,8 +138,12 @@ export function useCopyOperations({
       .map(t => `${formatTime(t.audio_start_time, t.timestamp)} ${t.text}  `)
       .join('\n');
 
-    await copyText(header + date + fullTranscript);
-    toast.success(t('transcriptCopied'));
+    try {
+      await copyText(header + date + fullTranscript);
+      toast.success(t('transcriptCopied'));
+    } catch (error) {
+      toastFailure(t('copyTranscriptFailed'), 'transcript-copy', error);
+    }
   }, [meeting, meetingTitle, fetchAllTranscripts]);
 
   // Copy summary to clipboard
@@ -215,8 +219,7 @@ export function useCopyOperations({
       console.log('✅ Successfully copied to clipboard!');
       toast.success(t('summaryCopied'));
     } catch (error) {
-      console.error('❌ Failed to copy summary:', error);
-      toast.error(t('copySummaryFailed'));
+      toastFailure(t('copySummaryFailed'), 'summary-copy', error);
     }
   }, [aiSummary, meetingTitle, meeting, blockNoteSummaryRef, locale, t]);
 
@@ -293,8 +296,7 @@ export function useCopyOperations({
       if (!saved) return;
       toast.success(t('summaryExportedAs', { format: format.toUpperCase() }));
     } catch (error) {
-      console.error('❌ Failed to export summary:', error);
-      toast.error(t('exportSummaryFailed'));
+      toastFailure(t('exportSummaryFailed'), 'summary-export', error);
     }
   }, [getSummaryMarkdown, meetingTitle, meeting, t]);
 
@@ -340,8 +342,7 @@ export function useCopyOperations({
 
       return true;
     } catch (error) {
-      console.error('Failed to export meeting:', error);
-      toast.error(t('exportMeetingFailed'));
+      toastFailure(t('exportMeetingFailed'), 'meeting-export', error);
       return false;
     }
   }, [getTranscriptMarkdown, getSummaryMarkdown, meetingTitle, meeting, t]);

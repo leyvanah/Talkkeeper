@@ -32,7 +32,6 @@ import { TRANSCRIPT_REWOUND } from './TranscriptLineEditor';
 import { createPlayhead } from '@/lib/playhead';
 import { onMeetingSeek } from '@/lib/meeting-seek';
 import { speakerChoices } from '@/lib/transcript-speakers';
-import { toast } from 'sonner';
 import {
   editTranscriptLine,
   EditHistory,
@@ -45,6 +44,7 @@ import {
   transcriptEditHistory,
   undoTranscriptEdit,
 } from '@/services/transcriptEditService';
+import { toastFailure } from '@/lib/failure';
 
 type TranscriptLayout = 'chat' | 'table';
 
@@ -156,7 +156,7 @@ export function TranscriptPanel({
         | 'transcriptSplitFailed'
         | 'transcriptMergeFailed',
     ) => (error: unknown) => {
-      toast.error(t(key), { description: error instanceof Error ? error.message : String(error) });
+      toastFailure(t(key), key, error);
       throw error;
     };
     return {
@@ -204,9 +204,11 @@ export function TranscriptPanel({
         );
         await onRefetchTranscripts?.();
       } catch (error) {
-        toast.error(t(direction === 'undo' ? 'transcriptUndoFailed' : 'transcriptRedoFailed'), {
-          description: error instanceof Error ? error.message : String(error),
-        });
+        toastFailure(
+          t(direction === 'undo' ? 'transcriptUndoFailed' : 'transcriptRedoFailed'),
+          `transcript-${direction}`,
+          error,
+        );
       } finally {
         setWalking(false);
       }
