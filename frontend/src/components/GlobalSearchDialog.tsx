@@ -31,6 +31,7 @@ import {
 import type { GlobalSearchResult } from '@/types';
 import { useSpeakerWords } from '@/hooks/useSpeakerWords';
 import { speakerKeyForTerm, speakerLabel } from '@/lib/speaker-label';
+import { logFailure } from '@/lib/failure';
 
 function formatAudioTime(seconds: number): string {
   const total = Math.max(0, Math.floor(seconds));
@@ -140,9 +141,9 @@ export default function GlobalSearchDialog() {
         if (requestId === requestIdRef.current) setResults(nextResults);
       } catch (searchError) {
         if (requestId !== requestIdRef.current) return;
-        console.error('Global search failed:', searchError);
+        logFailure('global-search', searchError);
         setResults([]);
-        setError(searchError instanceof Error ? searchError.message : String(searchError));
+        setError(t('searchFailedDetail'));
       } finally {
         if (requestId === requestIdRef.current) setLoading(false);
       }

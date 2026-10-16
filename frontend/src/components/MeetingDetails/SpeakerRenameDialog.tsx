@@ -9,6 +9,7 @@ import { Button } from '@/components/ui/button';
 import { Dialog, DialogContent, DialogTitle } from '@/components/ui/dialog';
 import { useSpeakerWords } from '@/hooks/useSpeakerWords';
 import { isOwnerLabel, speakerLabel } from '@/lib/speaker-label';
+import { toastFailure } from '@/lib/failure';
 
 interface SpeakerRenameDialogProps {
   open: boolean;
@@ -104,9 +105,7 @@ export function SpeakerRenameDialog({
         removedName: result.removedName,
       });
     } catch (e) {
-      toast.error(t('speakerRenameFailed'), {
-        description: e instanceof Error ? e.message : String(e),
-      });
+      toastFailure(t('speakerRenameFailed'), 'speaker-rename', e);
     } finally {
       setSaving(false);
     }

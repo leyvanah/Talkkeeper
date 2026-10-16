@@ -378,14 +378,69 @@ async fn discard_verified_backup(
     pool: &sqlx::SqlitePool,
     backup: &std::path::Path,
 ) -> Result<(), SecurityError> {
-    if let Err(error) = crate::database::field_encryption::verify_sealed(pool).await {
-        log::error!("A sealed value did not open, so the pre-encryption copy is kept: {error}");
-        return Err(SecurityError::new("fieldVerificationFailed", error.to_string()));
+    use crate::database::field_encryption::{verify_sealed, VerifyError};
+    match verify_sealed(pool).await {
+        Ok(_) => {}
+        Err(error @ VerifyError::Unopened(_)) => {
+            log::error!("A sealed value did not open, so the pre-encryption copy is kept: {error}");
+            return Err(SecurityError::new("fieldVerificationFailed", error.to_string()));
+        }
+        Err(error @ VerifyError::Interrupted(_)) => {
+            log::warn!("The check of the sealed values did not finish, so the pre-encryption copy is kept: {error}");
+            return Err(SecurityError::new("fieldVerificationIncomplete", error.to_string()));
+        }
     }
     remove_database_backup_at(backup).map_err(|error| {
         log::warn!("Could not remove the pre-encryption database copy: {error}");
         SecurityError::new("backupDeleteFailed", error.to_string())
     })
+}
+
+/// Deletes a pre-encryption copy at `backup` that outlived its sealing pass,
+/// once every value is sealed and opens. Returns whether it did.
+///
+/// Versions up to 0.2.34 left the copy until the owner pressed the button in
+/// "Protection", and with everything sealed the pass that now deletes it never
+/// runs again. While something is still in the clear the copy is left alone:
+/// that pass is still to come and takes the copy with it.
+pub async fn discard_stale_backup_at(
+    pool: &sqlx::SqlitePool,
+    backup: &std::path::Path,
+) -> Result<bool, SecurityError> {
+    if !backup.exists() {
+        return Ok(false);
+    }
+    let counts = crate::database::field_encryption::count(pool)
+        .await
+        .map_err(|error| SecurityError::new("countFailed", error.to_string()))?;
+    if counts.plaintext > 0 {
+        return Ok(false);
+    }
+    discard_verified_backup(pool, backup).await?;
+    Ok(true)
+}
+
+/// [`discard_stale_backup_at`] in the background, right after the archive
+/// opens. Not during a recording: the copy waits for the next unlock.
+fn discard_stale_backup_after_unlock<R: Runtime>(app: &AppHandle<R>) {
+    if !database_backup_path().exists() {
+        return;
+    }
+    let app = app.clone();
+    tauri::async_runtime::spawn(async move {
+        if crate::audio::recording_commands::is_recording().await {
+            log::info!("The pre-encryption database copy is left for after the recording");
+            return;
+        }
+        let Some(archive) = app.try_state::<crate::state::AppState>() else {
+            return;
+        };
+        // A lock halfway through would end the check without a verdict.
+        let _busy = super::session::busy();
+        // Failures are logged where they happen, and "Protection" still shows
+        // the copy with its delete button.
+        let _ = discard_stale_backup_at(archive.db_manager.pool(), &database_backup_path()).await;
+    });
 }
 
 /// Rewrites the database file and empties its journal, so the plaintext the
@@ -613,6 +668,7 @@ pub async fn security_quick_unlock<R: Runtime>(
 
     app.state::<SecurityState>().session.unlock(dek);
     log::info!("Archive unlocked with Windows Hello");
+    discard_stale_backup_after_unlock(&app);
     Ok(())
 }
 
@@ -687,26 +743,30 @@ pub async fn security_setup<R: Runtime>(
 
 /// Opens the archive with the password.
 #[tauri::command]
-pub fn security_unlock(
+pub fn security_unlock<R: Runtime>(
+    app: AppHandle<R>,
     password: String,
     state: State<'_, SecurityState>,
 ) -> Result<(), SecurityError> {
     let dek = state.with_keystore(|keystore| keystore.unlock_with_password(&password))?;
     state.session.unlock(dek);
     log::info!("Archive unlocked");
+    discard_stale_backup_after_unlock(&app);
     Ok(())
 }
 
 /// Opens the archive with the recovery code, for an owner who forgot the
 /// password. They are expected to set a new one straight afterwards.
 #[tauri::command]
-pub fn security_unlock_with_recovery(
+pub fn security_unlock_with_recovery<R: Runtime>(
+    app: AppHandle<R>,
     code: String,
     state: State<'_, SecurityState>,
 ) -> Result<(), SecurityError> {
     let dek = state.with_keystore(|keystore| keystore.unlock_with_recovery(&code))?;
     state.session.unlock(dek);
     log::info!("Archive unlocked with the recovery code");
+    discard_stale_backup_after_unlock(&app);
     Ok(())
 }
 
@@ -767,7 +827,8 @@ pub fn security_change_password(
 
 /// Sets a new password from the recovery code and opens the archive with it.
 #[tauri::command]
-pub fn security_reset_password(
+pub fn security_reset_password<R: Runtime>(
+    app: AppHandle<R>,
     recovery_code: String,
     new_password: String,
     state: State<'_, SecurityState>,
@@ -778,6 +839,7 @@ pub fn security_reset_password(
     let dek = state.with_keystore(|keystore| keystore.unlock_with_password(&new_password))?;
     state.session.unlock(dek);
     log::info!("Archive password reset with the recovery code");
+    discard_stale_backup_after_unlock(&app);
     Ok(())
 }
 

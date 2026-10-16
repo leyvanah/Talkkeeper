@@ -7,6 +7,8 @@ import { toast } from 'sonner';
 import { X, Check, ArrowBigDownDash } from 'lucide-react';
 import { getDownloadTotalMb } from '@/lib/onboarding-summary-model';
 import { useOnboarding } from '@/contexts/OnboardingContext';
+import { parseNoSpace } from '@/lib/disk-space';
+import { useDiskSpaceText } from '@/hooks/useDiskSpaceText';
 
 interface DownloadProgress {
   modelName: string;
@@ -22,6 +24,9 @@ interface DownloadProgress {
 
 // Categorize error messages for better user experience
 function categorizeError(error: string): string {
+  // Kept whole: the card reads both sizes out of it.
+  if (parseNoSpace(error)) return error;
+
   const lowerError = error.toLowerCase();
 
   if (lowerError.includes('network') ||
@@ -58,6 +63,7 @@ function DownloadToastContent({
   collapsible?: boolean;
 }) {
   const t = useTranslations('app');
+  const diskSpaceText = useDiskSpaceText();
   const isComplete = download.status === 'completed';
   const hasError = download.status === 'error';
   const isCancelled = download.status === 'cancelled';
@@ -98,7 +104,7 @@ function DownloadToastContent({
         </div>
 
         {hasError ? (
-          <p className="text-xs text-red-600">{download.error || t('downloadFailedShort')}</p>
+          <p className="text-xs text-red-600">{diskSpaceText(download.error) ?? (download.error || t('downloadFailedShort'))}</p>
         ) : isComplete ? (
           <p className="text-xs text-green-600">{t('downloadComplete')}</p>
         ) : isCancelled ? (

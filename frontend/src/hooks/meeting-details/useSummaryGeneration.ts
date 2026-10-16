@@ -13,6 +13,7 @@ import {
   readMeetingSummaryLanguage,
   readCachedDetectedSummaryLanguage,
 } from '@/lib/summary-language-preferences';
+import { logFailure, toastFailure } from '@/lib/failure';
 
 // `t` is threaded in because this runs outside the component tree.
 type Translate = (key: string) => string;
@@ -166,10 +167,15 @@ export function useSummaryGeneration({
             if (isOurRun) return;
             if (completionHandledRef.current) return;
             completionHandledRef.current = true;
-            const shownError = summaryErrorText(message || t('genFailedGeneric'), t);
-            setSummaryError(shownError);
+            const explained = summaryErrorText(message || '', t);
+            setSummaryError(explained ?? t('genFailedGeneric'));
             stopSummaryPollingRef.current(meeting.id);
-            toast.error(t('genGenerateFailed'), { description: shownError });
+            toastFailure(
+              t('genGenerateFailed'),
+              'summary-generate',
+              message,
+              explained ? { description: explained } : undefined,
+            );
           }
         });
         if (disposed) {
@@ -324,8 +330,9 @@ export function useSummaryGeneration({
           console.error('Backend returned error:', pollingResult.error);
           const errorMessage = pollingResult.error || `Summary ${isRegeneration ? 'regeneration' : 'generation'} failed`;
           // The built-in model's helper crashing, among others, is reported in
-          // plain words rather than as the backend's error text.
-          const shownError = summaryErrorText(errorMessage, t);
+          // plain words; anything else as a plain failure, its text in the log.
+          const explained = summaryErrorText(errorMessage, t);
+          logFailure(isRegeneration ? 'summary-regenerate' : 'summary-generate', errorMessage);
 
           // If this was a regeneration, try to restore previous summary from database
           if (isRegeneration) {
@@ -343,7 +350,9 @@ export function useSummaryGeneration({
 
                 // Show error toast with restoration message
                 toast.error(t('genRegenerateFailed'), {
-                  description: `${shownError.replace(/\.$/, '')}. Your previous summary has been restored.`,
+                  description: explained
+                    ? `${explained.replace(/\.$/, '')}. ${t('genPreviousSummaryRestored')}`
+                    : t('genPreviousSummaryRestored'),
                 });
                 return;
               }
@@ -354,7 +363,7 @@ export function useSummaryGeneration({
           }
 
           // Continue with normal error handling if not regeneration or reload failed
-          setSummaryError(shownError);
+          setSummaryError(explained ?? t('genFailedGeneric'));
           setSummaryStatus('error');
 
           // Check if this is a "model is required" error
@@ -363,9 +372,10 @@ export function useSummaryGeneration({
             errorMessage.toLowerCase().includes('model') && errorMessage.toLowerCase().includes('required');
 
           // Show error toast
-          toast.error(isRegeneration ? t('genRegenerateFailed') : t('genGenerateFailed'), {
-            description: shownError,
-          });
+          toast.error(
+            isRegeneration ? t('genRegenerateFailed') : t('genGenerateFailed'),
+            explained ? { description: explained } : undefined,
+          );
 
           // Auto-open model settings modal if model is missing
           if (isModelRequiredError && onOpenModelSettings) {
@@ -460,15 +470,16 @@ export function useSummaryGeneration({
       return true;
     } catch (error) {
       console.error(`Failed to ${isRegeneration ? 'regenerate' : 'generate'} summary:`, error);
-      const errorMessage = error instanceof Error ? error.message : t('genUnknownError');
       if (!isCurrentRequest()) return backendAccepted;
-      setSummaryError(errorMessage);
+      setSummaryError(t('genFailedGeneric'));
       setSummaryStatus('error');
       // Note: We don't clear the summary here because the backend has already restored from backup
 
-      toast.error(isRegeneration ? t('genRegenerateFailed') : t('genGenerateFailed'), {
-        description: errorMessage,
-      });
+      toastFailure(
+        isRegeneration ? t('genRegenerateFailed') : t('genGenerateFailed'),
+        isRegeneration ? 'summary-regenerate' : 'summary-generate',
+        error,
+      );
       return backendAccepted;
     }
   }, [
@@ -510,8 +521,7 @@ export function useSummaryGeneration({
       console.log(`✅ Fetched ${allData.transcripts.length} transcripts from database`);
       return allData.transcripts;
     } catch (error) {
-      console.error('❌ Error fetching all transcripts:', error);
-      toast.error(t('genFetchTranscriptsFailed'));
+      toastFailure(t('genFetchTranscriptsFailed'), 'transcripts-fetch', error);
       return [];
     }
   }, []);
@@ -611,7 +621,7 @@ export function useSummaryGeneration({
           );
         } else {
           // Other error - generic message
-          toast.error(t('genOllamaCheckFailed'), { duration: 5000 });
+          toastFailure(t('genOllamaCheckFailed'), 'ollama-check', error, { duration: 5000 });
         }
         return false;
       }
@@ -684,8 +694,10 @@ export function useSummaryGeneration({
 
             if (status.type === 'corrupted' || status.type === 'error') {
               setSummaryStatus('idle');
+              // The model status's own error text is for the log, not the toast.
+              if (status.type === 'error') logFailure('builtin-model-status', status.Error);
               const errorDesc = status.type === 'error'
-                ? status.Error || t('genBuiltinFileError')
+                ? t('genBuiltinFileError')
                 : t('genBuiltinFileCorrupted');
               toast.error(t('genBuiltinNotAvailableTitle'), {
                 description: t('genBuiltinNotAvailableDescription', { reason: errorDesc }),
@@ -715,10 +727,7 @@ export function useSummaryGeneration({
         if (!isCurrentMeeting()) return false;
         console.error('Error validating built-in AI model:', error);
         setSummaryStatus('idle');
-        toast.error(t('genBuiltinValidationFailed'), {
-          description: error instanceof Error ? error.message : String(error),
-          duration: 5000,
-        });
+        toastFailure(t('genBuiltinValidationFailed'), 'builtin-model-check', error, { duration: 5000 });
         return false;
       }
     }
