@@ -97,6 +97,17 @@ async fn engine_for_live_text<R: Runtime>(
     }
 }
 
+/// Whether this recording keeps its audio. A recording without live text has
+/// only its sound to make the text from afterwards, so it keeps it even when
+/// the owner turned saving off: live text can drop out at the start (the
+/// engine is busy) where the settings could not see it coming.
+fn keeps_audio(auto_save: bool, live: bool) -> bool {
+    if !auto_save && !live {
+        info!("Saving audio is off, but this recording has no live text: keeping its audio");
+    }
+    auto_save || !live
+}
+
 /// A recording without live text still hands its audio to a channel; it is
 /// emptied here and nothing is recognised.
 fn start_sound_only_task(
@@ -325,6 +336,7 @@ pub async fn start_recording_with_meeting_name<R: Runtime>(
                 )
             }
         };
+    let auto_save = keeps_audio(auto_save, live);
     manager.set_recordings_folder(recordings_folder);
 
     // ============================================================================
@@ -711,7 +723,7 @@ pub async fn start_recording_with_devices_and_meeting<R: Runtime>(
             super::recording_preferences::RecordingPreferences::default()
         }
     };
-    let auto_save = preferences.auto_save;
+    let auto_save = keeps_audio(preferences.auto_save, live);
     manager.set_recordings_folder(preferences.save_folder);
 
     // Always ensure a meeting name is set so incremental saver initializes
@@ -1253,6 +1265,21 @@ mod compact_mode_tests {
         assert!(!compact_mode_allowed(false, false));
         assert!(!compact_mode_allowed(true, true));
         assert!(!compact_mode_allowed(false, true));
+    }
+}
+
+#[cfg(test)]
+mod keeps_audio_tests {
+    use super::keeps_audio;
+
+    #[test]
+    fn a_recording_without_live_text_keeps_its_audio() {
+        assert!(keeps_audio(true, true));
+        assert!(keeps_audio(true, false));
+        assert!(!keeps_audio(false, true));
+        // Saving off, and live text dropped at the start: the sound is all
+        // the meeting will have.
+        assert!(keeps_audio(false, false));
     }
 }
 

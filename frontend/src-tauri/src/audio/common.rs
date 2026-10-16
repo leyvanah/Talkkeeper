@@ -144,7 +144,17 @@ async fn unload_both_stt_engines() {
 }
 
 /// Before loading STT: free the builtin LLM so VRAM isn't shared with a big model.
+///
+/// Not while the model is answering: stopping it under a summary ends the
+/// summary with an error, and a recording started in the meantime (or the
+/// next recording's processing) would cost the previous meeting its summary.
+/// Both models then share memory until the summary is done and the idle
+/// unloader frees the LLM.
 pub async fn prepare_for_stt() {
+    if crate::summary::summary_engine::client::is_builtin_llm_busy().await {
+        info!("🔄 Preparing for STT — builtin LLM kept: it is still answering");
+        return;
+    }
     info!("🔄 Preparing for STT — shutting down builtin LLM if running");
     let _ = crate::summary::summary_engine::force_shutdown_sidecar().await;
     mark_llm_unloaded();

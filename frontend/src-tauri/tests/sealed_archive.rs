@@ -876,3 +876,79 @@ async fn settings_written_before_this_convert_and_convert_back() {
         assert!(stored.contains(secret), "{secret:?} did not come back");
     }
 }
+
+/// A meeting with one line, already sealed, and a pre-encryption copy beside
+/// it with its journal — what a version up to 0.2.34 left on disk.
+async fn sealed_archive_with_an_old_copy(
+    folder: &std::path::Path,
+) -> (SqlitePool, std::path::PathBuf, [std::path::PathBuf; 2]) {
+    let pool = archive_in(folder).await;
+    sqlx::raw_sql(
+        "INSERT INTO meetings (id, title, created_at, updated_at) \
+             VALUES ('m1', 'Встреча в четверг', '2026-09-01T10:00:00Z', '2026-09-01T10:00:00Z'); \
+         INSERT INTO transcripts (id, meeting_id, transcript, timestamp, speaker) \
+             VALUES ('t1', 'm1', 'Секретная фраза', '00:00', 'Анна');",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    let backup = folder.join("meeting_minutes.before-encryption.sqlite");
+    let journal = [
+        backup.with_extension("sqlite-wal"),
+        backup.with_extension("sqlite-shm"),
+    ];
+    // Still in the clear: the sealing pass is to come, and it owns the copy.
+    std::fs::write(&backup, b"copy").unwrap();
+    assert!(!app_lib::security::commands::discard_stale_backup_at(&pool, &backup)
+        .await
+        .unwrap());
+    assert!(backup.exists(), "the copy went before the archive was sealed");
+
+    field_encryption::convert_all(&pool, field_encryption::Direction::Encrypt)
+        .await
+        .unwrap();
+    for path in &journal {
+        std::fs::write(path, b"journal").unwrap();
+    }
+    (pool, backup, journal)
+}
+
+#[tokio::test]
+async fn an_old_copy_goes_once_the_sealed_archive_is_opened() {
+    use app_lib::security::commands::discard_stale_backup_at;
+
+    open_the_archive();
+    let folder = tempfile::tempdir().unwrap();
+    let (pool, backup, journal) = sealed_archive_with_an_old_copy(folder.path()).await;
+
+    assert!(discard_stale_backup_at(&pool, &backup).await.unwrap());
+
+    assert!(!backup.exists(), "the plaintext copy outlived a check that passed");
+    for path in &journal {
+        assert!(!path.exists(), "{path:?} outlived the copy");
+    }
+    // Nothing left to do on the next unlock.
+    assert!(!discard_stale_backup_at(&pool, &backup).await.unwrap());
+}
+
+#[tokio::test]
+async fn an_old_copy_stays_when_a_sealed_value_does_not_open() {
+    use app_lib::security::commands::discard_stale_backup_at;
+
+    open_the_archive();
+    let folder = tempfile::tempdir().unwrap();
+    let (pool, backup, _) = sealed_archive_with_an_old_copy(folder.path()).await;
+    // Sealed under another column: marked as sealed, fails to open here.
+    let wrong = fields::seal(fields::TRANSCRIPT_TEXT, "Встреча в четверг").unwrap();
+    sqlx::query("UPDATE meetings SET title = ?")
+        .bind(wrong)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    let error = discard_stale_backup_at(&pool, &backup).await.unwrap_err();
+
+    assert_eq!(error.code, "fieldVerificationFailed");
+    assert!(backup.exists(), "the copy went although a value does not open");
+}

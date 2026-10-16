@@ -40,6 +40,7 @@ import {
   saveMeetingSummaryLanguage,
   SummaryLanguageStorage,
 } from '@/lib/summary-language-preferences';
+import { toastFailure } from '@/lib/failure';
 
 type SideTab = 'summary' | 'notes' | 'chat';
 
@@ -234,8 +235,7 @@ export function SummaryPanel({
             latest?.version === request.version &&
             activeMeetingIdRef.current === request.meetingId
           ) {
-            console.error('Failed to persist summary language:', err);
-            toast.error(t('summaryLangSaveFailed'));
+            toastFailure(t('summaryLangSaveFailed'), 'summary-language-save', err);
             setSummaryLang(request.rollback.language);
             setSummaryLangStorage(request.rollback.storage);
             return;

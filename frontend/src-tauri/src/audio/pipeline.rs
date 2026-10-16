@@ -847,6 +847,9 @@ impl AudioPipeline {
         {
             super::echo_cancel::EchoCanceller::new(sample_rate)
         } else {
+            if mic_enabled && system_enabled {
+                info!("🔇 Echo cancellation is off in the settings: the microphone is kept as it is");
+            }
             None
         };
 

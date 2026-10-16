@@ -27,6 +27,7 @@ import { useConfig } from '@/contexts/ConfigContext';
 import { usePostCall } from '@/contexts/PostCallContext';
 import { MeetingExportDialog } from '@/components/MeetingDetails/MeetingExportDialog';
 import { SummaryRegenerationDialog } from '@/components/MeetingDetails/SummaryRegenerationDialog';
+import { toastFailure } from '@/lib/failure';
 
 export default function PageContent({
   meeting,
@@ -132,8 +133,7 @@ export default function PageContent({
 
       toast.success(t('modelSettingsSaved'));
     } catch (error) {
-      console.error('Failed to save model config:', error);
-      toast.error(t('modelSettingsSaveFailed'));
+      toastFailure(t('modelSettingsSaveFailed'), 'model-config-save', error);
     }
   };
 

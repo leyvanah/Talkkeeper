@@ -23,7 +23,7 @@ import { Alert, AlertDescription } from '@/components/ui/alert';
 import type { AudioOnly, MeetingMetadata, StoredTranscript } from '@/lib/unsaved-recordings';
 import { cn } from '@/lib/utils';
 import { useFormatter, useTranslations } from 'next-intl';
-import { toast } from 'sonner';
+import { logFailure, toastFailure } from '@/lib/failure';
 
 interface TranscriptRecoveryProps {
   isOpen: boolean;
@@ -64,7 +64,8 @@ function OtherKeyForm({
         setError(null);
       }
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : String(cause));
+      logFailure('key-file-choose', cause);
+      setError(t('otherKeyChooseFailed'));
     }
   };
 
@@ -74,7 +75,8 @@ function OtherKeyForm({
     if (message.includes('does not open this key file')) return t('otherKeyWrongSecret');
     if (message.includes('does not open this recording')) return t('otherKeyWrongKey');
     if (message.includes('Could not read the key file')) return t('otherKeyNotAKeyFile');
-    return message;
+    logFailure('recording-open-with-key', cause);
+    return t('otherKeyFailed');
   };
 
   const submit = async () => {
@@ -214,9 +216,7 @@ export function TranscriptRecovery({
       setPreviewTranscripts([]);
     } catch (error) {
       console.error('Delete failed:', error);
-      toast.error(t('deleteFailedAlert'), {
-        description: error instanceof Error ? error.message : String(error),
-      });
+      toastFailure(t('deleteFailedAlert'), 'recovery-delete', error);
     } finally {
       setIsDeleting(false);
     }

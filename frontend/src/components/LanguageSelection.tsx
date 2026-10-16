@@ -3,6 +3,7 @@ import { useLocale, useTranslations } from 'next-intl';
 import { Globe } from 'lucide-react';
 import { toast } from 'sonner';
 import { useConfig } from '@/contexts/ConfigContext';
+import { toastFailure } from '@/lib/failure';
 
 export interface Language {
   code: string;
@@ -170,10 +171,7 @@ export function LanguageSelection({
         description: t('langPreferenceSavedDescription', { language: languageName })
       });
     } catch (error) {
-      console.error('Failed to save language preference:', error);
-      toast.error(t('langPreferenceSaveFailed'), {
-        description: error instanceof Error ? error.message : String(error)
-      });
+      toastFailure(t('langPreferenceSaveFailed'), 'language-save', error);
     } finally {
       setSaving(false);
     }
