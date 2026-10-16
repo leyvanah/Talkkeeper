@@ -444,8 +444,9 @@ function PersonProfileContent() {
 
   const destination = destinationText(assistant, t);
   const away = sendsAway(assistant);
-  // Nothing to send to, or "This computer only" would refuse it anyway.
-  const canSend = !assistant || (assistant.destination !== 'none' && assistant.destination !== 'blocked');
+  // Nothing to send to, or "This computer only" would refuse it anyway. Until
+  // the settings are read it is not known where the records would go.
+  const canSend = assistant !== null && assistant.destination !== 'none' && assistant.destination !== 'blocked';
   const seenRange = [profile.firstSeenAt, profile.lastSeenAt]
     .filter((value): value is string => Boolean(value))
     .map((value) => formatDate(value, locale, t))
