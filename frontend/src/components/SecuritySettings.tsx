@@ -300,9 +300,9 @@ export function SecuritySettings() {
   }
 
   const closeDialog = (place: SecurityAction, close: () => void) => {
-    // A refusal shown in the dialog has nowhere to stay once it closes.
-    const outcome = outcomeAt(panel, place)
-    if (outcome && outcome.kind !== 'notice') dispatch({ type: 'dismiss' })
+    // An error belongs to the dialog and goes with it. A wait does not: it
+    // keeps every password field off, so it moves under the section instead.
+    if (outcomeAt(panel, place)?.kind === 'error') dispatch({ type: 'dismiss' })
     close()
   }
 
@@ -667,6 +667,7 @@ export function SecuritySettings() {
                     )}
                   </div>
                   {message('recoveryIssue', 'mt-0')}
+                  {!removingCode && message('recoveryRemove', 'mt-0')}
                 </form>
               </div>
 
@@ -828,6 +829,7 @@ export function SecuritySettings() {
                   <ShieldOff className="mr-2 h-4 w-4" />
                   {t('disableProtection')}
                 </Button>
+                {!disabling && message('disable')}
               </div>
             </Group>
           </div>
