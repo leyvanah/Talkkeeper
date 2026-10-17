@@ -20,6 +20,7 @@ import { SecuritySettings } from '@/components/SecuritySettings';
 import { LibraryExportCard } from '@/components/security/LibraryExportCard'
 import { useConfig } from '@/contexts/ConfigContext';
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs';
+import { pickSettingsTab, rememberSettingsTab, rememberedSettingsTab } from '@/lib/settings-tab';
 
 // Labels are message keys; they are resolved per render so the tab strip
 // follows the active locale.
@@ -34,6 +35,8 @@ const TABS = [
   { value: 'about', labelKey: 'tabAbout', icon: Info },
 ] as const;
 
+const TAB_VALUES: readonly string[] = TABS.map((tab) => tab.value);
+
 export default function SettingsPage() {
   const t = useTranslations('settings');
   useWindowTitle(t('pageTitle'));
@@ -41,7 +44,9 @@ export default function SettingsPage() {
   useWindowBack(t('back'), () => router.back());
   const { transcriptModelConfig, setTranscriptModelConfig } = useConfig();
 
-  const [activeTab, setActiveTab] = useState('general');
+  const [activeTab, setActiveTab] = useState(() =>
+    pickSettingsTab(null, rememberedSettingsTab(), TAB_VALUES, 'general')
+  );
   const tabRefs = useRef<(HTMLButtonElement | null)[]>([]);
   const tabsScrollRef = useRef<HTMLDivElement | null>(null);
   const [underlineStyle, setUnderlineStyle] = useState({ left: 0, width: 0 });
@@ -49,11 +54,15 @@ export default function SettingsPage() {
 
   useEffect(() => {
     const requestedTab = sessionStorage.getItem('meetily-settings-tab');
-    if (requestedTab && TABS.some((tab) => tab.value === requestedTab)) {
+    if (requestedTab && TAB_VALUES.includes(requestedTab)) {
       setActiveTab(requestedTab);
     }
     sessionStorage.removeItem('meetily-settings-tab');
   }, []);
+
+  useEffect(() => {
+    rememberSettingsTab(activeTab);
+  }, [activeTab]);
 
   useEffect(() => {
     const loadTranscriptConfig = async () => {
