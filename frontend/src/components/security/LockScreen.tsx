@@ -9,6 +9,7 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { useTranslations } from 'next-intl'
+import { invoke } from '@tauri-apps/api/core'
 import { Lock, KeyRound, ArrowLeft, Eye, EyeOff, ScanFace } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -16,6 +17,7 @@ import { asSecurityError, useSecurity } from '@/contexts/SecurityContext'
 import { RecoveryCodeInput } from './RecoveryCodeInput'
 import { NewPasswordFields } from './NewPasswordFields'
 import { MIN_PASSWORD_LENGTH, checkNewPassword } from '@/lib/password-rules'
+import { keystoreFilePath } from '@/lib/keystore-location'
 
 /** Which of the two ways in the owner is currently using. */
 type Mode = 'password' | 'recovery'
@@ -33,6 +35,10 @@ export function LockScreen() {
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [waitSeconds, setWaitSeconds] = useState(status?.waitSeconds ?? 0)
+  // Set when the last failure was a damaged key file: the owner then needs the
+  // file's full path to put the saved copy back by hand.
+  const [keystoreDamaged, setKeystoreDamaged] = useState(false)
+  const [keystoreFile, setKeystoreFile] = useState<string | null>(null)
 
   const passwordField = useRef<HTMLInputElement>(null)
 
@@ -46,6 +52,23 @@ export function LockScreen() {
     setWaitSeconds(status?.waitSeconds ?? 0)
   }, [status?.waitSeconds])
 
+  // The path is asked for once and shown on screen only — it carries the name of
+  // the home folder, so it never goes to the console or the log.
+  useEffect(() => {
+    if (!keystoreDamaged || keystoreFile !== null) return
+    let cancelled = false
+    invoke<string>('get_database_directory')
+      .then((folder) => {
+        if (!cancelled) setKeystoreFile(keystoreFilePath(folder))
+      })
+      .catch(() => {
+        if (!cancelled) setKeystoreFile(keystoreFilePath(null))
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [keystoreDamaged, keystoreFile])
+
   useEffect(() => {
     if (waitSeconds <= 0) return
     const timer = window.setInterval(() => {
@@ -58,6 +81,7 @@ export function LockScreen() {
   const describe = useCallback(
     (error: unknown): string => {
       const failure = asSecurityError(error)
+      setKeystoreDamaged(failure.code === 'keystoreCorrupt')
       switch (failure.code) {
         case 'wrongPassword':
           return t('errorWrongPassword')
@@ -241,9 +265,19 @@ export function LockScreen() {
         )}
 
         {error && !blocked && (
-          <p role="alert" className="mt-4 text-center text-sm text-red-500">
-            {error}
-          </p>
+          <div role="alert" className="mt-4 text-center text-sm">
+            <p className="text-red-500">{error}</p>
+            {keystoreDamaged && (
+              <>
+                {keystoreFile && (
+                  <p className="mt-2 select-all break-all font-mono text-xs text-[var(--af-text)]">
+                    {keystoreFile}
+                  </p>
+                )}
+                <p className="mt-2 text-[var(--af-text-2)]">{t('keystoreCorruptRestore')}</p>
+              </>
+            )}
+          </div>
         )}
 
         <div className="mt-6 text-center">
