@@ -1321,6 +1321,8 @@
     "minibarResume": "Продолжить",
     "minibarPause": "Пауза",
     "minibarStopTitle": "Остановить запись",
+    "minibarStopConfirm": "Стоп?",
+    "minibarStopConfirmTitle": "Нажмите ещё раз, чтобы остановить запись",
     "minibarStop": "Стоп",
     "minibarExpandTitle": "Вернуться в основное окно",
     "aboutTalkkeeper": "О Talkkeeper",

@@ -20,13 +20,14 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { useTranslations } from 'next-intl';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
-import { EyeOff, Maximize2, Mic, MicOff, Pause, Pencil, Play, Square, Volume2, VolumeX } from 'lucide-react';
+import { EyeOff, Loader2, Maximize2, Mic, MicOff, Pause, Pencil, Play, Square, Volume2, VolumeX } from 'lucide-react';
 import { LiveAudioVisualizer } from '@/components/LiveAudioVisualizer';
 import { NotesEditor } from '@/components/Notes/NotesEditor';
 import { useRecordingNotes } from '@/hooks/useMeetingNotes';
 import { recordingService } from '@/services/recordingService';
 import { applyAppTheme, getSavedAppTheme } from '@/lib/app-theme';
 import { barPaths, peelFor, revealFor } from '@/lib/minibar-dock';
+import { ARM_WINDOW_MS, pressTwoStep } from '@/lib/two-step-press';
 
 /** Room the window leaves on each side for the corners of the docked tab. */
 const EAR = 10;
@@ -84,6 +85,15 @@ export default function MiniBarPage() {
   // Once stopping begins the timer must freeze immediately, even though the
   // bar stays up until the recording is actually finalised (see below).
   const [isStopping, setIsStopping] = useState(false);
+  // A pause or resume on its way to Rust. The ref closes the gap before the
+  // disabled button re-renders, so a double click sends one command.
+  const [isChangingPause, setIsChangingPause] = useState(false);
+  const pauseInFlight = useRef(false);
+  // Bumped by every pause/resume, so a poll that left before it cannot bring
+  // the old state back after the command has settled.
+  const pauseCommands = useRef(0);
+  // When the stop button was armed by a first press, or null.
+  const [stopArmedAt, setStopArmedAt] = useState<number | null>(null);
 
   // The window is transparent; the page must not paint a background over it.
   // Same origin as the main window, so the saved theme is readable here.
@@ -99,6 +109,7 @@ export default function MiniBarPage() {
   useEffect(() => {
     let mounted = true;
     const syncFromNative = async () => {
+      const commandsBefore = pauseCommands.current;
       try {
         const state = await recordingService.getRecordingState();
         if (!mounted) return;
@@ -106,7 +117,9 @@ export default function MiniBarPage() {
         if (duration !== null) {
           setElapsed(Math.max(0, Math.floor(duration)));
         }
-        setIsPaused(state.is_paused);
+        if (!pauseInFlight.current && pauseCommands.current === commandsBefore) {
+          setIsPaused(state.is_paused);
+        }
         setIsMicMuted(state.is_microphone_muted);
         setIsSystemMuted(state.is_system_audio_muted);
       } catch (error) {
@@ -156,12 +169,22 @@ export default function MiniBarPage() {
   }, []);
 
   const togglePause = useCallback(async () => {
+    if (pauseInFlight.current || isStopping) return;
+    pauseInFlight.current = true;
+    pauseCommands.current += 1;
+    setIsChangingPause(true);
+    setStopArmedAt(null);
     try {
       await invoke(isPaused ? 'resume_recording' : 'pause_recording');
+      setIsPaused(!isPaused);
     } catch (e) {
       console.error('Compact bar: pause/resume failed', e);
+    } finally {
+      pauseInFlight.current = false;
+      pauseCommands.current += 1;
+      setIsChangingPause(false);
     }
-  }, [isPaused]);
+  }, [isPaused, isStopping]);
 
   const toggleMicMute = useCallback(async () => {
     if (isChangingMicMute || isChangingSystemMute || isStopping) return;
@@ -209,6 +232,24 @@ export default function MiniBarPage() {
       setIsStopping(false);
     }
   }, []);
+
+  // A slip beside the pause button must not end the meeting: the first press
+  // only asks, a second one within a few seconds stops.
+  const pressStop = useCallback(() => {
+    const now = performance.now();
+    const outcome = pressTwoStep(stopArmedAt, now);
+    if (outcome === 'armed') setStopArmedAt(now);
+    else if (outcome === 'confirmed') {
+      setStopArmedAt(null);
+      void stop();
+    }
+  }, [stop, stopArmedAt]);
+
+  useEffect(() => {
+    if (stopArmedAt === null) return;
+    const id = window.setTimeout(() => setStopArmedAt(null), ARM_WINDOW_MS);
+    return () => window.clearTimeout(id);
+  }, [stopArmedAt]);
 
   // --- Docking -------------------------------------------------------------
   const [docked, setDocked] = useState(false);
@@ -313,6 +354,9 @@ export default function MiniBarPage() {
   const shape = barPaths(viewport.width, BAR_HEIGHT, EAR, 16, peel);
 
   const busy = isStopping || isChangingMicMute || isChangingSystemMute;
+  const stopArmed = stopArmedAt !== null && !isStopping;
+  const statusLabel = isStopping ? tr('stopping') : isPaused ? tr('paused') : tr('recordingLabel');
+  const pauseLabel = isPaused ? t('minibarResume') : t('minibarPause');
   const icon =
     'flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-[var(--af-text-2)] transition-colors hover:bg-[var(--af-hover)] hover:text-[var(--af-text)] disabled:opacity-40';
   const sources = [
@@ -347,19 +391,30 @@ export default function MiniBarPage() {
             className="relative flex h-full items-center gap-1.5 text-[var(--af-text)]"
             style={{ paddingLeft: EAR + 14, paddingRight: EAR + 6 }}
           >
-            {/* Status and timer; the words are in the tooltip, the colour says it. */}
+            {/* Status and timer. The words are in the tooltip; the mark differs
+                in shape as well as colour — a dot while recording, two bars on
+                pause, a spinner while stopping — so it reads without colour. */}
             <div
               data-tauri-drag-region
               className="flex shrink-0 items-center gap-2"
-              title={isStopping ? tr('stopping') : isPaused ? tr('paused') : tr('recordingLabel')}
+              title={statusLabel}
             >
+              <span data-tauri-drag-region className="flex h-2.5 w-2.5 items-center justify-center" aria-hidden>
+                {isStopping ? (
+                  <Loader2 size={10} className="animate-spin text-[var(--af-text-3)]" />
+                ) : isPaused ? (
+                  <Pause size={11} className="text-orange-400" fill="currentColor" strokeWidth={0} />
+                ) : (
+                  <span className="h-2.5 w-2.5 animate-pulse rounded-full bg-red-500" />
+                )}
+              </span>
+              <span role="status" className="sr-only">
+                {statusLabel}
+              </span>
               <span
                 data-tauri-drag-region
-                className={`h-2.5 w-2.5 rounded-full ${
-                  isStopping ? 'bg-[var(--af-text-3)]' : isPaused ? 'bg-orange-400' : 'animate-pulse bg-red-500'
-                }`}
-              />
-              <span data-tauri-drag-region className="text-sm font-medium tabular-nums">
+                className={`text-sm font-medium tabular-nums ${isPaused || isStopping ? 'text-[var(--af-text-3)]' : ''}`}
+              >
                 {formatElapsed(elapsed)}
               </span>
             </div>
@@ -380,7 +435,14 @@ export default function MiniBarPage() {
                 >
                   {muted ? <Off size={14} /> : <On size={14} />}
                 </button>
-                <LiveAudioVisualizer active={!isPaused && !isStopping && !muted} source={source} bars={6} />
+                {/* The bar is full to the last pixel; the armed stop button
+                    borrows the levels' room for its word. */}
+                <LiveAudioVisualizer
+                  active={!isPaused && !isStopping && !muted}
+                  source={source}
+                  bars={6}
+                  className={stopArmed ? '!hidden' : ''}
+                />
               </div>
             ))}
 
@@ -388,23 +450,35 @@ export default function MiniBarPage() {
 
             <button
               type="button"
-              onClick={togglePause}
-              disabled={busy}
-              title={isPaused ? t('minibarResume') : t('minibarPause')}
-              aria-label={isPaused ? t('minibarResume') : t('minibarPause')}
+              onClick={() => void togglePause()}
+              disabled={busy || isChangingPause}
+              title={pauseLabel}
+              aria-label={pauseLabel}
+              aria-busy={isChangingPause}
               className={icon}
             >
-              {isPaused ? <Play size={14} /> : <Pause size={14} />}
+              {isChangingPause ? (
+                <Loader2 size={14} className="animate-spin" />
+              ) : isPaused ? (
+                <Play size={14} />
+              ) : (
+                <Pause size={14} />
+              )}
             </button>
             <button
               type="button"
-              onClick={stop}
-              disabled={busy}
-              title={t('minibarStopTitle')}
-              aria-label={t('minibarStopTitle')}
-              className={`${icon} !text-red-500 hover:!bg-red-500/10`}
+              onClick={pressStop}
+              disabled={busy || isChangingPause}
+              title={stopArmed ? t('minibarStopConfirmTitle') : t('minibarStopTitle')}
+              aria-label={stopArmed ? t('minibarStopConfirmTitle') : t('minibarStopTitle')}
+              className={
+                stopArmed
+                  ? 'flex h-7 shrink-0 items-center gap-1 rounded-full bg-red-500 px-2 text-xs font-medium text-white transition-colors hover:bg-red-600 disabled:opacity-40'
+                  : `${icon} !text-red-500 hover:!bg-red-500/10`
+              }
             >
-              <Square size={12} fill="currentColor" />
+              <Square size={stopArmed ? 10 : 12} fill="currentColor" />
+              {stopArmed && <span>{t('minibarStopConfirm')}</span>}
             </button>
 
             <span data-tauri-drag-region className="mx-0.5 h-5 w-px shrink-0 bg-[var(--af-border)]" />
