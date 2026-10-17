@@ -19,15 +19,15 @@ import { useSummaryGeneration } from '@/hooks/meeting-details/useSummaryGenerati
 import { useTemplates } from '@/hooks/meeting-details/useTemplates';
 import { useCopyOperations } from '@/hooks/meeting-details/useCopyOperations';
 import { useMeetingOperations } from '@/hooks/meeting-details/useMeetingOperations';
+// Page remounts, and the background runner for a meeting processed while it
+// was not open, join the same backend-start attempt. Only accepted attempts
+// are persisted in sessionStorage; failed preflight attempts remain retryable.
+import { startAutoSummary, summaryStartKey } from '@/lib/auto-summary';
 import { useConfig } from '@/contexts/ConfigContext';
 import { usePostCall } from '@/contexts/PostCallContext';
 import { MeetingExportDialog } from '@/components/MeetingDetails/MeetingExportDialog';
 import { SummaryRegenerationDialog } from '@/components/MeetingDetails/SummaryRegenerationDialog';
 import { toastFailure } from '@/lib/failure';
-
-// Page remounts join the same backend-start attempt. Only accepted attempts are
-// persisted in sessionStorage below; failed preflight attempts remain retryable.
-const autoSummaryInFlight = new Map<string, Promise<boolean>>();
 
 export default function PageContent({
   meeting,
@@ -196,41 +196,30 @@ export default function PageContent({
         meetingData.transcripts.length > 0 &&
         (!isPostCallRecording || postCallDone)
       ) {
-        if (isPostCallRecording) {
-          const summaryStartKey = `post-call-summary-started:${meeting.id}`;
-          if (sessionStorage.getItem(summaryStartKey)) {
-            postCall.release(meeting.id);
-            onAutoGenerateComplete?.();
-            return;
-          }
-
-          let attempt = autoSummaryInFlight.get(meeting.id);
-          if (!attempt) {
-            console.log(`🤖 Auto-generating summary with ${modelConfig.provider}/${modelConfig.model}...`);
-            attempt = summaryGeneration.handleGenerateSummary('');
-            autoSummaryInFlight.set(meeting.id, attempt);
-          }
-
-          let accepted = false;
-          try {
-            accepted = await attempt;
-          } finally {
-            if (autoSummaryInFlight.get(meeting.id) === attempt) {
-              autoSummaryInFlight.delete(meeting.id);
-            }
-          }
-
-          if (accepted) {
-            sessionStorage.setItem(summaryStartKey, 'started');
-            postCall.release(meeting.id);
-            onAutoGenerateComplete?.();
-          }
+        // Every automatic summary goes through the shared attempt and mark: the
+        // background runner may be starting the same one, and a page being left
+        // for another meeting can still run this once, with the flag of the
+        // meeting it showed. Asking twice got the second request refused and an
+        // error toast for a summary that was being written.
+        if (sessionStorage.getItem(summaryStartKey(meeting.id))) {
+          postCall.release(meeting.id);
+          onAutoGenerateComplete?.();
           return;
         }
 
-        console.log(`🤖 Auto-generating summary with ${modelConfig.provider}/${modelConfig.model}...`);
-        await summaryGeneration.handleGenerateSummary('');
-        onAutoGenerateComplete?.();
+        const accepted = await startAutoSummary(meeting.id, () => {
+          console.log(`🤖 Auto-generating summary with ${modelConfig.provider}/${modelConfig.model}...`);
+          return summaryGeneration.handleGenerateSummary('');
+        });
+
+        if (accepted) {
+          sessionStorage.setItem(summaryStartKey(meeting.id), 'started');
+          postCall.release(meeting.id);
+          onAutoGenerateComplete?.();
+        } else if (!isPostCallRecording) {
+          // As before: outside the processing after a recording, one try.
+          onAutoGenerateComplete?.();
+        }
       }
     };
 
