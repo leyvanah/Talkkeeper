@@ -275,6 +275,17 @@ export function PostCallProvider({ children }: { children: React.ReactNode }) {
   }, [router, settle, t]);
 
   /**
+   * Audio but no live text, and the owner chose not to refine it: nothing to
+   * label or summarise. Said as it is rather than as "complete"; the page's
+   * "transcribe again" still recovers the text from the audio.
+   */
+  const keepNoLiveText = useCallback((meetingId: string) => {
+    settle(meetingId);
+    drop(meetingId);
+    toast.info(t('postCallNoLiveText'), { description: t('postCallNoLiveTextDescription') });
+  }, [drop, settle, t]);
+
+  /**
    * Nothing to refine: no audio, or no text the summary could start from.
    * Neither is a success to announce.
    */
@@ -499,7 +510,13 @@ export function PostCallProvider({ children }: { children: React.ReactNode }) {
           }}
           onSkipEnhancement={(count) => {
             // The X at the count question: keep the live transcript, but still
-            // tell the speakers apart and let the summary go ahead.
+            // tell the speakers apart and let the summary go ahead. A recording
+            // made while another was being refined has no live text: there is
+            // nothing to label or summarise, and "complete" would be untrue.
+            if (asking.lineCount === 0) {
+              keepNoLiveText(asking.meetingId);
+              return;
+            }
             answered(asking.meetingId);
             void exclusive(async () => {
               try {
@@ -512,10 +529,7 @@ export function PostCallProvider({ children }: { children: React.ReactNode }) {
           }}
           onUseLive={() => {
             if (asking.lineCount === 0) {
-              // Audio, but no live text to keep: say so instead of "complete".
-              settle(asking.meetingId);
-              drop(asking.meetingId);
-              toast.info(t('postCallNoLiveText'), { description: t('postCallNoLiveTextDescription') });
+              keepNoLiveText(asking.meetingId);
               return;
             }
             complete(asking.meetingId, true);

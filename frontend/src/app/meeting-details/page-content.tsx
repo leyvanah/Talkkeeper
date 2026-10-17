@@ -196,29 +196,30 @@ export default function PageContent({
         meetingData.transcripts.length > 0 &&
         (!isPostCallRecording || postCallDone)
       ) {
-        if (isPostCallRecording) {
-          if (sessionStorage.getItem(summaryStartKey(meeting.id))) {
-            postCall.release(meeting.id);
-            onAutoGenerateComplete?.();
-            return;
-          }
-
-          const accepted = await startAutoSummary(meeting.id, () => {
-            console.log(`🤖 Auto-generating summary with ${modelConfig.provider}/${modelConfig.model}...`);
-            return summaryGeneration.handleGenerateSummary('');
-          });
-
-          if (accepted) {
-            sessionStorage.setItem(summaryStartKey(meeting.id), 'started');
-            postCall.release(meeting.id);
-            onAutoGenerateComplete?.();
-          }
+        // Every automatic summary goes through the shared attempt and mark: the
+        // background runner may be starting the same one, and a page being left
+        // for another meeting can still run this once, with the flag of the
+        // meeting it showed. Asking twice got the second request refused and an
+        // error toast for a summary that was being written.
+        if (sessionStorage.getItem(summaryStartKey(meeting.id))) {
+          postCall.release(meeting.id);
+          onAutoGenerateComplete?.();
           return;
         }
 
-        console.log(`🤖 Auto-generating summary with ${modelConfig.provider}/${modelConfig.model}...`);
-        await summaryGeneration.handleGenerateSummary('');
-        onAutoGenerateComplete?.();
+        const accepted = await startAutoSummary(meeting.id, () => {
+          console.log(`🤖 Auto-generating summary with ${modelConfig.provider}/${modelConfig.model}...`);
+          return summaryGeneration.handleGenerateSummary('');
+        });
+
+        if (accepted) {
+          sessionStorage.setItem(summaryStartKey(meeting.id), 'started');
+          postCall.release(meeting.id);
+          onAutoGenerateComplete?.();
+        } else if (!isPostCallRecording) {
+          // As before: outside the processing after a recording, one try.
+          onAutoGenerateComplete?.();
+        }
       }
     };
 
