@@ -16,6 +16,7 @@ import {
 import { logFailure, toastFailure } from '@/lib/failure';
 import { failureText } from '@/lib/failure-text';
 import { useDiskSpaceText } from '@/hooks/useDiskSpaceText';
+import { useConfirmModelDelete } from '@/hooks/useConfirmModelDelete';
 
 interface ParakeetModelManagerProps {
   selectedModel?: string;
@@ -32,6 +33,7 @@ export function ParakeetModelManager({
 }: ParakeetModelManagerProps) {
   const t = useTranslations('settings');
   const diskSpaceText = useDiskSpaceText();
+  const confirmDelete = useConfirmModelDelete();
   const [models, setModels] = useState<ParakeetModelInfo[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -346,6 +348,13 @@ export function ParakeetModelManager({
     }
   };
 
+  const askDelete = (model: ParakeetModelInfo) =>
+    confirmDelete.ask(
+      getModelDisplayInfo(model.name)?.friendlyName || model.name,
+      model.size_mb,
+      () => deleteModel(model.name),
+    );
+
   if (loading) {
     return (
       <div className={`space-y-3 ${className}`}>
@@ -376,6 +385,7 @@ export function ParakeetModelManager({
 
   return (
     <div className={`space-y-3 ${className}`}>
+      {confirmDelete.dialog}
       {/* Recommended Model */}
       {recommendedModel && (
         <ModelCard
@@ -389,7 +399,7 @@ export function ParakeetModelManager({
           }}
           onDownload={() => downloadModel(recommendedModel.name)}
           onCancel={() => cancelDownload(recommendedModel.name)}
-          onDelete={() => deleteModel(recommendedModel.name)}
+          onDelete={() => askDelete(recommendedModel)}
           isDownloading={downloadingModels.has(recommendedModel.name)}
         />
       )}
@@ -410,7 +420,7 @@ export function ParakeetModelManager({
               }}
               onDownload={() => downloadModel(model.name)}
               onCancel={() => cancelDownload(model.name)}
-              onDelete={() => deleteModel(model.name)}
+              onDelete={() => askDelete(model)}
               isDownloading={downloadingModels.has(model.name)}
             />
           ))}

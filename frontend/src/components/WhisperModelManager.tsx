@@ -18,6 +18,7 @@ import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from '@/
 import { logFailure, toastFailure } from '@/lib/failure';
 import { failureText } from '@/lib/failure-text';
 import { useDiskSpaceText } from '@/hooks/useDiskSpaceText';
+import { useConfirmModelDelete } from '@/hooks/useConfirmModelDelete';
 
 interface ModelManagerProps {
   selectedModel?: string;
@@ -34,6 +35,7 @@ export function ModelManager({
 }: ModelManagerProps) {
   const t = useTranslations('settings');
   const diskSpaceText = useDiskSpaceText();
+  const confirmDelete = useConfirmModelDelete();
   const [models, setModels] = useState<ModelInfo[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -390,6 +392,12 @@ export function ModelManager({
     return `Whisper ${modelName}`;
   };
 
+  // The basic names alone ("Small") do not say which model is meant.
+  const deleteLabel = (modelName: string): string => {
+    const name = getDisplayName(modelName);
+    return name.startsWith('Whisper') ? name : `Whisper ${name}`;
+  };
+
   if (loading) {
     return (
       <div className={`space-y-3 ${className}`}>
@@ -418,6 +426,7 @@ export function ModelManager({
 
   return (
     <div className={`space-y-3 ${className}`}>
+      {confirmDelete.dialog}
       {/* Basic Models */}
       <div className="space-y-3">
         {basicModels.map((model) => {
@@ -435,7 +444,7 @@ export function ModelManager({
               }}
               onDownload={() => downloadModel(model.name)}
               onCancel={() => cancelDownload(model.name)}
-              onDelete={() => deleteModel(model.name)}
+              onDelete={() => confirmDelete.ask(deleteLabel(model.name), model.size_mb, () => deleteModel(model.name))}
               isDownloading={downloadingModels.has(model.name)}
               displayName={getDisplayName(model.name)}
             />
@@ -465,7 +474,7 @@ export function ModelManager({
                     }}
                     onDownload={() => downloadModel(model.name)}
                     onCancel={() => cancelDownload(model.name)}
-                    onDelete={() => deleteModel(model.name)}
+                    onDelete={() => confirmDelete.ask(deleteLabel(model.name), model.size_mb, () => deleteModel(model.name))}
                     isDownloading={downloadingModels.has(model.name)}
                     displayName={getDisplayName(model.name)}
                   />

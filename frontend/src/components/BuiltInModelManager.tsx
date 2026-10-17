@@ -12,6 +12,7 @@ import { toast } from 'sonner';
 import { formatSummaryModelSizeLabelFromMb } from '@/lib/onboarding-summary-model';
 import { toastFailure } from '@/lib/failure';
 import { useDiskSpaceText } from '@/hooks/useDiskSpaceText';
+import { useConfirmModelDelete } from '@/hooks/useConfirmModelDelete';
 
 interface ModelInfo {
   name: string;
@@ -46,6 +47,7 @@ export function BuiltInModelManager({
   const t = useTranslations('settings');
   const tc = useTranslations('common');
   const diskSpaceText = useDiskSpaceText();
+  const confirmDelete = useConfirmModelDelete();
   const [models, setModels] = useState<ModelInfo[]>([]);
   const [isLoading, setIsLoading] = useState<boolean>(false);
   const [hasFetched, setHasFetched] = useState<boolean>(false);
@@ -266,6 +268,9 @@ export function BuiltInModelManager({
     }
   };
 
+  const askDelete = (model: ModelInfo) =>
+    confirmDelete.ask(model.display_name || model.name, model.size_mb, () => deleteModel(model.name));
+
   // Don't show loading spinner if we have downloads in progress - show the model list instead
   if (isLoading && downloadingModels.size === 0) {
     return (
@@ -289,6 +294,7 @@ export function BuiltInModelManager({
 
   return (
     <div>
+      {confirmDelete.dialog}
       <div className="flex items-center justify-between mb-4">
         <h4 className="text-sm font-bold">{t('builtinModelsTitle')}</h4>
       </div>
@@ -442,7 +448,7 @@ export function BuiltInModelManager({
                         size="sm"
                         onClick={(e) => {
                           e.stopPropagation();
-                          deleteModel(model.name);
+                          askDelete(model);
                         }}
                       >
                         <Trash2 className="mr-2 h-4 w-4" />
@@ -456,7 +462,7 @@ export function BuiltInModelManager({
                       className="p-2 rounded hover:bg-gray-100 transition-colors text-gray-500 hover:text-red-600"
                       onClick={(e) => {
                         e.stopPropagation();
-                        deleteModel(model.name);
+                        askDelete(model);
                       }}
                       title={t('modelDeleteTitleShort')}
                     >
