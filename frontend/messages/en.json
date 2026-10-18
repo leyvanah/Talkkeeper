@@ -845,7 +845,7 @@
     "summaryModelConfigTitle": "Summary Model Configuration",
     "summaryModelConfigDescription": "Configure the AI model used for generating meeting summaries.",
     "detectionTitle": "Meeting Detection",
-    "detectionDescription": "Offers to start recording when a meeting app (Zoom, Teams, Slack, Webex and others) starts using the microphone or camera. The check runs on this computer, without the network.",
+    "detectionDescription": "Offers to start recording when a meeting app (Zoom, Teams, Slack, Webex and others) starts or begins using the microphone or camera. The check runs on this computer, without the network.",
     "detectionLoading": "Loading…",
     "detectionInterval": "Check every",
     "detectionSeconds": "seconds",
