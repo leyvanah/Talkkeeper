@@ -21,7 +21,7 @@ import { LibraryExportCard } from '@/components/security/LibraryExportCard'
 import { useConfig } from '@/contexts/ConfigContext';
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs';
 
-// Labels are message keys; they are resolved per render so the tab strip
+// Labels are message keys; they are resolved per render so the tab rail
 // follows the active locale.
 const TABS = [
   { value: 'general', labelKey: 'tabGeneral', icon: Settings2 },
@@ -42,10 +42,7 @@ export default function SettingsPage() {
   const { transcriptModelConfig, setTranscriptModelConfig } = useConfig();
 
   const [activeTab, setActiveTab] = useState('general');
-  const tabRefs = useRef<(HTMLButtonElement | null)[]>([]);
-  const tabsScrollRef = useRef<HTMLDivElement | null>(null);
-  const [underlineStyle, setUnderlineStyle] = useState({ left: 0, width: 0 });
-  const [tabsOverflow, setTabsOverflow] = useState(false);
+  const contentScrollRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
     const requestedTab = sessionStorage.getItem('meetily-settings-tab');
@@ -73,122 +70,91 @@ export default function SettingsPage() {
     loadTranscriptConfig();
   }, [setTranscriptModelConfig]);
 
-  // Keep the active tab underline aligned, and scroll it into view on narrow windows.
+  // Each tab opens at its top instead of inheriting the previous tab's scroll position.
   useLayoutEffect(() => {
-    const activeIndex = TABS.findIndex(tab => tab.value === activeTab);
-    const activeTabElement = tabRefs.current[activeIndex];
-    if (!activeTabElement) return;
-
-    const { offsetLeft, offsetWidth } = activeTabElement;
-    setUnderlineStyle({ left: offsetLeft, width: offsetWidth });
-    activeTabElement.scrollIntoView({ behavior: 'smooth', inline: 'nearest', block: 'nearest' });
+    contentScrollRef.current?.scrollTo({ top: 0 });
   }, [activeTab]);
 
-  // Only show the right-edge fade when the tab strip actually overflows.
-  useLayoutEffect(() => {
-    const el = tabsScrollRef.current;
-    if (!el) return;
-
-    const measure = () => {
-      setTabsOverflow(el.scrollWidth > el.clientWidth + 2);
-    };
-    measure();
-
-    const ro = typeof ResizeObserver !== 'undefined' ? new ResizeObserver(measure) : null;
-    ro?.observe(el);
-    window.addEventListener('resize', measure);
-    return () => {
-      ro?.disconnect();
-      window.removeEventListener('resize', measure);
-    };
-  }, []);
-
   return (
-    <div className="flex h-full min-h-0 min-w-0 max-w-full flex-col overflow-hidden bg-gray-50">
-      {/* Body */}
-      <div className="min-h-0 min-w-0 flex-1 overflow-y-auto overflow-x-hidden">
-        <div className="mx-auto w-full max-w-6xl px-4 py-4 sm:px-6 sm:py-6 lg:px-8">
-          <Tabs value={activeTab} onValueChange={setActiveTab} className="min-w-0 max-w-full">
-            {/* Horizontal scroll for tabs on narrow windows */}
-            <div className="relative min-w-0 max-w-full">
-              <div
-                ref={tabsScrollRef}
-                className="min-w-0 max-w-full overflow-x-auto overscroll-x-contain no-scrollbar"
-                style={{ WebkitOverflowScrolling: 'touch' }}
-              >
-                <TabsList className="relative flex h-auto w-max min-w-full flex-nowrap justify-start gap-0 rounded-none border-b border-gray-200 bg-transparent p-0">
-                  {TABS.map((tab, index) => {
-                    const Icon = tab.icon;
-                    return (
-                      <TabsTrigger
-                        key={tab.value}
-                        value={tab.value}
-                        ref={el => { tabRefs.current[index] = el; }}
-                        className="relative z-10 flex shrink-0 items-center gap-1.5 whitespace-nowrap rounded-none border-0 bg-transparent px-3 py-3 text-sm text-gray-600 shadow-none hover:text-gray-900 data-[state=active]:bg-transparent data-[state=active]:text-blue-600 data-[state=active]:shadow-none sm:gap-2 sm:px-4 sm:py-4"
-                      >
-                        <Icon className="h-4 w-4 shrink-0" />
-                        <span>{t(tab.labelKey)}</span>
-                      </TabsTrigger>
-                    );
-                  })}
-                  <motion.div
-                    className="pointer-events-none absolute bottom-0 z-20 h-0.5 bg-blue-600"
-                    layoutId="settings-tab-underline"
-                    style={{ left: underlineStyle.left, width: underlineStyle.width }}
-                    transition={{ type: 'spring', stiffness: 400, damping: 40 }}
-                  />
-                </TabsList>
-              </div>
-              {/* Fade only when tabs overflow — uses theme bg so it isn't a white blob in dark mode */}
-              {tabsOverflow && (
-                <div
-                  aria-hidden
-                  className="pointer-events-none absolute inset-y-0 right-0 w-10 bg-gradient-to-l from-[var(--af-bg,#0a0c10)] to-transparent"
-                />
-              )}
-            </div>
+    <div className="flex h-full min-h-0 min-w-0 max-w-full overflow-hidden bg-gray-50">
+      <Tabs
+        value={activeTab}
+        onValueChange={setActiveTab}
+        orientation="vertical"
+        className="flex min-h-0 min-w-0 flex-1"
+      >
+        {/* Vertical tab rail: icons only on narrow windows, icons + labels from md up */}
+        <nav className="no-scrollbar w-14 shrink-0 overflow-y-auto overflow-x-hidden border-r border-[var(--af-border)] px-2 py-4 md:w-56 md:px-3 md:py-6">
+          <TabsList className="flex h-auto w-full flex-col items-stretch justify-start gap-1 rounded-none bg-transparent p-0">
+            {TABS.map((tab) => {
+              const Icon = tab.icon;
+              const label = t(tab.labelKey);
+              return (
+                <TabsTrigger
+                  key={tab.value}
+                  value={tab.value}
+                  title={label}
+                  aria-label={label}
+                  className="group relative flex h-10 w-full items-center justify-center gap-3 rounded-[var(--af-radius-sm)] border-0 bg-transparent px-0 text-sm font-medium text-[var(--af-text-2)] shadow-none transition-colors hover:bg-[var(--af-hover)] hover:text-[var(--af-text)] focus-visible:ring-offset-0 data-[state=active]:bg-transparent data-[state=active]:text-[var(--af-text)] data-[state=active]:shadow-none md:justify-start md:px-3"
+                >
+                  {tab.value === activeTab && (
+                    <motion.span
+                      aria-hidden
+                      layoutId="settings-tab-active"
+                      className="absolute inset-0 rounded-[var(--af-radius-sm)] bg-[var(--af-active)]"
+                      transition={{ type: 'spring', stiffness: 500, damping: 40 }}
+                    />
+                  )}
+                  <Icon className="relative z-10 h-4 w-4 shrink-0 group-data-[state=active]:text-[var(--af-accent)]" />
+                  <span className="relative z-10 hidden truncate md:inline">{label}</span>
+                </TabsTrigger>
+              );
+            })}
+          </TabsList>
+        </nav>
 
-            <div className="mt-4 min-w-0 max-w-full break-words sm:mt-6">
-              <TabsContent value="general" className="mt-0 min-w-0 max-w-full focus-visible:ring-0">
-                <PreferenceSettings />
-              </TabsContent>
-              <TabsContent value="recording" className="mt-0 min-w-0 max-w-full focus-visible:ring-0">
-                <RecordingSettings />
-                <div className="mt-6">
-                  <BetaSettings />
-                </div>
-              </TabsContent>
-              <TabsContent value="Transcriptionmodels" className="mt-0 min-w-0 max-w-full focus-visible:ring-0">
-                <TranscriptSettings
-                  transcriptModelConfig={transcriptModelConfig}
-                  setTranscriptModelConfig={setTranscriptModelConfig}
-                />
-                <div className="mt-6">
-                  <DiarizationSettings />
-                </div>
-              </TabsContent>
-              <TabsContent value="summaryModels" className="mt-0 min-w-0 max-w-full focus-visible:ring-0">
-                <SummaryModelSettings />
-              </TabsContent>
-              <TabsContent value="meetingDetection" className="mt-0 min-w-0 max-w-full focus-visible:ring-0">
-                <MeetingDetectionSettings />
-              </TabsContent>
-              <TabsContent value="security" className="mt-0 min-w-0 max-w-full focus-visible:ring-0">
-                <SecuritySettings />
-                <div className="mx-auto mt-6 max-w-2xl">
-                  <LibraryExportCard />
-                </div>
-              </TabsContent>
-              <TabsContent value="localStack" className="mt-0 min-w-0 max-w-full focus-visible:ring-0">
-                <LocalStackStatus />
-              </TabsContent>
-              <TabsContent value="about" className="mt-0 min-w-0 max-w-full focus-visible:ring-0">
-                <AboutSettings />
-              </TabsContent>
-            </div>
-          </Tabs>
+        {/* Body */}
+        <div ref={contentScrollRef} className="min-h-0 min-w-0 flex-1 overflow-y-auto overflow-x-hidden">
+          <div className="mx-auto w-full max-w-5xl min-w-0 break-words px-4 py-4 sm:px-6 sm:py-6 lg:px-8">
+            <TabsContent value="general" className="mt-0 min-w-0 max-w-full focus-visible:ring-0">
+              <PreferenceSettings />
+            </TabsContent>
+            <TabsContent value="recording" className="mt-0 min-w-0 max-w-full focus-visible:ring-0">
+              <RecordingSettings />
+              <div className="mt-6">
+                <BetaSettings />
+              </div>
+            </TabsContent>
+            <TabsContent value="Transcriptionmodels" className="mt-0 min-w-0 max-w-full focus-visible:ring-0">
+              <TranscriptSettings
+                transcriptModelConfig={transcriptModelConfig}
+                setTranscriptModelConfig={setTranscriptModelConfig}
+              />
+              <div className="mt-6">
+                <DiarizationSettings />
+              </div>
+            </TabsContent>
+            <TabsContent value="summaryModels" className="mt-0 min-w-0 max-w-full focus-visible:ring-0">
+              <SummaryModelSettings />
+            </TabsContent>
+            <TabsContent value="meetingDetection" className="mt-0 min-w-0 max-w-full focus-visible:ring-0">
+              <MeetingDetectionSettings />
+            </TabsContent>
+            <TabsContent value="security" className="mt-0 min-w-0 max-w-full focus-visible:ring-0">
+              <SecuritySettings />
+              <div className="mx-auto mt-6 max-w-2xl">
+                <LibraryExportCard />
+              </div>
+            </TabsContent>
+            <TabsContent value="localStack" className="mt-0 min-w-0 max-w-full focus-visible:ring-0">
+              <LocalStackStatus />
+            </TabsContent>
+            <TabsContent value="about" className="mt-0 min-w-0 max-w-full focus-visible:ring-0">
+              <AboutSettings />
+            </TabsContent>
+          </div>
         </div>
-      </div>
+      </Tabs>
     </div>
   );
 }
