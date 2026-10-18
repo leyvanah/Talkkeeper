@@ -1478,6 +1478,7 @@
     "cloudPrivacyLimits": "The automatic pass finds the listed names in every grammatical form, plus addresses, phone numbers, links and long numbers. The local model can miss a name or nickname and will not recognise an identifying detail at all — add those yourself.",
     "keyBackupTitle": "Key backup",
     "keyBackupDescription": "Saves the file that opens the archive. It stays sealed by your password, so keep it apart from the recordings: together they let someone guess the password offline. Windows Hello quick unlock is left out of the copy — it only works on this computer.",
+    "keyBackupRestoreHint": "To restore: quit the app (tray icon → Quit), put the copy in the app's data folder as keystore.json in place of the old file, and start the app again. Do not set a new password before that. Unlock with the password or recovery code that was valid when the copy was saved, then turn Windows Hello on again. If protection was removed and turned on again, the key is new: the old copy will not fit, so save a new one.",
     "keyBackupAction": "Save a copy of the key…",
     "noticeKeyBackupSaved": "The key backup was saved.",
     "loading": "Loading…",
