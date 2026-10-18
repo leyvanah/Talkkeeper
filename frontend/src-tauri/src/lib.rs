@@ -733,6 +733,7 @@ pub fn run() {
             database::repositories::client::api_list_clients,
             database::repositories::client::api_create_client,
             database::repositories::client::api_rename_client,
+            database::repositories::client::api_client_deletion_preview,
             database::repositories::client::api_delete_client,
             database::repositories::client::api_set_meeting_client,
             database::repositories::speaker_role::api_get_speaker_sides,
