@@ -37,8 +37,12 @@ export function LockScreen() {
   const [waitSeconds, setWaitSeconds] = useState(status?.waitSeconds ?? 0)
   // Set when the last failure was a damaged key file: the owner then needs the
   // file's full path to put the saved copy back by hand.
-  const [keystoreDamaged, setKeystoreDamaged] = useState(false)
+  const [keystoreDamaged, setKeystoreDamaged] = useState(status?.keystoreDamaged ?? false)
   const [keystoreFile, setKeystoreFile] = useState<string | null>(null)
+  // The key file could not be read at all when the app started. No password
+  // can open the archive then, so the screen only says how to put it right.
+  const fileUnreadable = status?.keystoreDamaged ?? false
+  const shownError = error ?? (fileUnreadable ? t('errorKeystoreCorrupt') : null)
 
   const passwordField = useRef<HTMLInputElement>(null)
 
@@ -102,6 +106,8 @@ export function LockScreen() {
           return t('errorNoRecoveryCode')
         case 'keystoreCorrupt':
           return t('errorKeystoreCorrupt')
+        case 'keystoreSaveFailed':
+          return t('errorKeystoreSaveFailed')
         case 'quickDeclined':
           return t('errorQuickDeclined')
         case 'quickUnavailable':
@@ -156,7 +162,7 @@ export function LockScreen() {
     }
   }
 
-  const blocked = waitSeconds > 0
+  const blocked = waitSeconds > 0 || fileUnreadable
 
   return (
     <div className="flex h-screen items-center justify-center bg-[var(--af-bg)] px-6">
@@ -208,7 +214,7 @@ export function LockScreen() {
 
             {/* Offered only where the owner turned it on. The password field
                 stays above it: this is the shortcut, not the way in. */}
-            {status?.quickEnabled && (
+            {status?.quickEnabled && !fileUnreadable && (
               <Button
                 type="button"
                 variant="outline"
@@ -258,15 +264,15 @@ export function LockScreen() {
           </form>
         )}
 
-        {blocked && (
+        {waitSeconds > 0 && (
           <p className="mt-4 text-center text-sm text-amber-500">
             {t('waitBeforeNextAttempt', { seconds: waitSeconds })}
           </p>
         )}
 
-        {error && !blocked && (
+        {shownError && waitSeconds <= 0 && (
           <div role="alert" className="mt-4 text-center text-sm">
-            <p className="text-red-500">{error}</p>
+            <p className="text-red-500">{shownError}</p>
             {keystoreDamaged && (
               <>
                 {keystoreFile && (
@@ -282,7 +288,7 @@ export function LockScreen() {
 
         <div className="mt-6 text-center">
           {mode === 'password' ? (
-            status?.hasRecovery ? (
+            fileUnreadable ? null : status?.hasRecovery ? (
               <button
                 type="button"
                 onClick={() => {

@@ -173,6 +173,24 @@ pub(super) async fn recording_lifecycle() -> tokio::sync::MutexGuard<'static, ()
     RECORDING_LIFECYCLE_LOCK.lock().await
 }
 
+/// Waits until a recording that is starting or stopping right now has got
+/// there. Setting or removing the password marks itself first and then calls
+/// this, so a start that passed [`refuse_while_protection_changes`] a moment
+/// earlier is seen by `is_recording` instead of slipping past the check.
+pub async fn wait_for_recording_lifecycle() {
+    drop(RECORDING_LIFECYCLE_LOCK.lock().await);
+}
+
+/// A recording takes the key (or its absence) when its files open. One that
+/// starts while a password is being set or removed would end up sealed with a
+/// key about to be deleted, or in the clear under a new password.
+fn refuse_while_protection_changes() -> Result<(), String> {
+    if crate::security::session::protection_changing() {
+        return Err("Archive protection is being changed".to_string());
+    }
+    Ok(())
+}
+
 // Global recording manager and transcription task to keep them alive during recording
 static RECORDING_MANAGER: Mutex<Option<RecordingManager>> = Mutex::new(None);
 static TRANSCRIPTION_TASK: Mutex<Option<JoinHandle<()>>> = Mutex::new(None);
@@ -277,6 +295,7 @@ pub async fn start_recording_with_meeting_name<R: Runtime>(
     );
 
     let _recording_lifecycle = RECORDING_LIFECYCLE_LOCK.lock().await;
+    refuse_while_protection_changes()?;
 
     // Check if already recording
     let current_recording_state = IS_RECORDING.load(Ordering::SeqCst);
@@ -615,6 +634,7 @@ pub async fn start_recording_with_devices_and_meeting<R: Runtime>(
     );
 
     let _recording_lifecycle = RECORDING_LIFECYCLE_LOCK.lock().await;
+    refuse_while_protection_changes()?;
 
     // Check if already recording
     let current_recording_state = IS_RECORDING.load(Ordering::SeqCst);

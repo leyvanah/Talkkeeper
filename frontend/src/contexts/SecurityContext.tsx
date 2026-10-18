@@ -40,6 +40,9 @@ export interface SecurityStatus {
   quickAvailable: boolean
   /** Whether the owner turned quick unlock on. Off unless they did. */
   quickEnabled: boolean
+  /** Whether the key file is there but could not be read. The archive then
+   *  stays locked until the saved copy is put in its place. */
+  keystoreDamaged: boolean
 }
 
 /**
