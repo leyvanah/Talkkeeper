@@ -9,53 +9,10 @@
  * `checkNewPassword`; this only draws the fields and says what is missing.
  */
 
-import { forwardRef, useId, useState } from 'react'
+import { useId } from 'react'
 import { useTranslations } from 'next-intl'
-import { Eye, EyeOff } from 'lucide-react'
-import { Input } from '@/components/ui/input'
+import { PasswordInput } from './PasswordInput'
 import { MIN_PASSWORD_LENGTH, checkNewPassword } from '@/lib/password-rules'
-
-/** A password field with its own show/hide toggle. */
-const PasswordInput = forwardRef<
-  HTMLInputElement,
-  {
-    value: string
-    onChange: (value: string) => void
-    placeholder: string
-    disabled?: boolean
-    invalid?: boolean
-    describedBy?: string
-  }
->(function PasswordInput({ value, onChange, placeholder, disabled, invalid, describedBy }, ref) {
-  const t = useTranslations('security')
-  const [reveal, setReveal] = useState(false)
-  return (
-    <div className="relative">
-      <Input
-        ref={ref}
-        type={reveal ? 'text' : 'password'}
-        value={value}
-        onChange={(event) => onChange(event.target.value)}
-        placeholder={placeholder}
-        autoComplete="new-password"
-        disabled={disabled}
-        aria-label={placeholder}
-        aria-invalid={invalid || undefined}
-        aria-describedby={describedBy}
-        className="pr-10 [&::-ms-reveal]:hidden"
-      />
-      <button
-        type="button"
-        onClick={() => setReveal((shown) => !shown)}
-        className="absolute inset-y-0 right-0 flex w-10 items-center justify-center text-[var(--af-text-2)] hover:text-[var(--af-text)]"
-        aria-label={reveal ? t('hidePassword') : t('showPassword')}
-        tabIndex={-1}
-      >
-        {reveal ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
-      </button>
-    </div>
-  )
-})
 
 export function NewPasswordFields({
   password,
@@ -83,6 +40,7 @@ export function NewPasswordFields({
         value={password}
         onChange={onPasswordChange}
         placeholder={t('newPasswordPlaceholder')}
+        autoComplete="new-password"
         disabled={disabled}
         invalid={check.tooShort}
         describedBy={showLength ? lengthHint : undefined}
@@ -91,6 +49,7 @@ export function NewPasswordFields({
         value={repeat}
         onChange={onRepeatChange}
         placeholder={t('confirmPasswordPlaceholder')}
+        autoComplete="new-password"
         disabled={disabled}
         invalid={check.mismatch}
         describedBy={check.mismatch ? matchHint : undefined}
