@@ -25,6 +25,7 @@ import {
   type RecoveryEvent,
   type RecoveryNotice,
 } from '@/lib/recovery-notice'
+import { forgetPersonAnswers } from '@/lib/person-page-memory'
 
 /** What the window should be showing. */
 export type LockState = 'unconfigured' | 'locked' | 'unlocked'
@@ -163,6 +164,12 @@ export function SecurityProvider({ children }: { children: React.ReactNode }) {
       unlisten.then((stop) => stop())
     }
   }, [refresh])
+
+  // Answers about people are kept in memory between pages; a locked archive
+  // should not keep them waiting there.
+  useEffect(() => {
+    if (status?.state === 'locked') forgetPersonAnswers()
+  }, [status?.state])
 
   // Presence, reported at a coarse interval rather than per keystroke: the idle
   // timeout is measured in minutes, so a half-minute of granularity is plenty
