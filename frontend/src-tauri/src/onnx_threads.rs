@@ -9,7 +9,14 @@
 //!
 //! All the numbers live here, keyed by what a session does, so that one place
 //! decides how much of the machine inference may take.
+//!
+//! Sessions built by a dependency are out of reach of [`budget`]: the silero
+//! VAD hardcodes four intra-op threads, and with spinning on and a run every
+//! 32 ms on each source, its pools never went to sleep. [`init_environment`]
+//! gives the process a global pool of one thread that never spins; ORT puts
+//! every session on it unless the session asks for its own, which ours do.
 
+use ort::environment::GlobalThreadPoolOptions;
 use ort::session::builder::SessionBuilder;
 
 /// What a session is for; each role has its own intra-op thread count.
@@ -50,10 +57,36 @@ pub fn intra_threads(role: Role) -> usize {
     }
 }
 
+/// Threads of the global pool, which serves every session not built through
+/// [`budget`]. One thread runs the graph on the caller and starts no workers.
+const GLOBAL_INTRA_THREADS: usize = 1;
+
+/// Install the process-wide ORT environment with the global pool. Must run
+/// before the first session is built; later calls change nothing.
+pub fn init_environment() {
+    let options = GlobalThreadPoolOptions::default()
+        .with_intra_threads(GLOBAL_INTRA_THREADS)
+        .and_then(|o| o.with_inter_threads(INTER_THREADS))
+        .and_then(|o| o.with_spin_control(SPINNING));
+    let committed = options.and_then(|o| {
+        ort::init()
+            .with_name("talkkeeper")
+            .with_global_thread_pool(o)
+            .commit()
+    });
+    match committed {
+        Ok(true) => log::info!("ONNX Runtime: global pool of {GLOBAL_INTRA_THREADS} thread, no spinning"),
+        Ok(false) => log::warn!("ONNX Runtime environment already existed; global pool not installed"),
+        Err(e) => log::warn!("ONNX Runtime global pool not installed: {e}"),
+    }
+}
+
 /// Sequential graph execution with the thread budget of `role`, and pool
-/// threads that block instead of spinning between runs.
+/// threads that block instead of spinning between runs. The session keeps a
+/// pool of its own rather than sharing the one-thread global pool.
 pub fn budget(builder: SessionBuilder, role: Role) -> ort::Result<SessionBuilder> {
     builder
+        .with_independent_thread_pool()?
         .with_parallel_execution(false)?
         .with_intra_threads(intra_threads(role))?
         .with_inter_threads(INTER_THREADS)?
@@ -109,6 +142,60 @@ mod bench {
 
     fn env_path(key: &str) -> PathBuf {
         PathBuf::from(std::env::var(key).unwrap_or_else(|_| panic!("{key} is not set")))
+    }
+
+    /// The two live VADs (microphone and system), fed 50 ms windows in real
+    /// time for 20 s, as the pipeline does. No models needed: silero embeds
+    /// its own. `TALKKEEPER_BENCH_NO_GLOBAL_POOL=1` measures the old setup.
+    ///
+    /// ```text
+    /// cargo test --lib onnx_threads::bench::vad_live_cpu -- --ignored --nocapture
+    /// ```
+    #[test]
+    #[ignore = "paced benchmark, 20 s"]
+    fn vad_live_cpu() {
+        const WINDOW: usize = 800; // 50 ms at 16 kHz
+        const WINDOWS: usize = 400; // 20 s
+        let global_pool = std::env::var_os("TALKKEEPER_BENCH_NO_GLOBAL_POOL").is_none();
+        if global_pool {
+            super::init_environment();
+        }
+
+        let (cpu0, wall0) = (cpu_secs(), Instant::now());
+        let sources: Vec<_> = (0..2)
+            .map(|source| {
+                std::thread::spawn(move || {
+                    let mut vad = crate::audio::vad::ContinuousVadProcessor::new(16_000, 400)
+                        .expect("vad");
+                    // Alternating seconds of tone and near-silence, so the VAD
+                    // goes through both states.
+                    let mut n = 0usize;
+                    for i in 0..WINDOWS {
+                        let block: Vec<f32> = (0..WINDOW)
+                            .map(|_| {
+                                n += 1;
+                                let t = n as f32 / 16_000.0;
+                                let on = (t as usize + source) % 2 == 0;
+                                let amp = if on { 0.3 } else { 0.001 };
+                                amp * (t * 2.0 * std::f32::consts::PI * 220.0).sin()
+                            })
+                            .collect();
+                        vad.process_audio(&block).expect("process");
+                        let due = wall0 + Duration::from_millis(50 * (i as u64 + 1));
+                        std::thread::sleep(due.saturating_duration_since(Instant::now()));
+                    }
+                })
+            })
+            .collect();
+        for source in sources {
+            source.join().expect("vad thread");
+        }
+        let (cpu, wall) = (cpu_secs() - cpu0, wall0.elapsed().as_secs_f64());
+        println!(
+            "vad x2 ({}): {wall:.1}s wall, {cpu:.2}s cpu = {:.2} cores avg",
+            if global_pool { "global pool, 1 thread" } else { "silero default, 4 threads" },
+            cpu / wall
+        );
     }
 
     #[test]

@@ -396,6 +396,8 @@ pub fn get_language_preference_internal() -> Option<String> {
 pub fn run() {
     log::set_max_level(log::LevelFilter::Info);
     crash_report::install_panic_hook();
+    // Before any model loads: sessions built by dependencies take this pool.
+    onnx_threads::init_environment();
 
     // Set the unpackaged Windows app identity before Tauri creates any HWNDs.
     // The taskbar and installer shortcuts use this same AUMID.
