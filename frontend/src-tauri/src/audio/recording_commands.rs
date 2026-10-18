@@ -284,6 +284,9 @@ pub async fn start_recording_with_meeting_name<R: Runtime>(
     if current_recording_state {
         return Err("Recording already in progress".to_string());
     }
+    // From here a discard of a too-short take must not reach the recording
+    // before this one.
+    super::recording_preferences::recording_starting();
 
     let engine_lifecycle_guard = engine_for_live_text(&app).await;
     let live = engine_lifecycle_guard.is_some();
@@ -622,6 +625,9 @@ pub async fn start_recording_with_devices_and_meeting<R: Runtime>(
     if current_recording_state {
         return Err("Recording already in progress".to_string());
     }
+    // From here a discard of a too-short take must not reach the recording
+    // before this one.
+    super::recording_preferences::recording_starting();
 
     let engine_lifecycle_guard = engine_for_live_text(&app).await;
     let live = engine_lifecycle_guard.is_some();
@@ -1191,6 +1197,12 @@ async fn stop_recording_inner<R: Runtime>(
         ),
         _ => (None, None),
     };
+
+    // Remembered before the window hears of the stop: a discard of a
+    // too-short take deletes this folder and no other.
+    super::recording_preferences::recording_stopped(
+        folder_path_str.as_ref().map(std::path::PathBuf::from),
+    );
 
     info!("📤 Preparing recording metadata for frontend save");
     info!("   folder_path: {:?}", folder_path_str);
