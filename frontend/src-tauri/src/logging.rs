@@ -708,9 +708,12 @@ mod tests {
                 // `.chars()` only as `.chars().count()`; `.chars().take(80)` is text.
                 let counted = matches!(args.get(k + 6), Some((Token::Ident(m), _)) if m == "count");
                 let size_only = SIZE_ONLY.contains(&method) && (method != "chars" || counted);
+                // `reply.cut_off` is a field of the reply, judged by its own
+                // name: `reply.text` is caught on `text`.
+                let field = !method.is_empty() && args.get(k + 3).map(|(t, _)| t) != Some(&Token::Punct('('));
                 let called = after == Some(&Token::Punct('('));
                 let path = after == Some(&Token::Punct(':'));
-                if !(size_only || called || path) {
+                if !(size_only || field || called || path) {
                     found.push(format!("{line}: {name}"));
                 }
             }
@@ -737,10 +740,12 @@ mod tests {
             log::debug!("result: '{}'", result.text);
             warn!("said {text}");
             perf_debug!("start: {}", text.chars().take(80).collect::<String>());
+            info!("answer: {}", reply.text);
+            info!("said {}", transcript.trim());
         "#;
         assert_eq!(
             meeting_text_in_log_calls(leaky),
-            vec!["2: transcript", "3: text", "4: {text}", "5: text"]
+            vec!["2: transcript", "3: text", "4: {text}", "5: text", "6: text", "7: transcript"]
         );
 
         let clean = r#"
@@ -749,6 +754,7 @@ mod tests {
             info!("{}", report.summary(direction));
             let s = "info!(\"in a string\", text)";
             info!("summary {} chars, empty: {}", summary.len(), notes.is_empty());
+            info!("cut off: {}", if reply.cut_off { "yes" } else { "no" });
         "#;
         assert!(meeting_text_in_log_calls(clean).is_empty());
     }
