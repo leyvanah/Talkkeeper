@@ -27,6 +27,7 @@ import { useRecordingNotes } from '@/hooks/useMeetingNotes';
 import { recordingService } from '@/services/recordingService';
 import { applyAppTheme, getSavedAppTheme } from '@/lib/app-theme';
 import { barPaths, peelFor, revealFor } from '@/lib/minibar-dock';
+import { settleRemaining } from '@/lib/press-settle';
 import { ARM_WINDOW_MS, pressTwoStep } from '@/lib/two-step-press';
 
 /** Room the window leaves on each side for the corners of the docked tab. */
@@ -85,8 +86,9 @@ export default function MiniBarPage() {
   // Once stopping begins the timer must freeze immediately, even though the
   // bar stays up until the recording is actually finalised (see below).
   const [isStopping, setIsStopping] = useState(false);
-  // A pause or resume on its way to Rust. The ref closes the gap before the
-  // disabled button re-renders, so a double click sends one command.
+  // A pause or resume on its way to Rust, held busy for at least
+  // PRESS_SETTLE_MS. The ref closes the gap before the disabled button
+  // re-renders; the hold outlasts a double click, so it sends one command.
   const [isChangingPause, setIsChangingPause] = useState(false);
   const pauseInFlight = useRef(false);
   // Bumped by every pause/resume, so a poll that left before it cannot bring
@@ -174,12 +176,15 @@ export default function MiniBarPage() {
     pauseCommands.current += 1;
     setIsChangingPause(true);
     setStopArmedAt(null);
+    const startedAt = performance.now();
     try {
       await invoke(isPaused ? 'resume_recording' : 'pause_recording');
       setIsPaused(!isPaused);
     } catch (e) {
       console.error('Compact bar: pause/resume failed', e);
     } finally {
+      const wait = settleRemaining(startedAt, performance.now());
+      if (wait > 0) await new Promise((resolve) => window.setTimeout(resolve, wait));
       pauseInFlight.current = false;
       pauseCommands.current += 1;
       setIsChangingPause(false);
