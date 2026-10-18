@@ -263,14 +263,19 @@ export default function GlobalSearchDialog() {
                       {result.title.trim().charAt(0).toUpperCase() || '?'}
                     </span>
                     <span className="min-w-0 flex-1">
-                      <span className="block truncate text-sm font-medium text-[var(--af-text)]">{result.title}</span>
+                      {/* Two clients can each have a "Тест А": the client tells the rows apart. */}
+                      <span className="block truncate text-sm font-medium text-[var(--af-text)]">
+                        {result.clientDisplayName
+                          ? t('searchPersonWithClient', { name: result.title, client: result.clientDisplayName })
+                          : result.title}
+                      </span>
                       <span className="mt-0.5 block truncate text-xs text-[var(--af-text-2)]">
                         {result.snippet || t('searchPersonSnippet')}
                       </span>
                     </span>
                     {result.meetingCount != null && (
                       <span className="shrink-0 text-xs tabular-nums text-[var(--af-text-3)]">
-                        {result.meetingCount} meeting{result.meetingCount === 1 ? '' : 's'}
+                        {t('searchPersonMeetings', { count: result.meetingCount })}
                       </span>
                     )}
                   </CommandItem>

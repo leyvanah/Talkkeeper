@@ -46,6 +46,10 @@ pub struct GlobalSearchResult {
     pub audio_start_time: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub meeting_count: Option<i64>,
+    /// The client a person belongs to. Two clients can each have an "Anna",
+    /// and the name alone does not say whose profile a row opens.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub client_display_name: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -65,6 +69,8 @@ pub struct PersonMeeting {
 pub struct PersonProfile {
     pub id: String,
     pub display_name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub client_display_name: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub notes: Option<String>,
     pub meeting_count: i64,
@@ -139,18 +145,19 @@ impl PeopleRepository {
         let needle = normalize_person_name(query);
         let mut ranked = Vec::new();
 
-        let people = sqlx::query_as::<_, (String, String, Option<String>, i64)>(
-            "SELECT p.id, p.display_name, p.notes, COUNT(DISTINCT ps.meeting_id) \
+        let people = sqlx::query_as::<_, (String, String, Option<String>, i64, Option<String>)>(
+            "SELECT p.id, p.display_name, p.notes, COUNT(DISTINCT ps.meeting_id), c.display_name \
              FROM people p \
              LEFT JOIN person_speakers ps ON ps.person_id = p.id \
-             GROUP BY p.id, p.display_name, p.notes, p.updated_at \
+             LEFT JOIN clients c ON c.id = p.client_id \
+             GROUP BY p.id, p.display_name, p.notes, p.updated_at, c.display_name \
              ORDER BY p.updated_at DESC",
         )
         .fetch_all(pool)
         .await?;
 
         let mut taken = 0usize;
-        for (id, display_name, notes, meeting_count) in people {
+        for (id, display_name, notes, meeting_count, client_display_name) in people {
             if taken == wanted {
                 break;
             }
@@ -160,6 +167,8 @@ impl PeopleRepository {
             if !normalized.contains(&needle) {
                 continue;
             }
+            let client_display_name =
+                fields::open_opt(fields::CLIENT_DISPLAY_NAME, client_display_name)?;
             taken += 1;
             ranked.push(RankedResult {
                 score: match_quality(&normalized, &needle),
@@ -171,11 +180,14 @@ impl PeopleRepository {
                     person_id: Some(id),
                     transcript_id: None,
                     title: display_name,
-                    snippet: notes.unwrap_or_else(|| format!("{} mapped meetings", meeting_count)),
+                    // Empty without notes: the interface has its own words for
+                    // that, in the owner's language.
+                    snippet: notes.unwrap_or_default(),
                     timestamp: None,
                     speaker: None,
                     audio_start_time: None,
                     meeting_count: Some(meeting_count),
+                    client_display_name,
                 },
             });
         }
@@ -212,6 +224,7 @@ impl PeopleRepository {
                     speaker: None,
                     audio_start_time: None,
                     meeting_count: None,
+                    client_display_name: None,
                 },
             });
         }
@@ -272,6 +285,7 @@ impl PeopleRepository {
                         speaker,
                         audio_start_time,
                         meeting_count: None,
+                        client_display_name: None,
                     },
                 });
             }
@@ -316,6 +330,7 @@ impl PeopleRepository {
                         speaker: None,
                         audio_start_time: None,
                         meeting_count: None,
+                        client_display_name: None,
                     },
                 });
             }
@@ -335,8 +350,10 @@ impl PeopleRepository {
         pool: &SqlitePool,
         person_id: &str,
     ) -> Result<PersonProfile, sqlx::Error> {
-        let person = sqlx::query_as::<_, (String, String, Option<String>)>(
-            "SELECT id, display_name, notes FROM people WHERE id = ?",
+        let person = sqlx::query_as::<_, (String, String, Option<String>, Option<String>)>(
+            "SELECT p.id, p.display_name, p.notes, c.display_name \
+             FROM people p LEFT JOIN clients c ON c.id = p.client_id \
+             WHERE p.id = ?",
         )
         .bind(person_id)
         .fetch_optional(pool)
@@ -393,6 +410,7 @@ impl PeopleRepository {
         Ok(PersonProfile {
             id: person.0,
             display_name: fields::open(fields::PERSON_NAME, &person.1)?,
+            client_display_name: fields::open_opt(fields::CLIENT_DISPLAY_NAME, person.3)?,
             notes: fields::open_opt(fields::PERSON_NOTES, person.2)?,
             meeting_count: meetings.len() as i64,
             message_count,
@@ -1576,9 +1594,10 @@ mod tests {
     async fn search_pool() -> sqlx::SqlitePool {
         let pool = sqlx::SqlitePool::connect(":memory:").await.unwrap();
         sqlx::raw_sql(
-            "CREATE TABLE people (id TEXT PRIMARY KEY, display_name TEXT NOT NULL, \
-                 normalized_name TEXT NOT NULL UNIQUE, notes TEXT, created_at TEXT NOT NULL, \
-                 updated_at TEXT NOT NULL); \
+            "CREATE TABLE clients (id TEXT PRIMARY KEY, display_name TEXT NOT NULL); \
+             CREATE TABLE people (id TEXT PRIMARY KEY, display_name TEXT NOT NULL, \
+                 normalized_name TEXT NOT NULL, notes TEXT, created_at TEXT NOT NULL, \
+                 updated_at TEXT NOT NULL, client_id TEXT); \
              CREATE TABLE person_speakers (person_id TEXT NOT NULL, meeting_id TEXT NOT NULL, \
                  speaker_label TEXT NOT NULL, UNIQUE(meeting_id, speaker_label)); \
              CREATE TABLE meeting_speaker_roles (meeting_id TEXT NOT NULL, \
@@ -1707,5 +1726,36 @@ mod tests {
             .unwrap();
         assert_eq!(results.len(), 2);
         assert_eq!(results[0].speaker.as_deref(), Some("Анна"));
+    }
+
+    #[tokio::test]
+    async fn a_person_row_names_the_client_and_leaves_the_wording_to_the_interface() {
+        let pool = search_pool().await;
+        sqlx::raw_sql(
+            "INSERT INTO clients VALUES ('c1', 'Клиент 1'); \
+             INSERT INTO people VALUES \
+                 ('p1', 'Тест А', 'тест а', NULL, 'now', 'now', 'c1'), \
+                 ('p2', 'Тест Б', 'тест б', NULL, 'now', 'now', NULL);",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let with_client = PeopleRepository::global_search(&pool, "тест а", None)
+            .await
+            .unwrap();
+        assert_eq!(with_client.len(), 1);
+        assert_eq!(
+            with_client[0].client_display_name.as_deref(),
+            Some("Клиент 1")
+        );
+        // No notes: an empty snippet, not English text in a Russian interface.
+        assert_eq!(with_client[0].snippet, "");
+
+        let without_client = PeopleRepository::global_search(&pool, "тест б", None)
+            .await
+            .unwrap();
+        assert_eq!(without_client.len(), 1);
+        assert_eq!(without_client[0].client_display_name, None);
     }
 }
