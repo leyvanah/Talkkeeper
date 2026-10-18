@@ -26,7 +26,9 @@ Talkkeeper receive no data from the app.
   built-in summary model).
 - **The application log** (`logs/` in the data folder). It is written to hold
   states, counts, durations and identifiers, not what was said; it may hold
-  file paths on your computer. It is not encrypted.
+  file paths on your computer. It is not encrypted. Earlier development
+  builds wrote recognised speech into it, so the log is erased once when the
+  app is updated, and again whenever an archive password is set.
 
 ## Encryption at rest
 

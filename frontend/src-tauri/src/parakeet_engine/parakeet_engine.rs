@@ -512,7 +512,7 @@ impl ParakeetEngine {
             .transcribe_samples(audio_data)
             .map_err(|e| anyhow!("Parakeet transcription failed: {}", e))?;
 
-        log::debug!("Parakeet transcription result: '{}'", result.text);
+        log::debug!("Parakeet transcription result: {} chars", result.text.chars().count());
 
         Ok(result.text)
     }

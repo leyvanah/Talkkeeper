@@ -11,7 +11,13 @@
 //! ids, states and durations — never transcript or summary text. Two guards
 //! back that rule up rather than trusting it: only `Info` and louder is written
 //! by default, and every line is cut at [`MAX_LINE_CHARS`], so a stray body
-//! dump cannot quietly fill the file with somebody's words.
+//! dump cannot quietly fill the file with somebody's words. A test reads the
+//! sources for log calls that pass a transcript, summary, note or title along
+//! (`no_log_call_passes_meeting_text`).
+//!
+//! Versions before that rule held wrote every live transcript line here, so
+//! the files left by them are erased once on the first start of this one, and
+//! again whenever the archive is given a password ([`erase`]).
 //!
 //! stderr keeps behaving exactly as before, `RUST_LOG` included: the terminal
 //! logger is the same `env_logger` instance, and this type only adds a second
@@ -19,8 +25,8 @@
 
 use std::fs::{File, OpenOptions};
 use std::io::{BufWriter, Write};
-use std::path::PathBuf;
-use std::sync::Mutex;
+use std::path::{Path, PathBuf};
+use std::sync::{Mutex, OnceLock};
 
 use log::{LevelFilter, Log, Metadata, Record};
 
@@ -35,6 +41,18 @@ const MAX_LINE_CHARS: usize = 2000;
 
 const LOG_FILE_NAME: &str = "meetily.log";
 const PREVIOUS_LOG_FILE_NAME: &str = "meetily.prev.log";
+
+/// Left in the log folder once the files written by older versions, which
+/// logged live transcript text, have been erased. Its presence is the whole
+/// signal; the content only says what it is to someone who opens the folder.
+const OLD_LOGS_ERASED_MARKER: &str = "old-logs-erased";
+
+/// The open log file, shared with [`erase`]. Empty when the file could not be
+/// opened or the logger was never installed (tests).
+static FILE: OnceLock<Mutex<FileSink>> = OnceLock::new();
+
+/// The log folder, for [`erase`] to reach the files even without [`FILE`].
+static LOG_DIR: OnceLock<PathBuf> = OnceLock::new();
 
 struct FileSink {
     writer: BufWriter<File>,
@@ -94,13 +112,70 @@ impl FileSink {
         let _ = self.writer.flush();
         self.written += line.len() as u64 + 2;
     }
+
+    /// Empties the current file and removes the previous generation, keeping
+    /// the sink open so the next record still lands in `meetily.log`.
+    fn erase(&mut self) -> std::io::Result<()> {
+        let _ = self.writer.flush();
+        // Truncate through a second handle: on Windows an append-only handle
+        // may not shorten its file. The one kept here goes on writing at the
+        // new end, which is now the start.
+        OpenOptions::new().write(true).truncate(true).open(&self.path)?;
+        self.written = 0;
+        remove_if_present(&self.previous_path)
+    }
+}
+
+fn remove_if_present(path: &Path) -> std::io::Result<()> {
+    match std::fs::remove_file(path) {
+        Err(error) if error.kind() != std::io::ErrorKind::NotFound => Err(error),
+        _ => Ok(()),
+    }
+}
+
+fn erase_files_in(dir: &Path) -> std::io::Result<()> {
+    remove_if_present(&dir.join(LOG_FILE_NAME))?;
+    remove_if_present(&dir.join(PREVIOUS_LOG_FILE_NAME))
+}
+
+/// Erases the logs left by versions that wrote transcript text into them —
+/// once: the marker it leaves keeps later starts from erasing this version's
+/// own, clean log. A failure leaves no marker, so the next start tries again.
+fn erase_logs_from_older_versions(dir: &Path) -> std::io::Result<bool> {
+    let marker = dir.join(OLD_LOGS_ERASED_MARKER);
+    if marker.exists() {
+        return Ok(false);
+    }
+    erase_files_in(dir)?;
+    std::fs::write(
+        &marker,
+        "Logs from versions that wrote transcript text were erased.\r\n",
+    )?;
+    Ok(true)
+}
+
+/// Erases the application log: the current file is emptied, the previous one
+/// removed. Called when the archive is given a password — the log is not
+/// encrypted, and whatever an older version wrote into it must not outlive
+/// the moment the owner asked for the archive to be protected.
+pub fn erase() -> std::io::Result<()> {
+    if let Some(file) = FILE.get() {
+        let mut sink = file
+            .lock()
+            .map_err(|_| std::io::Error::other("log file lock poisoned"))?;
+        return sink.erase();
+    }
+    match LOG_DIR.get() {
+        Some(dir) => erase_files_in(dir),
+        None => Ok(()),
+    }
 }
 
 /// Writes every record to the log file and hands the ones stderr wants to
 /// `env_logger`, so a terminal run looks the same as it always did.
 struct TeeLogger {
     terminal: env_logger::Logger,
-    file: Mutex<FileSink>,
+    file: &'static Mutex<FileSink>,
     file_level: LevelFilter,
 }
 
@@ -195,6 +270,14 @@ pub fn init(log_dir: PathBuf) {
         .build();
     let terminal_level = terminal.filter();
 
+    if FILE.get().is_some() {
+        return;
+    }
+    let _ = LOG_DIR.set(log_dir.clone());
+    // Before the file is opened, so nothing is holding it. The outcome is
+    // reported once the logger is up and there is somewhere to say it.
+    let erased_old_logs = erase_logs_from_older_versions(&log_dir);
+
     let sink = match FileSink::open(log_dir.clone()) {
         Ok(sink) => sink,
         Err(error) => {
@@ -210,15 +293,28 @@ pub fn init(log_dir: PathBuf) {
 
     let file_level = LevelFilter::Info;
     let max_level = terminal_level.max(file_level);
+    if FILE.set(Mutex::new(sink)).is_err() {
+        return;
+    }
+    let Some(file) = FILE.get() else {
+        return;
+    };
     let logger = TeeLogger {
         terminal,
-        file: Mutex::new(sink),
+        file,
         file_level,
     };
 
     if log::set_boxed_logger(Box::new(logger)).is_ok() {
         log::set_max_level(max_level);
         log::info!("Log file: {}", log_dir.join(LOG_FILE_NAME).display());
+        match erased_old_logs {
+            Ok(true) => log::info!("Logs written by older versions were erased"),
+            Ok(false) => {}
+            Err(error) => log::warn!(
+                "Logs written by older versions could not be erased yet ({error}); trying again next start"
+            ),
+        }
     }
 }
 
@@ -307,5 +403,375 @@ mod tests {
         assert!(contents.contains("second run"));
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    fn test_dir() -> PathBuf {
+        std::env::temp_dir().join(format!("meetily-log-test-{}", uuid::Uuid::new_v4()))
+    }
+
+    #[test]
+    fn erasing_empties_the_open_file_and_removes_the_previous_one() {
+        let dir = test_dir();
+        let mut sink = FileSink::open(dir.clone()).unwrap();
+        sink.write_line("old line");
+        std::fs::write(dir.join(PREVIOUS_LOG_FILE_NAME), "older line").unwrap();
+
+        sink.erase().unwrap();
+        sink.write_line("new line");
+
+        let contents = std::fs::read_to_string(dir.join(LOG_FILE_NAME)).unwrap();
+        assert_eq!(contents, "new line\r\n");
+        assert!(!dir.join(PREVIOUS_LOG_FILE_NAME).exists());
+
+        drop(sink);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn logs_from_older_versions_are_erased_once() {
+        let dir = test_dir();
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join(LOG_FILE_NAME), "transcribed: secret phrase").unwrap();
+        std::fs::write(dir.join(PREVIOUS_LOG_FILE_NAME), "transcribed: secret").unwrap();
+
+        assert!(erase_logs_from_older_versions(&dir).unwrap());
+        assert!(!dir.join(LOG_FILE_NAME).exists());
+        assert!(!dir.join(PREVIOUS_LOG_FILE_NAME).exists());
+
+        // This version's own log survives every later start.
+        std::fs::write(dir.join(LOG_FILE_NAME), "started").unwrap();
+        assert!(!erase_logs_from_older_versions(&dir).unwrap());
+        assert_eq!(std::fs::read_to_string(dir.join(LOG_FILE_NAME)).unwrap(), "started");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_fresh_install_has_nothing_to_erase_and_is_marked_anyway() {
+        let dir = test_dir();
+        std::fs::create_dir_all(&dir).unwrap();
+        assert!(erase_logs_from_older_versions(&dir).unwrap());
+        assert!(dir.join(OLD_LOGS_ERASED_MARKER).is_file());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // ---- The rule in the module comment, checked against the sources ----
+
+    /// Names that, in this code base, hold what a meeting said or what was
+    /// written about it. A log call may say how long one is, never pass it on.
+    const MEETING_TEXT_NAMES: &[&str] = &[
+        "transcript",
+        "text",
+        "cleaned_text",
+        "cleaned_result",
+        "final_result",
+        "final_text",
+        "trimmed",
+        "summary",
+        "markdown",
+        "final_markdown",
+        "answer",
+        "question",
+        "prompt",
+        "note",
+        "notes",
+        "title",
+        "meeting_name",
+        "reply",
+        "content",
+    ];
+
+    /// Every macro that ends up in `log`, the crate's own wrappers included.
+    const LOG_MACROS: &[&str] = &[
+        "trace",
+        "debug",
+        "info",
+        "warn",
+        "error",
+        "perf_debug",
+        "perf_trace",
+        "async_debug",
+        "async_info",
+        "async_warn",
+    ];
+
+    /// What may follow such a name: its size or presence, never its value.
+    const SIZE_ONLY: &[&str] = &["len", "is_empty", "is_some", "is_none", "chars"];
+
+    #[derive(Debug, PartialEq)]
+    enum Token {
+        Ident(String),
+        Str(String),
+        Punct(char),
+    }
+
+    /// Just enough of a Rust lexer to tell code from comments, strings and
+    /// char literals. Returns each token with its line.
+    fn tokenize(source: &str) -> Vec<(Token, usize)> {
+        let chars: Vec<char> = source.chars().collect();
+        let mut tokens = Vec::new();
+        let mut line = 1;
+        let mut i = 0;
+        let is_ident = |c: char| c.is_alphanumeric() || c == '_';
+        while i < chars.len() {
+            let c = chars[i];
+            let next = chars.get(i + 1).copied();
+            if c == '\n' {
+                line += 1;
+                i += 1;
+            } else if c.is_whitespace() {
+                i += 1;
+            } else if c == '/' && next == Some('/') {
+                while i < chars.len() && chars[i] != '\n' {
+                    i += 1;
+                }
+            } else if c == '/' && next == Some('*') {
+                let mut depth = 0;
+                while i < chars.len() {
+                    if chars[i] == '/' && chars.get(i + 1) == Some(&'*') {
+                        depth += 1;
+                        i += 2;
+                    } else if chars[i] == '*' && chars.get(i + 1) == Some(&'/') {
+                        depth -= 1;
+                        i += 2;
+                        if depth == 0 {
+                            break;
+                        }
+                    } else {
+                        if chars[i] == '\n' {
+                            line += 1;
+                        }
+                        i += 1;
+                    }
+                }
+            } else if c == '"' {
+                let start_line = line;
+                let mut text = String::new();
+                i += 1;
+                while i < chars.len() && chars[i] != '"' {
+                    if chars[i] == '\\' {
+                        text.push(chars[i]);
+                        i += 1;
+                    }
+                    if let Some(&ch) = chars.get(i) {
+                        if ch == '\n' {
+                            line += 1;
+                        }
+                        text.push(ch);
+                    }
+                    i += 1;
+                }
+                i += 1;
+                tokens.push((Token::Str(text), start_line));
+            } else if c == 'r'
+                && matches!(next, Some('"') | Some('#'))
+                && (i == 0 || !is_ident(chars[i - 1]) || chars[i - 1] == 'b')
+                && {
+                    let mut j = i + 1;
+                    while chars.get(j) == Some(&'#') {
+                        j += 1;
+                    }
+                    chars.get(j) == Some(&'"')
+                }
+            {
+                let start_line = line;
+                let mut hashes = 0;
+                i += 1;
+                while chars[i] == '#' {
+                    hashes += 1;
+                    i += 1;
+                }
+                i += 1;
+                let mut text = String::new();
+                loop {
+                    if i >= chars.len() {
+                        break;
+                    }
+                    if chars[i] == '"' && (1..=hashes).all(|k| chars.get(i + k) == Some(&'#')) {
+                        i += 1 + hashes;
+                        break;
+                    }
+                    if chars[i] == '\n' {
+                        line += 1;
+                    }
+                    text.push(chars[i]);
+                    i += 1;
+                }
+                // A `b` before the `r` was already pushed as an identifier.
+                if let Some((Token::Ident(prev), _)) = tokens.last() {
+                    if prev == "b" {
+                        tokens.pop();
+                    }
+                }
+                tokens.push((Token::Str(text), start_line));
+            } else if c == '\'' {
+                if next == Some('\\') {
+                    // An escaped char literal: '\n', '\'', '\u{..}'.
+                    i += 2;
+                    while i < chars.len() && chars[i] != '\'' {
+                        i += 1;
+                    }
+                    i += 1;
+                } else if chars.get(i + 2) == Some(&'\'') {
+                    i += 3;
+                } else {
+                    // A lifetime or a label.
+                    i += 1;
+                }
+            } else if is_ident(c) {
+                let start = i;
+                while i < chars.len() && is_ident(chars[i]) {
+                    i += 1;
+                }
+                tokens.push((Token::Ident(chars[start..i].iter().collect()), line));
+            } else {
+                tokens.push((Token::Punct(c), line));
+                i += 1;
+            }
+        }
+        tokens
+    }
+
+    /// The names a format string reads by itself: `{text}`, `{text:?}`.
+    fn inline_names(format: &str) -> Vec<String> {
+        let mut names = Vec::new();
+        let mut chars = format.chars().peekable();
+        while let Some(c) = chars.next() {
+            if c != '{' {
+                continue;
+            }
+            if chars.peek() == Some(&'{') {
+                chars.next();
+                continue;
+            }
+            let name: String = std::iter::from_fn(|| chars.next_if(|c| c.is_alphanumeric() || *c == '_')).collect();
+            if !name.is_empty() && !name.chars().all(|c| c.is_ascii_digit()) {
+                names.push(name);
+            }
+        }
+        names
+    }
+
+    /// Every log call in `source` that hands one of [`MEETING_TEXT_NAMES`] to
+    /// the log, as `line: name`.
+    fn meeting_text_in_log_calls(source: &str) -> Vec<String> {
+        let tokens = tokenize(source);
+        let mut found = Vec::new();
+        let mut i = 0;
+        while i + 2 < tokens.len() {
+            let is_call = matches!(&tokens[i].0, Token::Ident(name) if LOG_MACROS.contains(&name.as_str()))
+                && tokens[i + 1].0 == Token::Punct('!')
+                && tokens[i + 2].0 == Token::Punct('(');
+            if !is_call {
+                i += 1;
+                continue;
+            }
+            let line = tokens[i].1;
+            let mut depth = 0;
+            let mut end = i + 2;
+            while end < tokens.len() {
+                match tokens[end].0 {
+                    Token::Punct('(') => depth += 1,
+                    Token::Punct(')') => {
+                        depth -= 1;
+                        if depth == 0 {
+                            break;
+                        }
+                    }
+                    _ => {}
+                }
+                end += 1;
+            }
+            let call = &tokens[i + 3..end.min(tokens.len())];
+            let Some(format_at) = call.iter().position(|(t, _)| matches!(t, Token::Str(_))) else {
+                i = end;
+                continue;
+            };
+            if let Token::Str(format) = &call[format_at].0 {
+                for name in inline_names(format) {
+                    if MEETING_TEXT_NAMES.contains(&name.as_str()) {
+                        found.push(format!("{line}: {{{name}}}"));
+                    }
+                }
+            }
+            let args = &call[format_at + 1..];
+            for (k, (token, _)) in args.iter().enumerate() {
+                let Token::Ident(name) = token else { continue };
+                if !MEETING_TEXT_NAMES.contains(&name.as_str()) {
+                    continue;
+                }
+                let after = args.get(k + 1).map(|(t, _)| t);
+                let method = match args.get(k + 2) {
+                    Some((Token::Ident(m), _)) if after == Some(&Token::Punct('.')) => m.as_str(),
+                    _ => "",
+                };
+                // `.chars()` only as `.chars().count()`; `.chars().take(80)` is text.
+                let counted = matches!(args.get(k + 6), Some((Token::Ident(m), _)) if m == "count");
+                let size_only = SIZE_ONLY.contains(&method) && (method != "chars" || counted);
+                let called = after == Some(&Token::Punct('('));
+                let path = after == Some(&Token::Punct(':'));
+                if !(size_only || called || path) {
+                    found.push(format!("{line}: {name}"));
+                }
+            }
+            i = end;
+        }
+        found
+    }
+
+    fn rust_files(dir: &Path, into: &mut Vec<PathBuf>) {
+        for entry in std::fs::read_dir(dir).unwrap() {
+            let path = entry.unwrap().path();
+            if path.is_dir() {
+                rust_files(&path, into);
+            } else if path.extension().is_some_and(|ext| ext == "rs") {
+                into.push(path);
+            }
+        }
+    }
+
+    #[test]
+    fn the_source_check_sees_a_leak_and_lets_a_length_through() {
+        let leaky = r#"
+            info!("Worker {} transcribed: {}", worker_id, transcript);
+            log::debug!("result: '{}'", result.text);
+            warn!("said {text}");
+            perf_debug!("start: {}", text.chars().take(80).collect::<String>());
+        "#;
+        assert_eq!(
+            meeting_text_in_log_calls(leaky),
+            vec!["2: transcript", "3: text", "4: {text}", "5: text"]
+        );
+
+        let clean = r#"
+            // info!("commented out: {}", transcript);
+            info!("Worker {} transcribed {} chars", worker_id, transcript.chars().count());
+            info!("{}", report.summary(direction));
+            let s = "info!(\"in a string\", text)";
+            info!("summary {} chars, empty: {}", summary.len(), notes.is_empty());
+        "#;
+        assert!(meeting_text_in_log_calls(clean).is_empty());
+    }
+
+    #[test]
+    fn no_log_call_passes_meeting_text() {
+        let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        let mut files = Vec::new();
+        rust_files(&src, &mut files);
+        assert!(files.len() > 50, "found only {} source files", files.len());
+
+        let mut leaks = Vec::new();
+        for file in files {
+            let source = std::fs::read_to_string(&file).unwrap();
+            let relative = file.strip_prefix(&src).unwrap().display().to_string();
+            for leak in meeting_text_in_log_calls(&source) {
+                leaks.push(format!("{relative}:{leak}"));
+            }
+        }
+        assert!(
+            leaks.is_empty(),
+            "log calls that pass meeting text along (log its length instead):\n{}",
+            leaks.join("\n")
+        );
     }
 }
