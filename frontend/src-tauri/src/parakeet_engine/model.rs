@@ -10,6 +10,8 @@ use regex::Regex;
 use std::fs;
 use std::path::Path;
 
+use crate::onnx_threads::Role;
+
 pub type DecoderState = (Array3<f32>, Array3<f32>);
 
 const SUBSAMPLING_FACTOR: usize = 8;
@@ -60,9 +62,11 @@ impl Drop for ParakeetModel {
 
 impl ParakeetModel {
     pub fn new<P: AsRef<Path>>(model_dir: P, quantized: bool) -> Result<Self, ParakeetError> {
-        let encoder = Self::init_session(&model_dir, "encoder-model", None, quantized)?;
-        let decoder_joint = Self::init_session(&model_dir, "decoder_joint-model", None, quantized)?;
-        let preprocessor = Self::init_session(&model_dir, "nemo128", None, false)?;
+        let encoder =
+            Self::init_session(&model_dir, "encoder-model", Role::ParakeetEncoder, quantized)?;
+        let decoder_joint =
+            Self::init_session(&model_dir, "decoder_joint-model", Role::ParakeetStep, quantized)?;
+        let preprocessor = Self::init_session(&model_dir, "nemo128", Role::ParakeetStep, false)?;
 
         let (vocab, blank_idx) = Self::load_vocab(&model_dir)?;
         let vocab_size = vocab.len();
@@ -86,7 +90,7 @@ impl ParakeetModel {
     fn init_session<P: AsRef<Path>>(
         model_dir: P,
         model_name: &str,
-        intra_threads: Option<usize>,
+        role: Role,
         try_quantized: bool,
     ) -> Result<Session, ParakeetError> {
         let providers = vec![CPUExecutionProvider::default().build()];
@@ -112,18 +116,11 @@ impl ParakeetModel {
             regular_name
         };
 
-        let mut builder = Session::builder()?
+        let builder = Session::builder()?
             .with_optimization_level(GraphOptimizationLevel::Level3)?
-            .with_execution_providers(providers)?
-            .with_parallel_execution(true)?;
-
-        if let Some(threads) = intra_threads {
-            builder = builder
-                .with_intra_threads(threads)?
-                .with_inter_threads(threads)?;
-        }
-
-        let session = builder.commit_from_file(model_dir.as_ref().join(&model_filename))?;
+            .with_execution_providers(providers)?;
+        let session = crate::onnx_threads::budget(builder, role)?
+            .commit_from_file(model_dir.as_ref().join(&model_filename))?;
 
         for input in &session.inputs {
             log::info!(

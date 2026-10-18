@@ -16,14 +16,11 @@ use anyhow::{anyhow, Result};
 use std::sync::Mutex;
 
 use super::models::DiarizationModels;
+use crate::onnx_threads::Role;
 
 /// Shortest segment worth embedding. Anything briefer is dominated by onset
 /// artefacts and produces an unreliable speaker vector.
 const MIN_SEGMENT_SAMPLES: usize = 16_000; // 1.0 s at 16 kHz
-
-/// Intra-op threads for the live embedder: it runs beside GigaAM on every
-/// chunk of the recording, so it must leave the rest of the machine alone.
-pub const LIVE_THREADS: usize = 2;
 
 /// Cosine distance beyond which a segment is considered a new speaker.
 ///
@@ -108,7 +105,7 @@ pub fn start() -> Result<()> {
     if !super::models_available() {
         return Err(anyhow!("diarization models not installed"));
     }
-    let models = DiarizationModels::load(&super::diarization_model_dir(), LIVE_THREADS)?;
+    let models = DiarizationModels::load(&super::diarization_model_dir(), Role::LiveSpeaker)?;
     let mut guard = ONLINE
         .lock()
         .map_err(|_| anyhow!("online diarizer lock poisoned"))?;

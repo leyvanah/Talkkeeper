@@ -6,27 +6,59 @@
 //! plus the speaker embedder), which on an 8-thread laptop saturated the
 //! processor and starved a video call running beside the app. Every session
 //! therefore gets an explicit, small pool whose threads sleep when idle.
+//!
+//! All the numbers live here, keyed by what a session does, so that one place
+//! decides how much of the machine inference may take.
 
 use ort::session::builder::SessionBuilder;
 
-/// Sequential graph execution with `intra` threads inside each node, and pool
-/// threads that block instead of spinning between runs.
-pub fn budget(builder: SessionBuilder, intra: usize) -> ort::Result<SessionBuilder> {
-    builder
-        .with_parallel_execution(false)?
-        .with_intra_threads(intra)?
-        .with_inter_threads(1)?
-        .with_intra_op_spinning(false)?
-        .with_inter_op_spinning(false)
+/// What a session is for; each role has its own intra-op thread count.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Role {
+    /// GigaAM encoder, the one heavy graph per chunk. The same session serves
+    /// live transcription, retranscribe and import.
+    GigaamEncoder,
+    /// GigaAM decoder and joint network: tiny per-token steps.
+    GigaamStep,
+    /// Parakeet encoder.
+    ParakeetEncoder,
+    /// Parakeet mel preprocessor and fused decoder/joint.
+    ParakeetStep,
+    /// Speaker embedder during a recording, beside transcription.
+    LiveSpeaker,
+    /// Offline speaker identification, which waits out a recording.
+    OfflineSpeaker,
 }
 
-/// Threads for passes that never overlap a recording (they wait it out):
-/// half the logical cores, between 1 and 4.
-pub fn offline_threads() -> usize {
-    std::thread::available_parallelism()
-        .map(|n| n.get() / 2)
-        .unwrap_or(1)
-        .clamp(1, 4)
+/// Inter-op threads. Sessions run sequentially, so this pool stays unused.
+const INTER_THREADS: usize = 1;
+
+/// Whether idle pool threads may spin before blocking. Spinning is what kept
+/// the cores busy between runs.
+const SPINNING: bool = false;
+
+/// Intra-op threads for a session in `role`.
+pub fn intra_threads(role: Role) -> usize {
+    match role {
+        Role::GigaamEncoder | Role::ParakeetEncoder | Role::LiveSpeaker => 2,
+        Role::GigaamStep | Role::ParakeetStep => 1,
+        // Half the logical cores, between 1 and 4.
+        Role::OfflineSpeaker => std::thread::available_parallelism()
+            .map(|n| n.get() / 2)
+            .unwrap_or(1)
+            .clamp(1, 4),
+    }
+}
+
+/// Sequential graph execution with the thread budget of `role`, and pool
+/// threads that block instead of spinning between runs.
+pub fn budget(builder: SessionBuilder, role: Role) -> ort::Result<SessionBuilder> {
+    builder
+        .with_parallel_execution(false)?
+        .with_intra_threads(intra_threads(role))?
+        .with_inter_threads(INTER_THREADS)?
+        .with_intra_op_spinning(SPINNING)?
+        .with_inter_op_spinning(SPINNING)
 }
 
 #[cfg(all(test, windows))]
@@ -90,7 +122,7 @@ mod bench {
         let audio_secs = samples.len() as f64 / 16_000.0;
 
         let mut gigaam = GigaamModel::new(&gigaam_dir).expect("gigaam");
-        let mut live = DiarizationModels::load(&diar_dir, crate::diarization::online::LIVE_THREADS)
+        let mut live = DiarizationModels::load(&diar_dir, super::Role::LiveSpeaker)
             .expect("diarization");
 
         // Live: every segment is transcribed and embedded as it "arrives".
@@ -142,6 +174,52 @@ mod bench {
             "offline diarization: {wall:.1}s wall, {cpu:.1}s cpu, {} speakers, {} segments",
             result.num_speakers,
             result.segments.len()
+        );
+    }
+
+    /// Same live pacing for Parakeet (`TALKKEEPER_BENCH_PARAKEET` = the int8
+    /// model dir), without the speaker embedder.
+    #[test]
+    #[ignore = "needs the models and a wav; see the module docs"]
+    fn parakeet_live_cpu() {
+        let model_dir = env_path("TALKKEEPER_BENCH_PARAKEET");
+        let wav = env_path("TALKKEEPER_BENCH_WAV");
+        let (samples, sr) = crate::diarization::dsp::read_wav(&wav).expect("wav");
+        assert_eq!(sr, 16_000, "bench expects 16 kHz audio");
+        let audio_secs = samples.len() as f64 / 16_000.0;
+        let mut model = crate::parakeet_engine::ParakeetModel::new(&model_dir, true).expect("parakeet");
+
+        let step = (LIVE_SEGMENT_SECS * 16_000.0) as usize;
+        let (cpu0, wall0) = (cpu_secs(), Instant::now());
+        let mut busy = Duration::ZERO;
+        let mut worst = Duration::ZERO;
+        for (i, seg) in samples.chunks(step).enumerate() {
+            let t = Instant::now();
+            model.transcribe_samples(seg.to_vec()).expect("transcribe");
+            let spent = t.elapsed();
+            busy += spent;
+            worst = worst.max(spent);
+            let due = wall0 + Duration::from_secs_f32(LIVE_SEGMENT_SECS * (i + 1) as f32);
+            std::thread::sleep(due.saturating_duration_since(Instant::now()));
+        }
+        let (cpu, wall) = (cpu_secs() - cpu0, wall0.elapsed().as_secs_f64());
+        let segments = samples.len().div_ceil(step);
+        println!(
+            "parakeet live: {audio_secs:.0}s audio, {wall:.1}s wall, {cpu:.1}s cpu = {:.2} cores avg; \
+             per segment {:.0} ms mean, {:.0} ms worst",
+            cpu / wall,
+            busy.as_secs_f64() * 1000.0 / segments as f64,
+            worst.as_secs_f64() * 1000.0
+        );
+
+        let (cpu0, wall0) = (cpu_secs(), Instant::now());
+        for seg in samples.chunks(30 * 16_000) {
+            model.transcribe_samples(seg.to_vec()).expect("transcribe");
+        }
+        let (cpu, wall) = (cpu_secs() - cpu0, wall0.elapsed().as_secs_f64());
+        println!(
+            "parakeet offline: {wall:.1}s wall ({:.1}x realtime), {cpu:.1}s cpu",
+            audio_secs / wall
         );
     }
 }

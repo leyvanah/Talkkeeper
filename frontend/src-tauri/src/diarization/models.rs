@@ -12,6 +12,8 @@ use ort::value::TensorRef;
 use std::io::Read;
 use std::path::Path;
 
+use crate::onnx_threads::Role;
+
 use super::dsp::{self, NUM_MEL_BINS};
 
 /// pyannote segmentation-3.0 powerset class → active local speaker indices.
@@ -39,10 +41,9 @@ pub struct DiarizationModels {
 }
 
 impl DiarizationModels {
-    /// `threads` is the intra-op pool of each session: small for the live
-    /// embedder, which shares the processor with the recording, larger for the
-    /// offline pass that runs once the recording is over.
-    pub fn load(model_dir: &Path, threads: usize) -> Result<Self> {
+    /// `role` picks the thread budget: [`Role::LiveSpeaker`] during a
+    /// recording, [`Role::OfflineSpeaker`] for the pass after it.
+    pub fn load(model_dir: &Path, role: Role) -> Result<Self> {
         let seg_path = model_dir.join("segmentation-3.0-fp16.onnx");
         let emb_path = model_dir.join("wespeaker-resnet34-LM.onnx");
         let xform_path = model_dir.join("xvec_transform.npz");
@@ -57,7 +58,7 @@ impl DiarizationModels {
             let builder = Session::builder()?
                 .with_optimization_level(GraphOptimizationLevel::Level3)?
                 .with_execution_providers(vec![CPUExecutionProvider::default().build()])?;
-            Ok(crate::onnx_threads::budget(builder, threads)?.commit_from_file(path)?)
+            Ok(crate::onnx_threads::budget(builder, role)?.commit_from_file(path)?)
         };
 
         let segmentation = build(&seg_path)?;
