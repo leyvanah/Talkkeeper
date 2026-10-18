@@ -7,7 +7,7 @@ import { listen } from '@tauri-apps/api/event';
 import { useOnboarding } from '@/contexts/OnboardingContext';
 import { usePlatform } from '@/hooks/usePlatform';
 import { MACOS_SYSTEM_AUDIO_VERIFIED_KEY } from '@/hooks/usePermissionCheck';
-import { logFailure } from '@/lib/failure';
+import { logFailure, toastFailure } from '@/lib/failure';
 import { OnboardingContainer } from '../OnboardingContainer';
 import { Mic, Volume2, RefreshCw } from 'lucide-react';
 
@@ -263,7 +263,9 @@ export function AudioTestStep() {
       await new Promise((r) => setTimeout(r, 100));
       window.location.reload();
     } catch (e) {
-      console.error('Failed to complete onboarding:', e);
+      toastFailure(t('finishFailed'), 'onboarding-complete', e, {
+        description: t('retryDetail'),
+      });
     }
   };
 
