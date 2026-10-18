@@ -152,6 +152,15 @@ export function forgetPersonAnswers(): void {
   notify();
 }
 
+/**
+ * Forgets one person: they were deleted. A draft left behind would otherwise
+ * be sent to a profile that no longer exists every time the window closes.
+ */
+export function forgetPerson(personId: string): void {
+  drafts.delete(personId);
+  if (states.delete(personId)) notify();
+}
+
 /** Forgets everything; for tests. */
 export function resetPersonPageMemory(): void {
   forgetPersonAnswers();

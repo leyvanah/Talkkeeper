@@ -730,6 +730,7 @@ pub fn run() {
             database::repositories::person::api_global_search,
             database::repositories::person::api_get_person_profile,
             database::repositories::person::api_update_person_notes,
+            database::repositories::person::api_delete_person,
             database::repositories::client::api_list_clients,
             database::repositories::client::api_create_client,
             database::repositories::client::api_rename_client,
