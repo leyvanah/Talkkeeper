@@ -8,7 +8,7 @@
 
 use futures_util::TryStreamExt;
 use serde::Serialize;
-use sqlx::{Sqlite, SqlitePool, Transaction};
+use sqlx::{Sqlite, SqliteConnection, SqlitePool, Transaction};
 use std::cmp::Ordering;
 use std::collections::HashMap;
 use uuid::Uuid;
@@ -1106,13 +1106,15 @@ pub(crate) async fn retain_present_speaker_mappings(
 /// Removes the people no meeting points to any more — unless the owner wrote
 /// notes about them. A rename or a move to another client can leave a profile
 /// without meetings for a while, and losing the notes with the last link would
-/// make an ordinary edit destroy something nobody asked to delete.
-async fn delete_orphan_people(tx: &mut Transaction<'_, Sqlite>) -> Result<(), sqlx::Error> {
+/// make an ordinary edit destroy something nobody asked to delete. Deleting a
+/// meeting is no different: a person's notes go only with the person or the
+/// client.
+pub(crate) async fn delete_orphan_people(conn: &mut SqliteConnection) -> Result<(), sqlx::Error> {
     sqlx::query(
         "DELETE FROM people WHERE notes IS NULL AND NOT EXISTS \
          (SELECT 1 FROM person_speakers ps WHERE ps.person_id = people.id)",
     )
-    .execute(&mut **tx)
+    .execute(conn)
     .await?;
     Ok(())
 }
