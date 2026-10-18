@@ -195,7 +195,7 @@ export function SummaryGeneratorButtonGroup({
       }
 
       if (status.type === 'error') {
-        toastFailure(t('modelErrorTitle'), 'builtin-model-status', status.Error, {
+        toastFailure(t('modelErrorTitle'), 'builtin-model-status', status.message, {
           description: t('modelErrorDescription'),
           duration: 5000,
         });

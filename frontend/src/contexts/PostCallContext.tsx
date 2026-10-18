@@ -44,6 +44,7 @@ import {
   type ModelChoice,
   type RequestedModel,
 } from '@/lib/enhancement-model';
+import { planPostCall, type PostCallPlan } from '@/lib/post-call-plan';
 import { toastFailure } from '@/lib/failure';
 
 export type Stage = 'queued' | 'prompt' | 'enhancing' | 'diarizing' | 'error' | 'done';
@@ -59,6 +60,37 @@ export interface PostCallRun {
   failedStage: FailedStage | null;
   /** One conversation partner: the capture channels already say who is who. */
   singleRemoteSpeaker: boolean;
+  /** Lines of the live transcript when the run began; `null` if not counted. */
+  lineCount: number | null;
+}
+
+/** A failure already worded for the window, shown as it is. */
+class ShownFailure extends Error {}
+
+/** Whether the meeting folder holds audio; `null` when it cannot be told. */
+async function folderHasAudio(folderPath: string | null): Promise<boolean | null> {
+  if (!folderPath) return false;
+  // The player's lookup: the same search the refining pass makes for its audio.
+  return invoke<string | null>('meeting_playback_file', { meetingFolder: folderPath })
+    .then((path) => !!path)
+    .catch((error) => {
+      console.error('Could not tell whether the recording kept its audio:', error);
+      return null;
+    });
+}
+
+/** Lines in the stored transcript; `null` when they cannot be counted. */
+async function transcriptLineCount(meetingId: string): Promise<number | null> {
+  return invoke<{ total_count: number }>('api_get_meeting_transcripts', {
+    meetingId,
+    limit: 1,
+    offset: 0,
+  })
+    .then((page) => page?.total_count ?? 0)
+    .catch((error) => {
+      console.error('Could not count the transcript lines:', error);
+      return null;
+    });
 }
 
 interface PostCallTranscriptConfig {
@@ -172,17 +204,41 @@ export function PostCallProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   const describeFailure = useCallback((cause: unknown) => {
-    const message = cause instanceof Error ? cause.message : String(cause);
-    return message === ENHANCEMENT_STALLED ? t('postCallTimedOut') : message;
+    if (cause instanceof ShownFailure) return cause.message;
+    if (cause instanceof Error && cause.message === ENHANCEMENT_STALLED) return t('postCallTimedOut');
+    // The backend's text is English and may name the recording folder, with
+    // the Windows user name in it: the window says what to do instead.
+    console.error('Post-call processing failed:', cause);
+    return t('postCallFailedReason');
   }, [t]);
 
-  const complete = useCallback((meetingId: string, skippedEnhancement: boolean) => {
+  /** The transcript is final; remembered across a reload of the window. */
+  const settle = useCallback((meetingId: string) => {
     try {
       sessionStorage.setItem(completedKey(meetingId), 'completed');
     } catch {
       /* A reload would then offer the work again; nothing is lost. */
     }
     update(meetingId, { stage: 'done', error: null, failedStage: null });
+  }, [update]);
+
+  /**
+   * Forgets a finished run that no summary will come to release: without any
+   * text there is nothing to summarise, and a run left pending keeps the page
+   * behaving as just recorded.
+   */
+  const drop = useCallback((meetingId: string) => {
+    setRuns((current) => {
+      if (!current[meetingId]) return current;
+      const next = { ...current };
+      delete next[meetingId];
+      runsRef.current = next;
+      return next;
+    });
+  }, []);
+
+  const complete = useCallback((meetingId: string, skippedEnhancement: boolean) => {
+    settle(meetingId);
     // The meeting may not be on screen any more: say so, and offer the way back.
     const showing =
       typeof window !== 'undefined' &&
@@ -199,7 +255,21 @@ export function PostCallProvider({ children }: { children: React.ReactNode }) {
             onClick: () => router.push(`/meeting-details?id=${encodeURIComponent(meetingId)}`),
           },
     });
-  }, [router, t, update]);
+  }, [router, settle, t]);
+
+  /**
+   * Nothing to refine: no audio, or no text the summary could start from.
+   * Neither is a success to announce.
+   */
+  const finishUnrefined = useCallback((meetingId: string, plan: Exclude<PostCallPlan, 'refine'>) => {
+    settle(meetingId);
+    if (plan === 'keep-live') {
+      toast.info(t('postCallNoAudio'), { description: t('postCallNoAudioDescription') });
+      return;
+    }
+    toast.warning(t('postCallNothingKept'), { description: t('postCallNothingKeptDescription') });
+    drop(meetingId);
+  }, [drop, settle, t]);
 
   const fail = useCallback((meetingId: string, stage: FailedStage, cause: unknown, title: string) => {
     const error = describeFailure(cause);
@@ -233,13 +303,13 @@ export function PostCallProvider({ children }: { children: React.ReactNode }) {
 
   const enhance = useCallback(async (meetingId: string) => {
     const run = runsRef.current[meetingId];
-    if (!run?.folderPath) throw new Error(t('postCallNoFolder'));
+    if (!run?.folderPath) throw new ShownFailure(t('postCallNoFolder'));
     update(meetingId, { stage: 'enhancing', progress: 0, message: t('postCallPreparing') });
     const { selectedLanguage: language, transcriptModelConfig: live } = configRef.current;
     const postCallConfig = await invoke<PostCallTranscriptConfig>('api_get_post_call_transcript_config')
       .catch(() => ({ provider: 'live' as const, model: '' }));
     const choice = await resolveEnhancementModel(postCallConfig, live);
-    if (!choice) throw new Error(t('postCallNoModel'));
+    if (!choice) throw new ShownFailure(t('postCallNoModel'));
     const { model, replaced } = choice;
     if (replaced) {
       toast.info(t('postCallModelReplaced', {
@@ -284,25 +354,34 @@ export function PostCallProvider({ children }: { children: React.ReactNode }) {
       error: null,
       failedStage: null,
       singleRemoteSpeaker: true,
+      lineCount: null,
     };
     const next = { ...runsRef.current, [meetingId]: run };
     runsRef.current = next;
     setRuns(next);
 
-    void invoke<{ single_remote_speaker?: boolean }>('get_recording_preferences')
+    const singleRemote = invoke<{ single_remote_speaker?: boolean }>('get_recording_preferences')
       .then((prefs) => prefs.single_remote_speaker !== false)
       .catch((error) => {
         console.error('Failed to read recording preferences:', error);
         return true;
-      })
-      .then((single) => {
-        update(meetingId, { singleRemoteSpeaker: single });
+      });
+    // The audio is written before the window hears the recording stopped, so
+    // its absence here is final.
+    void Promise.all([singleRemote, folderHasAudio(folderPath), transcriptLineCount(meetingId)])
+      .then(([single, hasAudio, lineCount]) => {
+        update(meetingId, { singleRemoteSpeaker: single, lineCount });
+        const plan = planPostCall({ hasAudio, lineCount });
+        if (plan !== 'refine') {
+          finishUnrefined(meetingId, plan);
+          return;
+        }
         // One to one: the two capture channels already say who is who, so
         // there is nothing to ask.
         if (single) void proceed(meetingId, 2, 'enhancing');
         else update(meetingId, { stage: 'prompt' });
       });
-  }, [proceed, t, update]);
+  }, [finishUnrefined, proceed, t, update]);
 
   // The retranscription reports its own progress; the run mirrors it.
   useEffect(() => {
@@ -384,6 +463,13 @@ export function PostCallProvider({ children }: { children: React.ReactNode }) {
             });
           }}
           onUseLive={() => {
+            if (asking.lineCount === 0) {
+              // Audio, but no live text to keep: say so instead of "complete".
+              settle(asking.meetingId);
+              drop(asking.meetingId);
+              toast.info(t('postCallNoLiveText'), { description: t('postCallNoLiveTextDescription') });
+              return;
+            }
             complete(asking.meetingId, true);
             toast.info(t('postCallUsingLive'), { description: t('postCallUsingLiveDescription') });
           }}

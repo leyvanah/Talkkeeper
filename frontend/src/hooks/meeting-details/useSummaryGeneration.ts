@@ -695,7 +695,7 @@ export function useSummaryGeneration({
             if (status.type === 'corrupted' || status.type === 'error') {
               setSummaryStatus('idle');
               // The model status's own error text is for the log, not the toast.
-              if (status.type === 'error') logFailure('builtin-model-status', status.Error);
+              if (status.type === 'error') logFailure('builtin-model-status', status.message);
               const errorDesc = status.type === 'error'
                 ? t('genBuiltinFileError')
                 : t('genBuiltinFileCorrupted');
