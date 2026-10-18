@@ -43,6 +43,7 @@ pub mod disk_space;
 pub mod database;
 pub mod diarization;
 pub mod notifications;
+pub mod onnx_threads;
 pub mod ollama;
 pub mod onboarding;
 pub mod openai;

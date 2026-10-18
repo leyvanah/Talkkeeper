@@ -93,6 +93,12 @@ pub const MODEL_FILES: [&str; 4] = [
     "v3_e2e_rnnt_vocab.txt",
 ];
 
+/// Intra-op threads for the encoder, the one heavy graph; the decoder and the
+/// joint network run tiny per-token steps that gain nothing from a pool. The
+/// same sessions serve live transcription, so retranscribe and import get the
+/// small budget too.
+const ENCODER_THREADS: usize = 2;
+
 pub struct GigaamModel {
     encoder: Session,
     decoder: Session,
@@ -123,9 +129,9 @@ impl Predictor {
 impl GigaamModel {
     pub fn new<P: AsRef<Path>>(model_dir: P) -> Result<Self, GigaamError> {
         let dir = model_dir.as_ref();
-        let encoder = Self::init_session(dir, MODEL_FILES[0])?;
-        let decoder = Self::init_session(dir, MODEL_FILES[1])?;
-        let joint = Self::init_session(dir, MODEL_FILES[2])?;
+        let encoder = Self::init_session(dir, MODEL_FILES[0], ENCODER_THREADS)?;
+        let decoder = Self::init_session(dir, MODEL_FILES[1], 1)?;
+        let joint = Self::init_session(dir, MODEL_FILES[2], 1)?;
         let (vocab, blank_idx) = Self::load_vocab(dir)?;
 
         log::info!(
@@ -145,7 +151,7 @@ impl GigaamModel {
     }
 
     /// Prefer the int8 graph; fall back to the full-precision one.
-    fn init_session(model_dir: &Path, stem: &str) -> Result<Session, GigaamError> {
+    fn init_session(model_dir: &Path, stem: &str, threads: usize) -> Result<Session, GigaamError> {
         let quantized = model_dir.join(format!("{}.int8.onnx", stem));
         let full = model_dir.join(format!("{}.onnx", stem));
         let path = if quantized.exists() {
@@ -160,11 +166,10 @@ impl GigaamModel {
         };
 
         log::info!("Loading GigaAM graph {}", path.display());
-        let session = Session::builder()?
+        let builder = Session::builder()?
             .with_optimization_level(GraphOptimizationLevel::Level3)?
-            .with_execution_providers(vec![CPUExecutionProvider::default().build()])?
-            .with_parallel_execution(true)?
-            .commit_from_file(path)?;
+            .with_execution_providers(vec![CPUExecutionProvider::default().build()])?;
+        let session = crate::onnx_threads::budget(builder, threads)?.commit_from_file(path)?;
 
         Ok(session)
     }

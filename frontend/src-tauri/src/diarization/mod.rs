@@ -184,7 +184,7 @@ pub fn embeddings_for_debug(wav_path: &Path, model_dir: &Path) -> Result<Vec<Vec
     } else {
         samples
     };
-    let mut models = DiarizationModels::load(model_dir)?;
+    let mut models = DiarizationModels::load(model_dir, crate::onnx_threads::offline_threads())?;
     let turns = collect_turns(&mut models, &samples)?;
     let mut out = Vec::new();
     for turn in &turns {
@@ -256,7 +256,7 @@ pub fn diarize_file_with_models(
     }
     log::info!("🧑‍🤝‍🧑 Diarization starting: {:.1}s of audio", duration);
 
-    let mut models = DiarizationModels::load(model_dir)?;
+    let mut models = DiarizationModels::load(model_dir, crate::onnx_threads::offline_threads())?;
 
     // 2. Slide windows, decode segmentation, collect local turns.
     let turns = collect_turns(&mut models, &samples)?;
