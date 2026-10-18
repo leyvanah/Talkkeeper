@@ -376,7 +376,7 @@ export function SecuritySettings() {
           </form>
         ) : (
           <div className="mt-6 space-y-6">
-            {/* Status, and the way to close the archive right now — at the
+            {/* Status, and the way to lock the archive right now — at the
                 top, away from removing protection. */}
             <div>
               <div className="flex flex-wrap items-center justify-between gap-3">
@@ -384,15 +384,18 @@ export function SecuritySettings() {
                   <ShieldCheck className="h-4 w-4" />
                   {t('protectionOn')}
                 </div>
-                <Button
-                  type="button"
-                  variant="outline"
-                  disabled={busy}
-                  onClick={() => void run('lock', () => lock())}
-                >
-                  <Lock className="mr-2 h-4 w-4" />
-                  {label('lock', t('lockNow'))}
-                </Button>
+                <div className="flex flex-col items-end gap-1">
+                  <Button
+                    type="button"
+                    variant="outline"
+                    disabled={busy}
+                    onClick={() => void run('lock', () => lock())}
+                  >
+                    <Lock className="mr-2 h-4 w-4" />
+                    {label('lock', t('lockNow'))}
+                  </Button>
+                  <p className="text-xs text-gray-500">{t('lockNowHint')}</p>
+                </div>
               </div>
               {message('lock')}
               {message('setup')}
