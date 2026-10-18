@@ -8,7 +8,6 @@ use whisper_rs::{DtwMode, DtwModelPreset, DtwParameters, WhisperContext, Whisper
 use crate::audio::word_timing::{spell, words_from_pieces, TimedPiece, WordTiming};
 use serde::{Serialize, Deserialize};
 use anyhow::{Result, anyhow};
-use reqwest::Client;
 use tokio::fs;
 use tokio::io::AsyncWriteExt;
 use crate::config::WHISPER_MODEL_CATALOG;
@@ -1126,7 +1125,7 @@ impl WhisperEngine {
         }
         
         log::info!("Creating HTTP client and starting request...");
-        let client = Client::new();
+        let client = crate::network_policy::client(&model_url);
         
         log::info!("Sending GET request to: {}", model_url);
         let response = client.get(&model_url).send().await

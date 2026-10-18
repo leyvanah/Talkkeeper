@@ -267,7 +267,7 @@ pub struct ExternalSttProvider {
 impl ExternalSttProvider {
     pub fn new(config: ExternalSttConfig) -> Result<Self, String> {
         config.validate()?;
-        let client = reqwest::Client::builder()
+        let client = crate::network_policy::client_builder(config.url.trim())
             .timeout(Duration::from_millis(config.timeout_ms))
             .build()
             .map_err(|e| format!("Failed to create HTTP client: {}", e))?;

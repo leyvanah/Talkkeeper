@@ -72,7 +72,9 @@ in these cases, each of which you choose:
    enter its address. Audio is sent to it.
 
 All three are blocked while **"This computer only"** is on, which is the
-default: the request is refused before it is built.
+default: the request is refused before it is built. A request to this
+computer never goes through a proxy, even one set in Windows or in
+`HTTP_PROXY`; other requests use the Windows proxy as usual.
 
 **Other network use** sends nothing from your archive:
 
