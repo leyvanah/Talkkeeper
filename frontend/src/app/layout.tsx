@@ -16,6 +16,8 @@ import { usePathname, useRouter } from 'next/navigation'
 import { listen, UnlistenFn } from '@tauri-apps/api/event'
 import { invoke } from '@tauri-apps/api/core'
 import { applyAppTheme, getSavedAppTheme } from '@/lib/app-theme'
+import { copyText } from '@/lib/private-clipboard'
+import { installPrivateCopy } from '@/lib/private-copy-events'
 import { LocaleProvider, getLocaleMessages } from '@/contexts/LocaleContext'
 import { SecurityProvider, useSecurity } from '@/contexts/SecurityContext'
 import { LockScreen } from '@/components/security/LockScreen'
@@ -199,6 +201,15 @@ export default function RootLayout({
       cancelled = true
     }
   }, [startupAttempt])
+
+  // Ctrl+C / Ctrl+X on a selection go through the private clipboard write, so
+  // selected summary or transcript text stays out of clipboard history.
+  useEffect(() => {
+    return installPrivateCopy(window, copyText, (error) => {
+      console.error('[Layout] Private copy failed:', error);
+      toast.error(getLocaleMessages().app.copySelectionFailed);
+    });
+  }, []);
 
   // Disable context menu in production
   useEffect(() => {
