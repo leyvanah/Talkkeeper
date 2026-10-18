@@ -1344,6 +1344,8 @@
     "minibarResume": "Resume",
     "minibarPause": "Pause",
     "minibarStopTitle": "Stop recording",
+    "minibarStopConfirm": "Stop?",
+    "minibarStopConfirmTitle": "Click again to stop the recording",
     "minibarStop": "Stop",
     "minibarExpandTitle": "Back to the full window",
     "aboutTalkkeeper": "About Talkkeeper",
