@@ -30,13 +30,12 @@ import { ProcessRequest, SummaryResponse } from '@/types/summary';
 import { listen } from '@tauri-apps/api/event';
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
-import { useRecordingState } from '@/contexts/RecordingStateContext';
+import { useRecordingClock, useRecordingState } from '@/contexts/RecordingStateContext';
 import { usePermissionCheck } from '@/hooks/usePermissionCheck';
 import { useTranslations } from 'next-intl';
 
 interface RecordingControlsProps {
   isRecording: boolean;
-  barHeights: string[];
   onRecordingStop: (callApi?: boolean) => void;
   onRecordingStart: () => void;
   onTranscriptReceived: (summary: SummaryResponse) => void;
@@ -72,7 +71,6 @@ function safelyUnsubscribe(unsubscribe: (() => void) | undefined) {
 
 export const RecordingControls: React.FC<RecordingControlsProps> = ({
   isRecording,
-  barHeights,
   onRecordingStop,
   onRecordingStart,
   onTranscriptReceived,
@@ -86,6 +84,7 @@ export const RecordingControls: React.FC<RecordingControlsProps> = ({
   const t = useTranslations('recording');
   // Use global recording state context for pause state (syncs with tray operations)
   const recordingState = useRecordingState();
+  const { recordingDuration } = useRecordingClock();
   const isPaused = recordingState.isPaused;
   const isMicrophoneMuted = recordingState.isMicrophoneMuted;
   const isSystemAudioMuted = recordingState.isSystemAudioMuted;
@@ -136,7 +135,7 @@ export const RecordingControls: React.FC<RecordingControlsProps> = ({
   };
 
   // Elapsed timer for the in-app bar, mirroring the floating compact bar.
-  const elapsedSeconds = Math.max(0, Math.floor(recordingState.recordingDuration ?? 0));
+  const elapsedSeconds = Math.max(0, Math.floor(recordingDuration ?? 0));
   const formatElapsed = (totalSeconds: number) => {
     const h = Math.floor(totalSeconds / 3600);
     const m = Math.floor((totalSeconds % 3600) / 60);
@@ -368,11 +367,11 @@ export const RecordingControls: React.FC<RecordingControlsProps> = ({
   // bar's expand button so the two are one control surface in two sizes; the
   // current duration seeds the bar so its timer continues rather than resets.
   const collapseToBar = useCallback(() => {
-    const elapsed = Math.max(0, Math.floor(recordingState.recordingDuration ?? 0));
+    const elapsed = Math.max(0, Math.floor(recordingDuration ?? 0));
     invoke('enter_compact_mode', { elapsedSeconds: elapsed }).catch((e) =>
       console.error('Failed to enter compact mode:', e)
     );
-  }, [recordingState.recordingDuration]);
+  }, [recordingDuration]);
 
   useEffect(() => {
     return () => {
