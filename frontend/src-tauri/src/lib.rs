@@ -593,7 +593,11 @@ pub fn run() {
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
                 if window.label() == "main" {
                     api.prevent_close();
-                    if let Err(e) = window.hide() {
+                    let hidden = match window.app_handle().get_webview_window("main") {
+                        Some(main) => tray::hide_main_window(&main),
+                        None => window.hide(),
+                    };
+                    if let Err(e) = hidden {
                         log::error!("Failed to hide main window on close request: {}", e);
                     } else {
                         log::info!("Main window hidden to tray on close request");

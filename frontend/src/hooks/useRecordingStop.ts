@@ -85,7 +85,7 @@ export function useRecordingStop(
 
     // Accidental taps: under 10s → discard, no meeting note.
     const MIN_MEETING_SECS = 10;
-    let elapsedSecs = recordingState.recordingDuration ?? 0;
+    let elapsedSecs = recordingState.readClock().recordingDuration ?? 0;
     let recordingStartedAtMs = 0;
     let recordingStartFallbackAtMs = 0;
     try {
@@ -396,7 +396,7 @@ export function useRecordingStop(
     setIsMeetingActive,
     assignMeetingToClient,
     router,
-    recordingState.recordingDuration,
+    recordingState.readClock,
   ]);
 
   // Expose handleRecordingStop function to window for Rust callbacks

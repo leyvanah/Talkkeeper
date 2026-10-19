@@ -2,7 +2,7 @@ use tauri::{
     image::Image,
     menu::{MenuBuilder, MenuItemBuilder, PredefinedMenuItem},
     tray::TrayIconBuilder,
-    AppHandle, Manager, Runtime,
+    AppHandle, Manager, Runtime, Webview, WebviewWindow,
 };
 
 use crate::ui_language::{text, Text};
@@ -473,13 +473,38 @@ fn build_menu<R: Runtime>(
         .build()
 }
 
+/// Hide the main window together with its page.
+///
+/// Hiding the window alone does not reach WebView2: the page still believed it
+/// was on screen and kept painting - level meters 25 times a second, the
+/// transcript's typing effect - for a window nobody could see, about a core
+/// during a recording. Hiding the webview tells the page it is hidden.
+pub(crate) fn hide_main_window<R: Runtime>(window: &WebviewWindow<R>) -> tauri::Result<()> {
+    window.hide()?;
+    let page: &Webview<R> = window.as_ref();
+    if let Err(e) = page.hide() {
+        log::warn!("Failed to hide the main page with its window: {}", e);
+    }
+    Ok(())
+}
+
+/// Show the main window and its page. Every path that shows `main` must come
+/// through here, or the window reappears blank.
+pub(crate) fn show_main_window<R: Runtime>(window: &WebviewWindow<R>) -> tauri::Result<()> {
+    let page: &Webview<R> = window.as_ref();
+    if let Err(e) = page.show() {
+        log::warn!("Failed to show the main page: {}", e);
+    }
+    window.show()
+}
+
 pub(crate) fn focus_main_window<R: Runtime>(app: &AppHandle<R>) {
     if let Some(window) = app.get_webview_window("main") {
         if let Err(e) = window.unminimize() {
             log::error!("Failed to unminimize main window: {}", e);
         }
 
-        if let Err(e) = window.show() {
+        if let Err(e) = show_main_window(&window) {
             log::error!("Failed to show main window: {}", e);
         }
 
