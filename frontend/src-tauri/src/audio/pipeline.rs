@@ -1612,6 +1612,9 @@ mod working_track_tests;
 #[cfg(test)]
 mod ring_buffer_tests;
 
+#[cfg(test)]
+mod sample_accounting_tests;
+
 /// A bench, not a test: it runs real speech through the mixing buffer under a
 /// delivery profile taken from the owner's own logs, and prints what came out
 /// the other side.
