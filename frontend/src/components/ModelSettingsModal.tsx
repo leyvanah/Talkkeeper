@@ -158,7 +158,6 @@ export function ModelSettingsModal({
   const hasLoadedInitialConfig = useRef<boolean>(false);
   const [autoGenerateEnabled, setAutoGenerateEnabled] = useState<boolean>(true); // Default to true
   const [searchQuery, setSearchQuery] = useState<string>('');
-  const [isEndpointSectionCollapsed, setIsEndpointSectionCollapsed] = useState<boolean>(true); // Collapsed by default
   const [ollamaNotInstalled, setOllamaNotInstalled] = useState<boolean>(false); // Track if Ollama is not installed
 
   // Custom OpenAI state
@@ -829,13 +828,16 @@ export function ModelSettingsModal({
 
   return (
     <div>
-      <div className="flex justify-between items-center mb-4">
-        <h3 className="text-lg font-semibold">{t('modelSettingsTitle')}</h3>
-      </div>
+      {/* In Settings the card around this form already has the heading. */}
+      {layout === 'dialog' && (
+        <div className="flex justify-between items-center mb-4">
+          <h3 className="text-lg font-semibold">{t('modelSettingsTitle')}</h3>
+        </div>
+      )}
 
       <div className="space-y-4">
         <div>
-          <Label>{t('summarizationModel')}</Label>
+          <Label>{t('providerAndModel')}</Label>
           <div className="flex space-x-2 mt-1">
             <Select
               value={modelConfig.provider}
@@ -1053,17 +1055,19 @@ export function ModelSettingsModal({
 
             {/* Advanced Options (Collapsible) */}
             <div>
-              <div
-                className="flex items-center justify-between cursor-pointer py-2"
+              <button
+                type="button"
+                aria-expanded={isCustomOpenAIAdvancedOpen}
+                className="flex items-center gap-1 py-2 text-sm font-medium leading-none"
                 onClick={() => setIsCustomOpenAIAdvancedOpen(!isCustomOpenAIAdvancedOpen)}
               >
-                <Label className="cursor-pointer">{t('advancedOptions')}</Label>
+                {t('advancedOptions')}
                 {isCustomOpenAIAdvancedOpen ? (
                   <ChevronUp className="h-4 w-4 text-muted-foreground" />
                 ) : (
                   <ChevronDown className="h-4 w-4 text-muted-foreground" />
                 )}
-              </div>
+              </button>
 
               {isCustomOpenAIAdvancedOpen && (
                 <div className="space-y-3 pl-2 border-l-2 border-muted mt-2">
@@ -1180,78 +1184,66 @@ export function ModelSettingsModal({
 
         {modelConfig.provider === 'ollama' && (
           <div>
-            <div
-              className="flex items-center justify-between cursor-pointer py-2"
-              onClick={() => setIsEndpointSectionCollapsed(!isEndpointSectionCollapsed)}
-            >
-              <Label className="cursor-pointer">{t('customEndpointOptional')}</Label>
-              {isEndpointSectionCollapsed ? (
-                <ChevronDown className="h-4 w-4 text-muted-foreground" />
-              ) : (
-                <ChevronUp className="h-4 w-4 text-muted-foreground" />
-              )}
-            </div>
-
-            {!isEndpointSectionCollapsed && (
-              <>
-                <p className="text-sm text-muted-foreground mt-1 mb-2">
-                  Leave empty or enter a custom endpoint (e.g., http://x.yy.zz:11434)
-                </p>
-                <div className="flex gap-2 mt-1">
-                  <div className="relative flex-1">
-                    <Input
-                      type="url"
-                      value={ollamaEndpoint}
-                      onChange={(e) => {
-                        setOllamaEndpoint(e.target.value);
-                        // Clear models and errors when endpoint changes to avoid showing stale data
-                        if (e.target.value.trim() !== lastFetchedEndpoint.trim()) {
-                          setModels([]);
-                          setError(''); // Clear error state
-                        }
-                      }}
-                      placeholder="http://localhost:11434"
-                      className={cn(
-                        "pr-10",
-                        endpointValidationState === 'invalid' && "border-red-500"
-                      )}
-                    />
-                    {endpointValidationState === 'valid' && (
-                      <CheckCircle2 className="absolute right-3 top-1/2 -translate-y-1/2 h-5 w-5 text-green-500" />
-                    )}
-                    {endpointValidationState === 'invalid' && (
-                      <XCircle className="absolute right-3 top-1/2 -translate-y-1/2 h-5 w-5 text-red-500" />
-                    )}
-                  </div>
-                  <Button
-                    type="button"
-                    size={'sm'}
-                    onClick={() => fetchOllamaModels()}
-                    disabled={isLoadingOllama}
-                    variant="outline"
-                    className="whitespace-nowrap"
-                  >
-                    {isLoadingOllama ? (
-                      <>
-                        <RefreshCw className="mr-2 h-4 w-4 animate-spin" />
-                        {t('fetching')}
-                      </>
-                    ) : (
-                      <>
-                        <RefreshCw className="mr-2 h-4 w-4" />
-                        {t('fetchModels')}
-                      </>
-                    )}
-                  </Button>
-                </div>
-                {ollamaEndpointChanged && !error && (
-                  <Alert className="mt-3 border-yellow-500 bg-yellow-50">
-                    <AlertDescription className="text-yellow-800">
-                      {t('endpointChangedWarning')}
-                    </AlertDescription>
-                  </Alert>
+            {/* Always visible: the address decides whether "This computer
+                only" lets the request through. */}
+            <Label htmlFor="ollama-endpoint">{t('ollamaAddress')}</Label>
+            <p className="text-sm text-muted-foreground mt-1 mb-2">
+              {t('ollamaAddressHint')}
+            </p>
+            <div className="flex gap-2 mt-1">
+              <div className="relative flex-1">
+                <Input
+                  id="ollama-endpoint"
+                  type="url"
+                  value={ollamaEndpoint}
+                  onChange={(e) => {
+                    setOllamaEndpoint(e.target.value);
+                    // Clear models and errors when endpoint changes to avoid showing stale data
+                    if (e.target.value.trim() !== lastFetchedEndpoint.trim()) {
+                      setModels([]);
+                      setError(''); // Clear error state
+                    }
+                  }}
+                  placeholder="http://localhost:11434"
+                  className={cn(
+                    "pr-10",
+                    endpointValidationState === 'invalid' && "border-red-500"
+                  )}
+                />
+                {endpointValidationState === 'valid' && (
+                  <CheckCircle2 className="absolute right-3 top-1/2 -translate-y-1/2 h-5 w-5 text-green-500" />
                 )}
-              </>
+                {endpointValidationState === 'invalid' && (
+                  <XCircle className="absolute right-3 top-1/2 -translate-y-1/2 h-5 w-5 text-red-500" />
+                )}
+              </div>
+              <Button
+                type="button"
+                size={'sm'}
+                onClick={() => fetchOllamaModels()}
+                disabled={isLoadingOllama}
+                variant="outline"
+                className="whitespace-nowrap"
+              >
+                {isLoadingOllama ? (
+                  <>
+                    <RefreshCw className="mr-2 h-4 w-4 animate-spin" />
+                    {t('fetching')}
+                  </>
+                ) : (
+                  <>
+                    <RefreshCw className="mr-2 h-4 w-4" />
+                    {t('fetchModels')}
+                  </>
+                )}
+              </Button>
+            </div>
+            {ollamaEndpointChanged && !error && (
+              <Alert className="mt-3 border-yellow-500 bg-yellow-50">
+                <AlertDescription className="text-yellow-800">
+                  {t('endpointChangedWarning')}
+                </AlertDescription>
+              </Alert>
             )}
           </div>
         )}
