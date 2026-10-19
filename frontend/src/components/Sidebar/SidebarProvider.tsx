@@ -58,7 +58,7 @@ export interface CurrentMeeting {
   id: string;
   title: string;
   created_at?: string;
-  /** Approx length in seconds (from transcript timings). */
+  /** Length of the recording in seconds (see `meeting_duration` in api.rs). */
   duration_seconds?: number;
   /** Client this recording is filed under, or null while it is unassigned. */
   client_id?: string | null;

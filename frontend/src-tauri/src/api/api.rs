@@ -29,7 +29,7 @@ pub struct Meeting {
     pub title: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub created_at: Option<String>,
-    /// Approx length of the meeting in seconds (from last transcript end time).
+    /// Length of the meeting in seconds; see [`meeting_duration`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub duration_seconds: Option<f64>,
     /// Client this meeting is filed under, or `None` while it is unassigned.
@@ -224,7 +224,6 @@ pub async fn api_get_meetings<R: Runtime>(
         Ok(meeting_models) => {
             log_info!("Successfully got {} meetings", meeting_models.len());
 
-            // Duration = furthest audio_end_time on any transcript for that meeting.
             let mut result: Vec<Meeting> = Vec::with_capacity(meeting_models.len());
             for m in meeting_models {
                 let metadata_started_at = m.folder_path.as_deref().and_then(|folder| {
@@ -240,14 +239,8 @@ pub async fn api_get_meetings<R: Runtime>(
                         .await
                         .map_err(|e| format!("Failed to repair meeting start time: {}", e))?;
                 }
-                let duration_seconds: Option<f64> = sqlx::query_scalar(
-                    "SELECT MAX(COALESCE(audio_end_time, audio_start_time + COALESCE(duration, 0))) FROM transcripts WHERE meeting_id = ?",
-                )
-                .bind(&m.id)
-                .fetch_one(pool)
-                .await
-                .ok()
-                .flatten();
+                let duration_seconds =
+                    meeting_duration(pool, &m.id, m.folder_path.as_deref()).await;
 
                 result.push(Meeting {
                     id: m.id,
@@ -1060,6 +1053,34 @@ pub async fn api_save_transcript<R: Runtime>(
     }
 }
 
+/// How long a meeting's recording is, in seconds.
+///
+/// The length saved with the recording comes first: it is what the player
+/// shows, and it stays put when the meeting is transcribed again. Recordings
+/// saved without one fall back to where the transcript ends, which misses any
+/// silence at the end and is absent when nothing was transcribed. The audio
+/// file itself is no help there: a recording is a fragmented MP4 whose header
+/// gives no length, and decoding it for a list would cost far too much.
+async fn meeting_duration(
+    pool: &sqlx::SqlitePool,
+    meeting_id: &str,
+    folder_path: Option<&str>,
+) -> Option<f64> {
+    if let Some(seconds) = folder_path
+        .and_then(|folder| crate::audio::orphan_recordings::metadata_duration(std::path::Path::new(folder)))
+    {
+        return Some(seconds);
+    }
+    sqlx::query_scalar(
+        "SELECT MAX(COALESCE(audio_end_time, audio_start_time + COALESCE(duration, 0))) FROM transcripts WHERE meeting_id = ?",
+    )
+    .bind(meeting_id)
+    .fetch_one(pool)
+    .await
+    .ok()
+    .flatten()
+}
+
 pub(crate) fn recording_started_at_from_folder(folder_path: &str) -> Option<DateTime<Utc>> {
     let metadata_path = std::path::Path::new(folder_path).join("metadata.json");
     let metadata = match std::fs::read_to_string(&metadata_path) {
@@ -1463,6 +1484,43 @@ mod tests {
             .await
             .unwrap()
             == 0
+    }
+
+    #[tokio::test]
+    async fn the_duration_is_the_saved_length_of_the_recording() {
+        let folder = tempfile::tempdir().unwrap();
+        let folder_text = folder.path().to_str().unwrap().to_string();
+        let pool = archive_with(Some(&folder_text)).await;
+        // The transcript ends before the recording does: silence at the end.
+        sqlx::query(
+            "INSERT INTO transcripts (id, meeting_id, transcript, timestamp, audio_start_time, audio_end_time) \
+             VALUES ('t1', 'm1', 'Встреча в четверг', '00:00', 20.0, 24.5)",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        let duration = || super::meeting_duration(&pool, "m1", Some(&folder_text));
+
+        // Saved before the length was: the transcript is all there is.
+        assert_eq!(duration().await, Some(24.5));
+        std::fs::write(folder.path().join("metadata.json"), r#"{"duration_seconds": null}"#).unwrap();
+        assert_eq!(duration().await, Some(24.5));
+        std::fs::write(folder.path().join("metadata.json"), r#"{"duration_seconds": 0.0}"#).unwrap();
+        assert_eq!(duration().await, Some(24.5));
+
+        std::fs::write(folder.path().join("metadata.json"), r#"{"duration_seconds": 30.0}"#).unwrap();
+        assert_eq!(duration().await, Some(30.0));
+        // Transcribed again: the recording is as long as it was.
+        sqlx::query("UPDATE transcripts SET audio_end_time = 22.0 WHERE id = 't1'")
+            .execute(&pool)
+            .await
+            .unwrap();
+        assert_eq!(duration().await, Some(30.0));
+
+        // Nothing transcribed at all still has a length.
+        sqlx::query("DELETE FROM transcripts").execute(&pool).await.unwrap();
+        assert_eq!(duration().await, Some(30.0));
+        assert_eq!(super::meeting_duration(&pool, "m1", None).await, None);
     }
 
     #[tokio::test]
