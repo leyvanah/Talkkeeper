@@ -257,6 +257,15 @@ pub fn rekey_folder(folder: &Path, from: &[u8], to: Option<&[u8]>) -> Conversion
 
 /// Swap a verified replacement in for the original.
 fn put_in_place(path: &Path, replacement: &Path) -> anyhow::Result<()> {
+    // The digest check may have read the replacement back from the cache. Its
+    // bytes have to be on the disk before the original goes, or a power cut
+    // can leave the rename and lose the contents. Opened for writing: Windows
+    // refuses to flush a handle that is only open for reading.
+    std::fs::OpenOptions::new()
+        .write(true)
+        .open(replacement)?
+        .sync_all()?;
+
     // From here on the original is expendable, but not before.
     let superseded = with_suffix(path, SUPERSEDED_SUFFIX);
     let _ = std::fs::remove_file(&superseded);

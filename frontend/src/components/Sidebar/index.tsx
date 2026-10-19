@@ -582,6 +582,33 @@ const Sidebar: React.FC = () => {
     }
   };
 
+  // The confirmation says how many people go with the client. The tree does
+  // not know that, and a stale count in a delete dialog would be a wrong
+  // promise, so it is asked for at the moment of the click.
+  const confirmClientDelete = async (clientId: string, name: string) => {
+    let counts: { meetingCount: number; peopleCount: number };
+    try {
+      counts = await invoke('api_client_deletion_preview', { clientId });
+    } catch (error) {
+      toastFailure(t('clientDeleteFailed'), 'client-delete-preview', error);
+      return;
+    }
+    const client = { id: clientId, meetingCount: counts.meetingCount };
+    // Deleting a client never deletes recordings — say so, and say who goes.
+    setConfirm({
+      title: t('deleteClientTitle', { name }),
+      description: counts.meetingCount > 0
+        ? t('deleteClientWithMeetingsDescription', {
+          count: counts.meetingCount,
+          people: counts.peopleCount,
+        })
+        : t('deleteClientDescription', { people: counts.peopleCount }),
+      confirmLabel: tc('delete'),
+      busyLabel: tc('deleting'),
+      run: () => handleClientDelete(client),
+    });
+  };
+
 
   // Expose setShowModelSettings to window for Rust tray to call
   useEffect(() => {
@@ -769,17 +796,7 @@ const Sidebar: React.FC = () => {
                   <button
                     onClick={(e) => {
                       e.stopPropagation();
-                      const client = { id: item.clientId!, meetingCount: item.meetingCount ?? 0 };
-                      // Deleting a client never deletes recordings — say so.
-                      setConfirm({
-                        title: t('deleteClientTitle', { name: item.title }),
-                        description: client.meetingCount > 0
-                          ? t('deleteClientWithMeetingsDescription', { count: client.meetingCount })
-                          : t('deleteClientDescription'),
-                        confirmLabel: tc('delete'),
-                        busyLabel: tc('deleting'),
-                        run: () => handleClientDelete(client),
-                      });
+                      void confirmClientDelete(item.clientId!, item.title);
                     }}
                     className="rounded-md p-1 text-[var(--af-text-3)] hover:bg-red-500/10 hover:text-red-500"
                     aria-label={t('deleteClientAria')}

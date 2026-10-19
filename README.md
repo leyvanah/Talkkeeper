@@ -111,8 +111,10 @@ keystore wherever you choose. Keep that copy *apart from the recordings*:
 together they allow offline guessing of the password, which is exactly why the
 app does not keep one beside them for you. When the uninstaller is asked to
 delete the app data, it asks separately — naming what will become unreadable —
-saves a copy of the key to `Documents\Talkkeeper-key-backup`, and refuses to wipe
-anything if that copy could not be written.
+then asks where to save a copy of the key (`Documents\Talkkeeper-key-backup` by
+default; pick a folder that is not synced to OneDrive or another cloud). Each
+copy gets its own name with the date and time, so an earlier one is never
+overwritten. Nothing is wiped if the copy could not be written.
 
 ### Quick unlock (Windows Hello, optional, off by default)
 

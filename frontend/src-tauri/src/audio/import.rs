@@ -1119,9 +1119,16 @@ pub async fn start_import_audio_command<R: Runtime>(
         return Err("Import already in progress".to_string());
     }
 
+    // Counted as running before the check, so setting or removing the password
+    // either sees this import or this import sees the change, never neither.
+    let busy = crate::security::session::busy();
+    if crate::security::session::protection_changing() {
+        return Err("Archive protection is being changed".to_string());
+    }
+
     // Spawn import in background
     tauri::async_runtime::spawn(async move {
-        let _busy = crate::security::session::busy();
+        let _busy = busy;
         let result = start_import(app, source_path, title, language, model, provider).await;
 
         if let Err(e) = result {

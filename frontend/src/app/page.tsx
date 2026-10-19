@@ -6,7 +6,6 @@ import { useWindowTitle } from '@/components/AppHeader';
 import { motion } from 'framer-motion';
 import { RecordingControls } from '@/components/RecordingControls';
 import { useSidebar } from '@/components/Sidebar/SidebarProvider';
-import { usePermissionCheck } from '@/hooks/usePermissionCheck';
 import { useRecordingState, RecordingStatus } from '@/contexts/RecordingStateContext';
 import { useTranscripts } from '@/contexts/TranscriptContext';
 import { useConfig } from '@/contexts/ConfigContext';
@@ -37,7 +36,6 @@ export default function Home() {
   const tn = useTranslations('notes');
   // Local page state (not moved to contexts)
   const [isRecording, setIsRecordingState] = useState(false);
-  const [barHeights, setBarHeights] = useState(['58%', '76%', '58%']);
   const [showRecoveryDialog, setShowRecoveryDialog] = useState(false);
 
   // Use contexts for state management
@@ -76,7 +74,6 @@ export default function Home() {
   const showNotes = recordingState.isRecording && notesOpen;
 
   // Hooks
-  const { hasMicrophone } = usePermissionCheck();
   const { setIsMeetingActive, refetchMeetings } = useSidebar();
   const { begin: beginPostCall } = usePostCall();
   const { modals, messages, showModal, hideModal } = useModalState(transcriptModelConfig);
@@ -217,22 +214,6 @@ export default function Home() {
     }
   };
 
-  useEffect(() => {
-    if (recordingState.isRecording) {
-      const interval = setInterval(() => {
-        setBarHeights(prev => {
-          const newHeights = [...prev];
-          newHeights[0] = Math.random() * 20 + 10 + 'px';
-          newHeights[1] = Math.random() * 20 + 10 + 'px';
-          newHeights[2] = Math.random() * 20 + 10 + 'px';
-          return newHeights;
-        });
-      }, 300);
-
-      return () => clearInterval(interval);
-    }
-  }, [recordingState.isRecording]);
-
   // Computed values using global status
   const isProcessingStop = status === RecordingStatus.PROCESSING_TRANSCRIPTS || isProcessing;
 
@@ -295,9 +276,9 @@ export default function Home() {
           </aside>
         )}
 
-        {/* Recording controls - only show when permissions are granted or already recording and not showing status messages */}
-        {(hasMicrophone || isRecording) &&
-          status !== RecordingStatus.PROCESSING_TRANSCRIPTS &&
+        {/* Recording controls - hidden only behind the status overlays. Without a
+            usable microphone the start button stays, disabled, with the reason. */}
+        {status !== RecordingStatus.PROCESSING_TRANSCRIPTS &&
           status !== RecordingStatus.SAVING && (
             <div className="fixed bottom-12 left-0 right-0 z-30 pointer-events-none">
               <div
@@ -313,7 +294,6 @@ export default function Home() {
                       onRecordingStart={handleRecordingStart}
                       onTranscriptReceived={() => { }} // Not actually used by RecordingControls
                       onStopInitiated={() => setIsStopping(true)}
-                      barHeights={barHeights}
                       onTranscriptionError={(message) => {
                         showModal('errorAlert', message);
                       }}
