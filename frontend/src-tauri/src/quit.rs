@@ -19,6 +19,7 @@ use std::time::{Duration, Instant};
 use tauri::{AppHandle, Emitter, Runtime};
 
 use crate::audio::recording_commands;
+use crate::security::session::{busy, BusyGuard};
 
 /// Sent to the main window to ask whether to stop the recording and quit.
 const ASK_EVENT: &str = "quit-requested-during-recording";
@@ -31,17 +32,43 @@ const SAVE_WAIT: Duration = Duration::from_secs(180);
 
 const POLL: Duration = Duration::from_millis(200);
 
-/// When the main window was last handed a stopped recording to save, until it
-/// reports the save settled. `None` when nothing is waiting to be saved.
-static SAVE_HANDED_AT: Mutex<Option<Instant>> = Mutex::new(None);
+/// A stopped recording the main window has been handed to save.
+struct HandedSave {
+    at: Instant,
+    /// Keeps the idle lock off until the window has written the meeting. The
+    /// stop is guarded in the backend, but the save comes seconds later from
+    /// the window; a lock in between drops the key the title and transcript
+    /// are sealed with, and the meeting never reaches the list.
+    _busy: BusyGuard,
+}
 
-fn handed_at() -> std::sync::MutexGuard<'static, Option<Instant>> {
-    SAVE_HANDED_AT.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+/// The save the main window was last handed, until it reports it settled.
+/// `None` when nothing is waiting to be saved.
+static SAVE_HANDED: Mutex<Option<HandedSave>> = Mutex::new(None);
+
+fn handed() -> std::sync::MutexGuard<'static, Option<HandedSave>> {
+    SAVE_HANDED.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
 /// The main window is about to be given a stopped recording to save.
 pub fn save_handed_to_window() {
-    *handed_at() = Some(Instant::now());
+    let at = Instant::now();
+    *handed() = Some(HandedSave { at, _busy: busy() });
+    // A window that never answers must not keep the archive open for good:
+    // past the same wait Quit gives the save, the idle lock may go ahead.
+    std::thread::spawn(move || {
+        std::thread::sleep(SAVE_WAIT);
+        give_up_on(at);
+    });
+}
+
+/// Lets go of the save handed over at `at`, if it is still the one waiting.
+fn give_up_on(at: Instant) {
+    let mut handed = handed();
+    if handed.as_ref().is_some_and(|save| save.at == at) {
+        log::warn!("The window did not report the meeting saved within {:?}", SAVE_WAIT);
+        *handed = None;
+    }
 }
 
 /// The window has finished with the recording it was handed: saved it,
@@ -49,7 +76,7 @@ pub fn save_handed_to_window() {
 /// handed over at all.
 #[tauri::command]
 pub fn recording_save_settled() {
-    *handed_at() = None;
+    *handed() = None;
 }
 
 fn save_still_pending(handed: Option<Instant>, now: Instant) -> bool {
@@ -57,7 +84,7 @@ fn save_still_pending(handed: Option<Instant>, now: Instant) -> bool {
 }
 
 fn save_pending() -> bool {
-    save_still_pending(*handed_at(), Instant::now())
+    save_still_pending(handed().as_ref().map(|save| save.at), Instant::now())
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -184,11 +211,26 @@ mod tests {
         assert!(!save_still_pending(Some(now), now + SAVE_WAIT));
     }
 
+    // One test for everything that touches the process-wide handed save, so
+    // parallel tests cannot interleave on it.
     #[test]
-    fn settling_clears_the_pending_save() {
+    fn a_handed_save_holds_off_the_idle_lock_until_settled_or_given_up() {
         save_handed_to_window();
         assert!(save_pending());
+        // The idle lock waits while this is true.
+        assert!(crate::security::session::background_work_running());
         recording_save_settled();
         assert!(!save_pending());
+        assert!(handed().is_none(), "settling releases the guard");
+
+        save_handed_to_window();
+        let first = handed().as_ref().map(|save| save.at).unwrap();
+        // The deadline of an earlier handover does not cut a later one short.
+        give_up_on(first - Duration::from_millis(1));
+        assert!(save_pending());
+        // A window that never answers is let go at its own deadline.
+        give_up_on(first);
+        assert!(!save_pending());
+        assert!(handed().is_none(), "giving up releases the guard");
     }
 }

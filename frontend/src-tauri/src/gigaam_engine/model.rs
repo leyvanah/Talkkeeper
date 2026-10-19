@@ -23,6 +23,7 @@ use std::path::Path;
 
 use super::features::{FeatureExtractor, N_MELS};
 use crate::audio::word_timing::{words_from_pieces, TimedPiece, WordTiming};
+use crate::onnx_threads::Role;
 
 /// Frames the encoder collapses into one output step.
 const SUBSAMPLING_FACTOR: usize = 4;
@@ -123,9 +124,9 @@ impl Predictor {
 impl GigaamModel {
     pub fn new<P: AsRef<Path>>(model_dir: P) -> Result<Self, GigaamError> {
         let dir = model_dir.as_ref();
-        let encoder = Self::init_session(dir, MODEL_FILES[0])?;
-        let decoder = Self::init_session(dir, MODEL_FILES[1])?;
-        let joint = Self::init_session(dir, MODEL_FILES[2])?;
+        let encoder = Self::init_session(dir, MODEL_FILES[0], Role::GigaamEncoder)?;
+        let decoder = Self::init_session(dir, MODEL_FILES[1], Role::GigaamStep)?;
+        let joint = Self::init_session(dir, MODEL_FILES[2], Role::GigaamStep)?;
         let (vocab, blank_idx) = Self::load_vocab(dir)?;
 
         log::info!(
@@ -145,7 +146,7 @@ impl GigaamModel {
     }
 
     /// Prefer the int8 graph; fall back to the full-precision one.
-    fn init_session(model_dir: &Path, stem: &str) -> Result<Session, GigaamError> {
+    fn init_session(model_dir: &Path, stem: &str, role: Role) -> Result<Session, GigaamError> {
         let quantized = model_dir.join(format!("{}.int8.onnx", stem));
         let full = model_dir.join(format!("{}.onnx", stem));
         let path = if quantized.exists() {
@@ -160,11 +161,10 @@ impl GigaamModel {
         };
 
         log::info!("Loading GigaAM graph {}", path.display());
-        let session = Session::builder()?
+        let builder = Session::builder()?
             .with_optimization_level(GraphOptimizationLevel::Level3)?
-            .with_execution_providers(vec![CPUExecutionProvider::default().build()])?
-            .with_parallel_execution(true)?
-            .commit_from_file(path)?;
+            .with_execution_providers(vec![CPUExecutionProvider::default().build()])?;
+        let session = crate::onnx_threads::budget(builder, role)?.commit_from_file(path)?;
 
         Ok(session)
     }

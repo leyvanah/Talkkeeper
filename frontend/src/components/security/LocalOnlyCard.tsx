@@ -3,7 +3,7 @@
 /**
  * Local-only mode: whether summaries, the assistant and speech recognition may
  * talk to anything but this computer. The backend enforces it on every request
- * (`network_policy`); this card only shows and changes the setting.
+ * (`network_policy`); this section only shows and changes the setting.
  */
 
 import { useEffect, useState } from 'react'
@@ -39,30 +39,28 @@ export function LocalOnlyCard() {
   }
 
   return (
-    <div className="rounded-lg border border-gray-200 bg-white p-6 shadow-sm">
-      <div className="flex items-start gap-3">
-        <WifiOff className="mt-0.5 h-5 w-5 shrink-0 text-blue-500" />
-        <div className="min-w-0 flex-1">
-          <div className="flex items-center justify-between gap-4">
-            <h3 className="text-lg font-semibold text-gray-900">{t('localOnlyTitle')}</h3>
-            <Switch
-              checked={enabled ?? true}
-              disabled={busy || enabled === null}
-              onCheckedChange={(wanted) => change(wanted)}
-              aria-label={t('localOnlyTitle')}
-            />
-          </div>
-          <p className="mt-1 text-sm text-gray-600">{t('localOnlyDescription')}</p>
-          {enabled === false && (
-            <p className="mt-2 text-sm text-amber-500">{t('localOnlyOffWarning')}</p>
-          )}
-          {error && (
-            <p role="alert" className="mt-2 text-sm text-red-500">
-              {error}
-            </p>
-          )}
+    <div>
+      <div className="flex items-start justify-between gap-4">
+        <div className="min-w-0">
+          <h4 className="flex items-center gap-2 text-sm font-medium text-gray-900">
+            <WifiOff className="h-4 w-4 text-gray-500" />
+            {t('localOnlyTitle')}
+          </h4>
+          <p className="mt-1 text-xs text-gray-500">{t('localOnlyDescription')}</p>
         </div>
+        <Switch
+          checked={enabled ?? true}
+          disabled={busy || enabled === null}
+          onCheckedChange={(wanted) => change(wanted)}
+          aria-label={t('localOnlyTitle')}
+        />
       </div>
+      {enabled === false && <p className="mt-2 text-sm text-amber-500">{t('localOnlyOffWarning')}</p>}
+      {error && (
+        <p role="alert" className="mt-2 text-sm text-red-500">
+          {error}
+        </p>
+      )}
     </div>
   )
 }

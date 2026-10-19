@@ -3,11 +3,13 @@
 import { useEffect, useState } from "react"
 import { useTranslations } from "next-intl"
 import { invoke } from "@tauri-apps/api/core"
-import { Github, Shield, Cpu, Heart, FileText } from "lucide-react"
+import { Github, Shield, Cpu, Heart, FileText, Download } from "lucide-react"
+import Image from "next/image"
 
 /**
  * About panel for Talkkeeper. Shows version, a short description,
  * and links to the source and privacy policy. Purely informational.
+ * The same panel is shown in Settings and in the dialog behind the sidebar logo.
  */
 export function AboutSettings() {
   const t = useTranslations('about');
@@ -36,9 +38,8 @@ export function AboutSettings() {
       {/* Identity card */}
       <div className="bg-white rounded-lg border border-gray-200 p-6 shadow-sm">
         <div className="flex items-center gap-4">
-          <div className="flex h-14 w-14 items-center justify-center rounded-2xl bg-gradient-to-br from-blue-500 to-purple-600 text-white text-2xl font-bold shadow-sm">
-            M
-          </div>
+          {/* Same artwork as the app icon (src-tauri/icons). */}
+          <Image src="/icon_128x128.png" alt="" width={56} height={56} className="h-14 w-14" />
           <div>
             <h3 className="text-xl font-semibold text-gray-900">Talkkeeper</h3>
             <p className="text-sm text-gray-600">
@@ -79,6 +80,14 @@ export function AboutSettings() {
         >
           <Github className="w-4 h-4 text-gray-700" />
           <span className="text-sm text-gray-800">{t('sourceOnGithub')}</span>
+        </button>
+        {/* No update source of our own yet: point at the releases instead. */}
+        <button
+          onClick={() => openUrl(`${REPO_URL}/releases`)}
+          className="flex items-center gap-3 w-full text-left px-3 py-2 rounded-md border border-gray-200 hover:border-blue-400 hover:bg-blue-50 transition-colors"
+        >
+          <Download className="w-4 h-4 text-gray-700" />
+          <span className="text-sm text-gray-800">{t('viewReleases')}</span>
         </button>
         <button
           onClick={() => openUrl(`${REPO_URL}/blob/main/PRIVACY_POLICY.md`)}

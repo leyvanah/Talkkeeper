@@ -11,11 +11,13 @@ import { BareWindowBar } from '@/components/BareWindowBar'
 import MainContent from '@/components/MainContent'
 import { Toaster, toast } from 'sonner'
 import "sonner/dist/styles.css"
-import { useState, useEffect, useCallback } from 'react'
-import { usePathname } from 'next/navigation'
+import { useState, useEffect, useCallback, useRef } from 'react'
+import { usePathname, useRouter } from 'next/navigation'
 import { listen, UnlistenFn } from '@tauri-apps/api/event'
 import { invoke } from '@tauri-apps/api/core'
 import { applyAppTheme, getSavedAppTheme } from '@/lib/app-theme'
+import { copyText } from '@/lib/private-clipboard'
+import { installPrivateCopy } from '@/lib/private-copy-events'
 import { LocaleProvider, getLocaleMessages } from '@/contexts/LocaleContext'
 import { SecurityProvider, useSecurity } from '@/contexts/SecurityContext'
 import { LockScreen } from '@/components/security/LockScreen'
@@ -40,6 +42,8 @@ import GlobalSearchDialog from '@/components/GlobalSearchDialog'
 import CrashReportDialog from '@/components/CrashReportDialog'
 import { getPendingCrashReport, type PendingCrashReport } from '@/services/crashReportService'
 import { Button } from '@/components/ui/button'
+import { logFailure } from '@/lib/failure'
+import { archiveIsOpen } from '@/lib/archive-gate'
 
 
 const sourceSans3 = Source_Sans_3({
@@ -84,8 +88,20 @@ function ConditionalImportDialog({
  * unlocked. While the state is still being read it renders an empty ground
  * rather than a flash of the app.
  */
-function ArchiveGate({ children }: { children: React.ReactNode }) {
+function ArchiveGate({
+  children,
+  onOpenChange,
+}: {
+  children: React.ReactNode
+  /** Told whether the app is showing, for listeners that live above the gate. */
+  onOpenChange: (open: boolean) => void
+}) {
   const { status, loading } = useSecurity()
+  const open = archiveIsOpen({ status, loading })
+
+  useEffect(() => {
+    onOpenChange(open)
+  }, [open, onOpenChange])
 
   if (loading) {
     return (
@@ -123,17 +139,26 @@ export default function RootLayout({
   // location directly made the server draw the full app chrome and the client
   // the bare bar, which React reported as a hydration failure.
   const pathname = usePathname()
+  const router = useRouter()
   const isMiniBar = pathname?.startsWith('/minibar') ?? false
 
   const [showOnboarding, setShowOnboarding] = useState(false)
   const [onboardingCompleted, setOnboardingCompleted] = useState(false)
   const [startupResolved, setStartupResolved] = useState(false)
-  const [startupError, setStartupError] = useState<string | null>(null)
+  const [startupError, setStartupError] = useState(false)
   const [startupAttempt, setStartupAttempt] = useState(0)
   const [pendingCrashReport, setPendingCrashReport] = useState<PendingCrashReport | null>(null)
 
   // Import audio state
   const [showDropOverlay, setShowDropOverlay] = useState(false)
+  // The drop listeners live above the archive gate, so the gate reports here
+  // whether the app is showing. A file dropped on the lock screen is ignored:
+  // no toast over it, and no import dialog waiting behind it.
+  const archiveOpenRef = useRef(false)
+  const handleArchiveOpenChange = useCallback((open: boolean) => {
+    archiveOpenRef.current = open
+    if (!open) setShowDropOverlay(false)
+  }, [])
   const [showImportDialog, setShowImportDialog] = useState(false)
   const [importFilePath, setImportFilePath] = useState<string | null>(null)
 
@@ -147,7 +172,7 @@ export default function RootLayout({
 
     const initializeStartup = async () => {
       setStartupResolved(false)
-      setStartupError(null)
+      setStartupError(false)
       try {
         const status = await invoke<{ completed: boolean } | null>('get_onboarding_status')
         if (cancelled) return
@@ -163,9 +188,9 @@ export default function RootLayout({
           if (!cancelled) setPendingCrashReport(report)
         }
       } catch (error) {
-        console.error('[Layout] Failed to resolve startup state:', error)
+        logFailure('startup-check', error)
         if (cancelled) return
-        setStartupError('Talkkeeper could not verify local startup and crash-report state.')
+        setStartupError(true)
       } finally {
         if (!cancelled) setStartupResolved(true)
       }
@@ -177,6 +202,15 @@ export default function RootLayout({
     }
   }, [startupAttempt])
 
+  // Ctrl+C / Ctrl+X on a selection go through the private clipboard write, so
+  // selected summary or transcript text stays out of clipboard history.
+  useEffect(() => {
+    return installPrivateCopy(window, copyText, (error) => {
+      console.error('[Layout] Private copy failed:', error);
+      toast.error(getLocaleMessages().app.copySelectionFailed);
+    });
+  }, []);
+
   // Disable context menu in production
   useEffect(() => {
     if (process.env.NODE_ENV === 'production') {
@@ -186,8 +220,11 @@ export default function RootLayout({
     }
   }, []);
   useEffect(() => {
-    if (!startupResolved || startupError || pendingCrashReport) return
-    // Listen for tray recording toggle request
+    if (isMiniBar || !startupResolved || startupError || pendingCrashReport) return
+    // Start from the tray's menu. The recording is started by the home page
+    // (useRecordingStart), so on another page the app navigates there first,
+    // in place: a page reload used to start before the settings had loaded and
+    // checked the default engine instead of the chosen one.
     const unlisten = listen('request-recording-toggle', () => {
       console.log('[Layout] Received request-recording-toggle from tray');
 
@@ -196,17 +233,22 @@ export default function RootLayout({
         toast.error(m.completeSetupFirst, {
           description: m.completeSetupFirstOnboarding
         });
-      } else {
-        // If in main app, forward to useRecordingStart via window event
-        console.log('[Layout] Forwarding to start-recording-from-sidebar');
+      } else if (pathname === '/') {
         window.dispatchEvent(new CustomEvent('start-recording-from-sidebar'));
+      } else {
+        try {
+          sessionStorage.setItem('autoStartRecording', 'true');
+        } catch {
+          /* the start is then left to the owner */
+        }
+        router.push('/');
       }
     });
 
     return () => {
       unlisten.then(fn => fn());
     };
-  }, [showOnboarding, startupResolved, startupError, pendingCrashReport]);
+  }, [isMiniBar, pathname, router, showOnboarding, startupResolved, startupError, pendingCrashReport]);
 
   // Meeting Detection: prompt to start recording when a meeting app is detected.
   useEffect(() => {
@@ -228,46 +270,39 @@ export default function RootLayout({
           window.dispatchEvent(new CustomEvent('start-recording-from-sidebar'));
         };
 
-        // OS toast with a Start recording button (Windows native path).
+        const m = getLocaleMessages().app;
+        const title = m.meetingDetectedTitle.replace('{app}', app);
+
+        // OS toast; a click on it only brings the window forward. Recording
+        // starts here, from the in-app prompt below.
         if (notify) {
           invoke('show_simple_notification', {
-            title: `${app} meeting detected`,
-            body: 'Start recording this meeting now?',
+            title,
+            body: m.meetingDetectedNotifyBody,
           }).catch(() => {});
         }
 
         // In-app prompt with a one-click start action.
-        toast(`${app} meeting detected`, {
-          description: 'Capture mic + system audio in Talkkeeper.',
+        toast(title, {
+          description: m.meetingDetectedDescription,
           duration: 20000,
           action: {
-            label: 'Start recording',
+            label: m.meetingDetectedStart,
             onClick: startRecording,
           },
         });
       }
     );
 
-    // OS notification button → same start path as sidebar / in-app toast.
-    const unlistenStart = listen('start-recording-from-notification', () => {
-      if (showOnboarding) {
-        const m = getLocaleMessages().app;
-        toast.error(m.completeSetupFirst, {
-          description: m.completeSetupFirstShort,
-        });
-        return;
-      }
-      window.dispatchEvent(new CustomEvent('start-recording-from-sidebar'));
-    });
-
     return () => {
       unlisten.then((fn) => fn());
-      unlistenStart.then((fn) => fn());
     };
   }, [showOnboarding, startupResolved, startupError, pendingCrashReport]);
 
   // Handle file drop for audio import
   const handleFileDrop = useCallback((paths: string[]) => {
+    if (!archiveOpenRef.current) return
+
     // Check if beta features are enabled (read from localStorage directly since we're outside ConfigProvider)
     const betaFeatures = loadBetaFeatures();
 
@@ -307,7 +342,7 @@ export default function RootLayout({
     const setupListeners = async () => {
       // Drag enter/over - show overlay only if beta feature is enabled
       const unlistenDragEnter = await listen('tauri://drag-enter', () => {
-        if (loadBetaFeatures().importAndRetranscribe) {
+        if (archiveOpenRef.current && loadBetaFeatures().importAndRetranscribe) {
           setShowDropOverlay(true);
         }
       });
@@ -405,7 +440,7 @@ export default function RootLayout({
             <BareWindowBar />
             <div className="max-w-md rounded-xl border border-[var(--af-border)] bg-[var(--af-panel)] p-6 text-center shadow-xl">
               <h1 className="text-lg font-semibold text-[var(--af-text)]">{getLocaleMessages().app.startupCheckFailed}</h1>
-              <p className="mt-2 text-sm text-[var(--af-text-2)]">{startupError}</p>
+              <p className="mt-2 text-sm text-[var(--af-text-2)]">{getLocaleMessages().app.startupCheckFailedDetail}</p>
               <Button className="mt-5" onClick={() => setStartupAttempt((value) => value + 1)}>
                 {getLocaleMessages().app.retry}
               </Button>
@@ -422,7 +457,7 @@ export default function RootLayout({
           </>
         ) : (
           <SecurityProvider>
-          <ArchiveGate>
+          <ArchiveGate onOpenChange={handleArchiveOpenChange}>
             <RecordingStateProvider>
               <TranscriptProvider>
                 <ConfigProvider>
@@ -435,7 +470,7 @@ export default function RootLayout({
                           <RetranscriptionProvider>
                           <PostCallProvider>
                           <RecordingPostProcessingProvider>
-                            <UpdateCheckProvider onboardingCompleted={onboardingCompleted}>
+                            <UpdateCheckProvider>
                               {onboardingCompleted && !showOnboarding && <GlobalSearchDialog />}
                               <ImportDialogProvider onOpen={handleOpenImportDialog}>
                                 {/* Download progress toast provider - listens for background downloads */}
