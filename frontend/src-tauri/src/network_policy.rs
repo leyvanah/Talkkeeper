@@ -195,7 +195,13 @@ mod tests {
         rust_files(&src, &mut files);
         assert!(files.len() > 50, "found only {} source files", files.len());
 
-        let constructors = ["Client::new(", "Client::builder(", "ClientBuilder::new(", "reqwest::get("];
+        let constructors = [
+            "Client::new(",
+            "Client::builder(",
+            "Client::default(",
+            "ClientBuilder::new(",
+            "reqwest::get(",
+        ];
         let mut found = Vec::new();
         for file in files {
             if file.file_name().is_some_and(|name| name == "network_policy.rs") {
@@ -261,10 +267,25 @@ mod tests {
         // A proxy as a company network, a VPN client or a debugging tool
         // would set it. `HTTP_PROXY` is what reqwest reads first, ahead of
         // the Windows setting; the address-blind handling is the same.
-        let saved: Vec<(&str, Option<std::ffi::OsString>)> = ["HTTP_PROXY", "NO_PROXY", "no_proxy"]
-            .into_iter()
-            .map(|name| (name, std::env::var_os(name)))
-            .collect();
+        // Put the variables back even when an assert below fails, so a
+        // failure here cannot spill into the tests that run alongside.
+        struct RestoreEnv(Vec<(&'static str, Option<std::ffi::OsString>)>);
+        impl Drop for RestoreEnv {
+            fn drop(&mut self) {
+                for (name, value) in self.0.drain(..) {
+                    match value {
+                        Some(value) => std::env::set_var(name, value),
+                        None => std::env::remove_var(name),
+                    }
+                }
+            }
+        }
+        let _restore = RestoreEnv(
+            ["HTTP_PROXY", "NO_PROXY", "no_proxy"]
+                .into_iter()
+                .map(|name| (name, std::env::var_os(name)))
+                .collect(),
+        );
         std::env::set_var("HTTP_PROXY", format!("http://{proxy}"));
         std::env::remove_var("NO_PROXY");
         std::env::remove_var("no_proxy");
@@ -304,12 +325,5 @@ mod tests {
             .unwrap();
         assert_eq!(target_hits.load(Ordering::SeqCst), 2);
         assert_eq!(proxy_hits.load(Ordering::SeqCst), 2);
-
-        for (name, value) in saved {
-            match value {
-                Some(value) => std::env::set_var(name, value),
-                None => std::env::remove_var(name),
-            }
-        }
     }
 }
