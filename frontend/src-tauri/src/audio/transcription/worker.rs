@@ -211,8 +211,11 @@ pub fn start_transcription_task<R: Runtime>(
                                     }
                                     "You".to_string()
                                 }
+                                // One person on the other end is "Guest" live,
+                                // after the offline pass and after "By device"
+                                // alike; numbers are for when there are several.
                                 crate::audio::recording_state::DeviceType::System if one_to_one => {
-                                    "Speaker 1".to_string()
+                                    "Guest".to_string()
                                 }
                                 crate::audio::recording_state::DeviceType::System => {
                                     match crate::diarization::online::assign_speaker(
