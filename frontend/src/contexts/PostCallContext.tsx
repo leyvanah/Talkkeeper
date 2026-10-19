@@ -45,6 +45,8 @@ import {
   type RequestedModel,
 } from '@/lib/enhancement-model';
 import { planPostCall, type PostCallPlan } from '@/lib/post-call-plan';
+import { useSecurity } from '@/contexts/SecurityContext';
+import { BackgroundSummary } from '@/components/MeetingDetails/BackgroundSummary';
 import { toastFailure } from '@/lib/failure';
 
 export type Stage = 'queued' | 'prompt' | 'enhancing' | 'diarizing' | 'error' | 'done';
@@ -175,6 +177,9 @@ export function PostCallProvider({ children }: { children: React.ReactNode }) {
   const runsRef = useRef(runs);
   runsRef.current = runs;
   const [versions, setVersions] = useState<Record<string, number>>({});
+  // Meetings processed while their page was not open, waiting for the
+  // summary the page would have started; one at a time, like the work.
+  const [summaryQueue, setSummaryQueue] = useState<string[]>([]);
 
   // Settings the steps need; kept current for code that outlives a render.
   const configRef = useRef({ selectedLanguage, transcriptModelConfig });
@@ -212,13 +217,20 @@ export function PostCallProvider({ children }: { children: React.ReactNode }) {
     return t('postCallFailedReason');
   }, [t]);
 
-  /** The transcript is final; remembered across a reload of the window. */
+  /**
+   * The transcript is final; remembered across a reload of the window, and
+   * across a restart by clearing the meeting's mark in the database.
+   */
   const settle = useCallback((meetingId: string) => {
     try {
       sessionStorage.setItem(completedKey(meetingId), 'completed');
     } catch {
       /* A reload would then offer the work again; nothing is lost. */
     }
+    void invoke('api_set_post_call_pending', { meetingId, pending: false }).catch((error) =>
+      // The next start would offer the work again; nothing is lost.
+      console.error('Could not clear the meeting\'s processing mark:', error),
+    );
     update(meetingId, { stage: 'done', error: null, failedStage: null });
   }, [update]);
 
@@ -255,7 +267,23 @@ export function PostCallProvider({ children }: { children: React.ReactNode }) {
             onClick: () => router.push(`/meeting-details?id=${encodeURIComponent(meetingId)}`),
           },
     });
+    // On its page the page starts the summary; elsewhere it would wait for
+    // the owner to open the meeting.
+    if (!showing) {
+      setSummaryQueue((queue) => (queue.includes(meetingId) ? queue : [...queue, meetingId]));
+    }
   }, [router, settle, t]);
+
+  /**
+   * Audio but no live text, and the owner chose not to refine it: nothing to
+   * label or summarise. Said as it is rather than as "complete"; the page's
+   * "transcribe again" still recovers the text from the audio.
+   */
+  const keepNoLiveText = useCallback((meetingId: string) => {
+    settle(meetingId);
+    drop(meetingId);
+    toast.info(t('postCallNoLiveText'), { description: t('postCallNoLiveTextDescription') });
+  }, [drop, settle, t]);
 
   /**
    * Nothing to refine: no audio, or no text the summary could start from.
@@ -420,6 +448,30 @@ export function PostCallProvider({ children }: { children: React.ReactNode }) {
   }, []);
   const transcriptVersion = useCallback((meetingId: string) => versions[meetingId] ?? 0, [versions]);
 
+  // A queue left by a quit, a restart or a reload of the window: a meeting
+  // stays marked in the database until its processing settles. Taken up once
+  // the archive is open, since the work writes sealed lines.
+  const { status: security } = useSecurity();
+  const archiveOpen = security?.state === 'unlocked' || security?.state === 'unconfigured';
+  const resumedRef = useRef(false);
+  useEffect(() => {
+    if (!archiveOpen || resumedRef.current) return;
+    resumedRef.current = true;
+    void invoke<{ meetingId: string; folderPath: string | null }[]>('api_list_post_call_pending')
+      .then((waiting) => {
+        const left = waiting.filter(({ meetingId }) => {
+          if (!readCompleted(meetingId)) return !runsRef.current[meetingId];
+          // Settled before a reload whose mark did not clear.
+          void invoke('api_set_post_call_pending', { meetingId, pending: false }).catch(() => {});
+          return false;
+        });
+        if (left.length === 0) return;
+        toast.info(t('postCallResuming', { count: left.length }));
+        for (const { meetingId, folderPath } of left) begin(meetingId, folderPath);
+      })
+      .catch((error) => console.error('Could not read the recordings waiting for processing:', error));
+  }, [archiveOpen, begin, t]);
+
   const value = useMemo(
     () => ({ begin, isPending, isDone, release, transcriptVersion }),
     [begin, isPending, isDone, release, transcriptVersion],
@@ -440,6 +492,13 @@ export function PostCallProvider({ children }: { children: React.ReactNode }) {
   return (
     <PostCallContext.Provider value={value}>
       {children}
+      {summaryQueue[0] && (
+        <BackgroundSummary
+          key={summaryQueue[0]}
+          meetingId={summaryQueue[0]}
+          onDone={() => setSummaryQueue((queue) => queue.slice(1))}
+        />
+      )}
       {asking && (
         <PostCallQuestion
           key={asking.meetingId}
@@ -451,7 +510,13 @@ export function PostCallProvider({ children }: { children: React.ReactNode }) {
           }}
           onSkipEnhancement={(count) => {
             // The X at the count question: keep the live transcript, but still
-            // tell the speakers apart and let the summary go ahead.
+            // tell the speakers apart and let the summary go ahead. A recording
+            // made while another was being refined has no live text: there is
+            // nothing to label or summarise, and "complete" would be untrue.
+            if (asking.lineCount === 0) {
+              keepNoLiveText(asking.meetingId);
+              return;
+            }
             answered(asking.meetingId);
             void exclusive(async () => {
               try {
@@ -464,10 +529,7 @@ export function PostCallProvider({ children }: { children: React.ReactNode }) {
           }}
           onUseLive={() => {
             if (asking.lineCount === 0) {
-              // Audio, but no live text to keep: say so instead of "complete".
-              settle(asking.meetingId);
-              drop(asking.meetingId);
-              toast.info(t('postCallNoLiveText'), { description: t('postCallNoLiveTextDescription') });
+              keepNoLiveText(asking.meetingId);
               return;
             }
             complete(asking.meetingId, true);

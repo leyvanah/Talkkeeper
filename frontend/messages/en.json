@@ -1425,6 +1425,7 @@
     "summaryRegenerate": "Regenerate",
     "blockPlaceholder": "Type ‘/’ for commands…",
     "postCallComplete": "Post-call processing complete",
+    "postCallResuming": "Resuming post-call processing for recordings left from the last run: {count}",
     "postCallOpenMeeting": "Open the meeting",
     "postCallFailed": "Post-call processing failed",
     "postCallSpeakerFailed": "Speaker identification failed",
