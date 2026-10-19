@@ -55,6 +55,7 @@ pub mod live_assistant;
 pub mod logging;
 pub mod meeting_notes;
 pub mod meeting_detection;
+pub mod microphone_access;
 pub mod minibar;
 pub mod minibar_dock;
 pub mod model_integrity;
@@ -863,6 +864,8 @@ pub fn run() {
             // System settings commands
             #[cfg(target_os = "macos")]
             utils::open_system_settings,
+            microphone_access::microphone_access_blocked,
+            microphone_access::open_microphone_privacy_settings,
             // Retranscription commands
             audio::retranscription::start_retranscription_command,
             audio::retranscription::cancel_retranscription_command,
