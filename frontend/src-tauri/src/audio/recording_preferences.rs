@@ -29,9 +29,12 @@ use std::path::{Path, PathBuf};
 #[cfg(any(target_os = "macos", test))]
 use std::path::Component;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::Mutex;
 use tauri::{AppHandle, Runtime};
 use tauri_plugin_dialog::DialogExt;
 use tauri_plugin_store::StoreExt;
+
+use crate::state::AppState;
 
 use anyhow::Result;
 #[cfg(any(target_os = "macos", test))]
@@ -806,8 +809,7 @@ pub(crate) fn is_meeting_folder(path: &Path, roots: &[PathBuf]) -> bool {
 /// Used when a take is discarded as too short, and when a meeting is deleted:
 /// removing the rows and leaving the audio would mean a deleted session is
 /// only hidden. Only paths inside a recording folder of this application are
-/// touched.
-#[tauri::command]
+/// touched. Not a command: the window never names a folder to delete.
 pub async fn discard_recording_folder<R: Runtime>(
     app: AppHandle<R>,
     folder_path: String,
@@ -835,6 +837,77 @@ pub async fn discard_recording_folder<R: Runtime>(
         std::fs::remove_file(&path_canon).map_err(|e| format!("Failed to discard file: {e}"))?;
     }
     Ok(())
+}
+
+/// The folder of the recording that stopped last, while no other recording
+/// has started since.
+///
+/// A take too short to keep is discarded through this, never through a path
+/// the window sends. The window's copy of the path can still be the previous
+/// recording's when that one was never saved, and its folder then holds the
+/// only copy of an unsaved meeting.
+static LAST_STOPPED_RECORDING: Mutex<Option<PathBuf>> = Mutex::new(None);
+
+fn last_stopped_recording() -> std::sync::MutexGuard<'static, Option<PathBuf>> {
+    LAST_STOPPED_RECORDING
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+/// A recording is starting: the one before it is no longer the last.
+pub(crate) fn recording_starting() {
+    *last_stopped_recording() = None;
+}
+
+/// A recording stopped, with its files in `folder`.
+pub(crate) fn recording_stopped(folder: Option<PathBuf>) {
+    *last_stopped_recording() = folder;
+}
+
+/// Discards the recording that stopped last, as too short to keep. Returns
+/// whether a folder was deleted. Nothing is deleted while a newer recording
+/// runs, nor when a meeting points at the folder.
+#[tauri::command]
+pub async fn discard_short_recording<R: Runtime>(
+    app: AppHandle<R>,
+    state: tauri::State<'_, AppState>,
+) -> Result<bool, String> {
+    discard_last_stopped(state.db_manager.pool(), |folder| {
+        discard_recording_folder(app.clone(), folder)
+    })
+    .await
+}
+
+/// Hands the last stopped recording's folder to `discard`, unless a meeting
+/// points at it. Either way it is forgotten. A failure to read the meetings
+/// keeps the folder.
+async fn discard_last_stopped<F, Fut>(pool: &sqlx::SqlitePool, discard: F) -> Result<bool, String>
+where
+    F: FnOnce(String) -> Fut,
+    Fut: std::future::Future<Output = Result<(), String>>,
+{
+    let Some(folder) = last_stopped_recording().take() else {
+        return Ok(false);
+    };
+    let stored: Vec<String> =
+        sqlx::query_scalar("SELECT folder_path FROM meetings WHERE folder_path IS NOT NULL")
+            .fetch_all(pool)
+            .await
+            .map_err(|e| format!("Could not check the meetings before discarding: {e}"))?;
+    // The folder name is unique, so only namesakes are worth resolving.
+    let canonical = folder.canonicalize().ok();
+    let claimed = stored.iter().map(Path::new).any(|path| {
+        path == folder.as_path()
+            || (path.file_name() == folder.file_name()
+                && canonical.is_some()
+                && path.canonicalize().ok() == canonical)
+    });
+    if claimed {
+        warn!("Kept a short recording's folder: a meeting points at it");
+        return Ok(false);
+    }
+    discard(folder.to_string_lossy().to_string()).await?;
+    Ok(true)
 }
 
 #[tauri::command]
@@ -1018,6 +1091,69 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(PathBuf::from(path), own.join("rec-mine"));
+    }
+
+    async fn archive_with_meeting_at(folder: &Path) -> sqlx::SqlitePool {
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        crate::database::manager::MIGRATOR.run(&pool).await.unwrap();
+        sqlx::query(
+            "INSERT INTO meetings (id, title, created_at, updated_at, folder_path) \
+             VALUES ('m1', 't', '2026-10-18T10:00:00Z', '2026-10-18T10:00:00Z', ?)",
+        )
+        .bind(folder.to_string_lossy().to_string())
+        .execute(&pool)
+        .await
+        .unwrap();
+        pool
+    }
+
+    fn recording_folder(root: &Path, name: &str) -> PathBuf {
+        let folder = root.join(name);
+        std::fs::create_dir_all(&folder).unwrap();
+        std::fs::write(folder.join("audio.mp4"), b"a").unwrap();
+        folder
+    }
+
+    async fn discard_short(pool: &sqlx::SqlitePool) -> bool {
+        discard_last_stopped(pool, |folder| async move {
+            std::fs::remove_dir_all(folder).map_err(|e| e.to_string())
+        })
+        .await
+        .unwrap()
+    }
+
+    // One test, not three: the last stopped recording is process-wide.
+    #[tokio::test]
+    async fn a_short_take_discards_only_its_own_unsaved_folder() {
+        let root = tempfile::tempdir().unwrap();
+        let saved = recording_folder(root.path(), "rec-saved");
+        let unsaved = recording_folder(root.path(), "rec-unsaved");
+        let short = recording_folder(root.path(), "rec-short");
+        let pool = archive_with_meeting_at(&saved).await;
+
+        // A folder a meeting points at is never discarded.
+        recording_stopped(Some(saved.clone()));
+        assert!(!discard_short(&pool).await);
+        assert!(saved.join("audio.mp4").exists());
+
+        // A recording stopped, was not saved, and the next one started: a
+        // discard before the new one stops leaves the unsaved one alone.
+        recording_stopped(Some(unsaved.clone()));
+        recording_starting();
+        assert!(!discard_short(&pool).await);
+        assert!(unsaved.join("audio.mp4").exists());
+
+        // Once the short take has stopped, it is its folder that goes.
+        recording_stopped(Some(short.clone()));
+        assert!(discard_short(&pool).await);
+        assert!(!short.exists());
+        assert!(unsaved.join("audio.mp4").exists());
+        // And only once.
+        assert!(!discard_short(&pool).await);
     }
 
     use super::*;

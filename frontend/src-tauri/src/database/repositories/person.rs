@@ -8,7 +8,7 @@
 
 use futures_util::TryStreamExt;
 use serde::Serialize;
-use sqlx::{Sqlite, SqlitePool, Transaction};
+use sqlx::{Sqlite, SqliteConnection, SqlitePool, Transaction};
 use std::cmp::Ordering;
 use std::collections::HashMap;
 use uuid::Uuid;
@@ -442,6 +442,29 @@ impl PeopleRepository {
         Ok(())
     }
 
+    /// Deletes a person and the notes about them. The meetings they spoke in
+    /// stay as they are, names on the lines included: only the profile and its
+    /// links to those lines go.
+    pub async fn delete(pool: &SqlitePool, person_id: &str) -> Result<(), sqlx::Error> {
+        let mut tx = pool.begin().await?;
+        // Not every connection has foreign keys on to cascade the links.
+        sqlx::query("DELETE FROM person_speakers WHERE person_id = ?")
+            .bind(person_id)
+            .execute(&mut *tx)
+            .await?;
+        let removed = sqlx::query("DELETE FROM people WHERE id = ?")
+            .bind(person_id)
+            .execute(&mut *tx)
+            .await?
+            .rows_affected();
+        if removed == 0 {
+            tx.rollback().await?;
+            return Err(sqlx::Error::RowNotFound);
+        }
+        tx.commit().await?;
+        Ok(())
+    }
+
     /// Relabeling changes transcript attribution and durable identity in one
     /// transaction. A blank destination removes the identity assignment and
     /// restores the lowest available meeting-local `Speaker N` label.
@@ -685,6 +708,19 @@ pub async fn api_update_person_notes(
         .map_err(|error| match error {
             sqlx::Error::RowNotFound => "Person not found".to_string(),
             _ => format!("Failed to update person notes: {}", error),
+        })
+}
+
+#[tauri::command]
+pub async fn api_delete_person(
+    state: tauri::State<'_, AppState>,
+    person_id: String,
+) -> Result<(), String> {
+    PeopleRepository::delete(state.db_manager.pool(), &person_id)
+        .await
+        .map_err(|error| match error {
+            sqlx::Error::RowNotFound => "Person not found".to_string(),
+            _ => format!("Failed to delete the person: {}", error),
         })
 }
 
@@ -1106,13 +1142,15 @@ pub(crate) async fn retain_present_speaker_mappings(
 /// Removes the people no meeting points to any more — unless the owner wrote
 /// notes about them. A rename or a move to another client can leave a profile
 /// without meetings for a while, and losing the notes with the last link would
-/// make an ordinary edit destroy something nobody asked to delete.
-async fn delete_orphan_people(tx: &mut Transaction<'_, Sqlite>) -> Result<(), sqlx::Error> {
+/// make an ordinary edit destroy something nobody asked to delete. Deleting a
+/// meeting is no different: a person's notes go only with the person or the
+/// client.
+pub(crate) async fn delete_orphan_people(conn: &mut SqliteConnection) -> Result<(), sqlx::Error> {
     sqlx::query(
         "DELETE FROM people WHERE notes IS NULL AND NOT EXISTS \
          (SELECT 1 FROM person_speakers ps WHERE ps.person_id = people.id)",
     )
-    .execute(&mut **tx)
+    .execute(conn)
     .await?;
     Ok(())
 }
@@ -1757,5 +1795,54 @@ mod tests {
             .unwrap();
         assert_eq!(without_client.len(), 1);
         assert_eq!(without_client[0].client_display_name, None);
+    }
+
+    #[tokio::test]
+    async fn deleting_a_person_takes_their_notes_and_leaves_the_lines() {
+        let pool = search_pool().await;
+        sqlx::raw_sql(
+            "INSERT INTO clients VALUES ('c1', 'Клиент 1'); \
+             INSERT INTO meetings VALUES ('m1', 'Встреча', 'now', 'now'); \
+             INSERT INTO people VALUES \
+                 ('p1', 'Тест А', 'тест а', 'заметка', 'now', 'now', 'c1'), \
+                 ('p2', 'Тест Б', 'тест б', NULL, 'now', 'now', 'c1'); \
+             INSERT INTO person_speakers VALUES ('p1', 'm1', 'Тест А'), ('p2', 'm1', 'Тест Б'); \
+             INSERT INTO transcripts VALUES ('t1', 'm1', 'привет', 'now', 'Тест А', 0.0);",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        PeopleRepository::delete(&pool, "p1").await.unwrap();
+
+        assert!(matches!(
+            PeopleRepository::get_profile(&pool, "p1").await,
+            Err(sqlx::Error::RowNotFound)
+        ));
+        let people: Vec<String> = sqlx::query_scalar("SELECT id FROM people")
+            .fetch_all(&pool)
+            .await
+            .unwrap();
+        assert_eq!(people, vec!["p2".to_string()]);
+        let links: Vec<String> = sqlx::query_scalar("SELECT person_id FROM person_speakers")
+            .fetch_all(&pool)
+            .await
+            .unwrap();
+        assert_eq!(links, vec!["p2".to_string()]);
+        // The line keeps the name it was given.
+        let speaker: String = sqlx::query_scalar("SELECT speaker FROM transcripts")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(speaker, "Тест А");
+        assert!(PeopleRepository::global_search(&pool, "заметка", None)
+            .await
+            .unwrap()
+            .is_empty());
+
+        assert!(matches!(
+            PeopleRepository::delete(&pool, "p1").await,
+            Err(sqlx::Error::RowNotFound)
+        ));
     }
 }
