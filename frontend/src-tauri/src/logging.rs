@@ -477,8 +477,16 @@ mod tests {
         "notes",
         "title",
         "meeting_name",
+        "meeting_title",
         "reply",
         "content",
+        // What is typed into search, and the names given to speakers.
+        "query",
+        "search_query",
+        "speaker_name",
+        "old_name",
+        "new_name",
+        "person_name",
     ];
 
     /// Every macro that ends up in `log`, the crate's own wrappers included.
@@ -656,10 +664,20 @@ mod tests {
     /// the log, as `line: name`.
     fn meeting_text_in_log_calls(source: &str) -> Vec<String> {
         let tokens = tokenize(source);
+        // A file may import the macros under other names:
+        // `use log::{info as log_info}`, `use tracing::{info as log_info}`.
+        let mut macros: Vec<String> = LOG_MACROS.iter().map(|name| name.to_string()).collect();
+        for window in tokens.windows(3) {
+            if let [(Token::Ident(base), _), (Token::Ident(word), _), (Token::Ident(alias), _)] = window {
+                if word == "as" && LOG_MACROS.contains(&base.as_str()) {
+                    macros.push(alias.clone());
+                }
+            }
+        }
         let mut found = Vec::new();
         let mut i = 0;
         while i + 2 < tokens.len() {
-            let is_call = matches!(&tokens[i].0, Token::Ident(name) if LOG_MACROS.contains(&name.as_str()))
+            let is_call = matches!(&tokens[i].0, Token::Ident(name) if macros.contains(name))
                 && tokens[i + 1].0 == Token::Punct('!')
                 && tokens[i + 2].0 == Token::Punct('(');
             if !is_call {
@@ -746,6 +764,17 @@ mod tests {
         assert_eq!(
             meeting_text_in_log_calls(leaky),
             vec!["2: transcript", "3: text", "4: {text}", "5: text", "6: text", "7: transcript"]
+        );
+
+        // The macros under an imported name are log calls too.
+        let aliased = r#"
+            use log::{error as log_error, info as log_info};
+            log_info!("meeting: {:?}", meeting_name);
+            log_error!("search '{}' failed: {}", query, e);
+        "#;
+        assert_eq!(
+            meeting_text_in_log_calls(aliased),
+            vec!["3: meeting_name", "4: query"]
         );
 
         let clean = r#"

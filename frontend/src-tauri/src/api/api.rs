@@ -275,8 +275,9 @@ pub async fn api_search_transcripts<R: Runtime>(
     auth_token: Option<String>,
 ) -> Result<Vec<TranscriptSearchResult>, String> {
     log_info!(
-        "api_search_transcripts called with query: '{}', auth_token: {}",
-        query,
+        // Not the query itself: the search box is where people's names are typed.
+        "api_search_transcripts called with a {}-char query, auth_token: {}",
+        query.chars().count(),
         auth_token.is_some()
     );
 
@@ -291,7 +292,7 @@ pub async fn api_search_transcripts<R: Runtime>(
             Ok(results)
         }
         Err(e) => {
-            log_error!("Error searching transcripts for query '{}': {}", query, e);
+            log_error!("Error searching transcripts: {}", e);
             Err(format!("Failed to search transcripts: {}", e))
         }
     }
@@ -1050,11 +1051,7 @@ pub async fn api_save_transcript<R: Runtime>(
             }))
         }
         Err(e) => {
-            log_error!(
-                "Error saving transcript for meeting '{}': {}",
-                meeting_title,
-                e
-            );
+            log_error!("Error saving transcript for a new meeting: {}", e);
             Err(format!("Failed to save transcript: {}", e))
         }
     }

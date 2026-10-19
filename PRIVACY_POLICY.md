@@ -25,7 +25,8 @@ Talkkeeper receive no data from the app.
 - **Models** you download (speech recognition, speaker separation, the
   built-in summary model).
 - **The application log** (`logs/` in the data folder). It is written to hold
-  states, counts, durations and identifiers, not what was said; it may hold
+  states, counts, durations and identifiers, not what was said, and no
+  meeting titles, search queries or names of people; it may hold
   file paths on your computer. It is not encrypted. Earlier builds wrote
   recognised speech into it, so the log is erased once when the app is
   updated, and again whenever an archive password is set.
