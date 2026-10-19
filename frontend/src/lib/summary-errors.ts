@@ -22,12 +22,14 @@ export function helperExitCode(errorMessage: string | null | undefined): string 
 type Translate = (key: string, values?: Record<string, string>) => string;
 
 /**
- * What to tell the user about a failed summary: the failures we can explain
- * in their language, anything else as the backend put it.
+ * What to tell the user about a failed summary, for the failures we can
+ * explain in their language; `null` for anything else. The backend's own text
+ * is English and technical: it goes to the application log, and the window
+ * says only that the summary failed.
  */
-export function summaryErrorText(errorMessage: string, t: Translate): string {
+export function summaryErrorText(errorMessage: string, t: Translate): string | null {
   if (errorMessage.includes('Connection refused')) return t('genConnectionRefused');
   const code = helperExitCode(errorMessage);
   if (code !== null) return t('genHelperExited', { code: code || '?' });
-  return errorMessage;
+  return null;
 }

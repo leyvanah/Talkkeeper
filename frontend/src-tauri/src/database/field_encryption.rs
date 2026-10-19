@@ -371,7 +371,7 @@ pub async fn convert_all(
 /// failure left for the copy to cover is a value sealed "successfully" that
 /// will not open. Blind indexes are skipped — they cannot be opened, and the
 /// reverse pass rebuilds them from the display name anyway.
-pub async fn verify_sealed(pool: &SqlitePool) -> Result<usize, sqlx::Error> {
+pub async fn verify_sealed(pool: &SqlitePool) -> Result<usize, VerifyError> {
     let mut opened = 0;
     for column in columns() {
         if matches!(column.kind, Kind::Blinded { .. }) {
@@ -382,16 +382,47 @@ pub async fn verify_sealed(pool: &SqlitePool) -> Result<usize, sqlx::Error> {
             column.name, column.table
         ))
         .fetch_all(pool)
-        .await?;
+        .await
+        .map_err(VerifyError::Interrupted)?;
         for value in rows.into_iter().flatten() {
             if field::is_sealed(&value) {
-                fields::open(column.field, &value)?;
+                if let Err(error) = fields::open(column.field, &value) {
+                    // Without the key nothing opens, whatever the data: an
+                    // archive that locked during the check says nothing about
+                    // the values.
+                    return Err(if crate::security::session::archive_is_open() {
+                        VerifyError::Unopened(error)
+                    } else {
+                        VerifyError::Interrupted(error)
+                    });
+                }
                 opened += 1;
             }
         }
     }
     Ok(opened)
 }
+
+/// Why [`verify_sealed`] did not open every value.
+#[derive(Debug)]
+pub enum VerifyError {
+    /// A sealed value did not open with the key: the data is in question.
+    Unopened(sqlx::Error),
+    /// The check could not run to the end — the database failed, or the
+    /// archive locked under it. Nothing is known about the values.
+    Interrupted(sqlx::Error),
+}
+
+impl std::fmt::Display for VerifyError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Unopened(error) => write!(f, "a sealed value did not open: {error}"),
+            Self::Interrupted(error) => write!(f, "the check did not finish: {error}"),
+        }
+    }
+}
+
+impl std::error::Error for VerifyError {}
 
 async fn convert_column(
     tx: &mut Transaction<'_, Sqlite>,

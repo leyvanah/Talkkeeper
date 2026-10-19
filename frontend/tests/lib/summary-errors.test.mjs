@@ -20,8 +20,8 @@ describe('summaryErrorText', () => {
     assert.equal(summaryErrorText('error sending request: Connection refused', t), 'genConnectionRefused');
   });
 
-  test('passes anything else through', () => {
-    assert.equal(summaryErrorText('API key not found for openai', t), 'API key not found for openai');
+  test('has nothing to say about anything else, rather than showing the backend text', () => {
+    assert.equal(summaryErrorText('API key not found for openai', t), null);
   });
 });
 

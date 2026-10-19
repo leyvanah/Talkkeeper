@@ -75,8 +75,12 @@ pub enum ModelStatus {
     /// Model file is corrupted and needs redownload
     Corrupted { file_size: u64, expected_min_size: u64 },
 
-    /// Error occurred with the model
-    Error(String),
+    /// Error occurred with the model.
+    ///
+    /// A struct variant: with `tag = "type"` serde cannot write a newtype
+    /// variant holding a string, and the whole model list failed to serialize
+    /// for as long as any model was in this state.
+    Error { message: String },
 }
 
 /// Model information for UI display
@@ -281,7 +285,7 @@ impl ModelManager {
                             model_def.name,
                             e
                         );
-                        ModelStatus::Error(format!("Failed to read metadata: {}", e))
+                        ModelStatus::Error { message: format!("Failed to read metadata: {}", e) }
                     }
                 }
             } else {
@@ -495,6 +499,18 @@ impl ModelManager {
             0
         };
 
+        // Only what is left has to fit. A server that ignores the resume
+        // sends the whole file, but the file is truncated first, so the
+        // same space is enough. A part already here stays for the resume:
+        // removing it would free as much as it then asks to download.
+        if let Err(error) = crate::disk_space::ensure_room(
+            &self.models_dir,
+            model_def.size_bytes.saturating_sub(existing_size),
+        ) {
+            self.fail_download(model_name, &control, error.to_string()).await;
+            return Err(error);
+        }
+
         // Download the file with optimized client settings
         let client = match Client::builder()
             .tcp_nodelay(true) // Disable Nagle's algorithm for faster streaming
@@ -681,8 +697,20 @@ impl ModelManager {
             };
             let chunk_len = chunk.len() as u64;
             if let Err(error) = writer.write_all(&chunk).await {
-                self.fail_download(model_name, &control, format!("Error writing model file: {}", error)).await;
-                return Err(anyhow!("Error writing to file: {}", error));
+                let error = crate::disk_space::write_error(
+                    error,
+                    &self.models_dir,
+                    model_def.size_bytes.saturating_sub(downloaded),
+                    "Error writing model file",
+                );
+                drop(writer);
+                if crate::disk_space::is_no_space(&error) {
+                    self.fail_for_lack_of_space(model_name, &control, &file_path, &error)
+                        .await;
+                } else {
+                    self.fail_download(model_name, &control, error.to_string()).await;
+                }
+                return Err(error);
             }
 
             downloaded += chunk_len;
@@ -745,8 +773,20 @@ impl ModelManager {
         }
 
         if let Err(error) = writer.flush().await {
-            self.fail_download(model_name, &control, format!("Failed to flush model file: {}", error)).await;
-            return Err(error.into());
+            let error = crate::disk_space::write_error(
+                error,
+                &self.models_dir,
+                model_def.size_bytes.saturating_sub(downloaded),
+                "Failed to flush model file",
+            );
+            drop(writer);
+            if crate::disk_space::is_no_space(&error) {
+                self.fail_for_lack_of_space(model_name, &control, &file_path, &error)
+                    .await;
+            } else {
+                self.fail_download(model_name, &control, error.to_string()).await;
+            }
+            return Err(error);
         }
         drop(writer);
 
@@ -810,7 +850,7 @@ impl ModelManager {
             {
                 let mut models = self.available_models.write().await;
                 if let Some(model_info) = models.get_mut(model_name) {
-                    model_info.status = ModelStatus::Error(format!("Validation failed: {}", e));
+                    model_info.status = ModelStatus::Error { message: format!("Validation failed: {}", e) };
                 }
             }
 
@@ -832,7 +872,7 @@ impl ModelManager {
             {
                 let mut models = self.available_models.write().await;
                 if let Some(model_info) = models.get_mut(model_name) {
-                    model_info.status = ModelStatus::Error(format!("Validation failed: {}", e));
+                    model_info.status = ModelStatus::Error { message: format!("Validation failed: {}", e) };
                 }
             }
             self.release_download(model_name, &control).await;
@@ -898,10 +938,31 @@ impl ModelManager {
     ) {
         let mut models = self.available_models.write().await;
         if let Some(model_info) = models.get_mut(model_name) {
-            model_info.status = ModelStatus::Error(message);
+            model_info.status = ModelStatus::Error { message };
         }
         drop(models);
         self.release_download(model_name, control).await;
+    }
+
+    /// A download stopped by a full disk. The unfinished file is removed:
+    /// kept for a resume, it would only hold the space a retry needs.
+    async fn fail_for_lack_of_space(
+        &self,
+        model_name: &str,
+        control: &Arc<DownloadControl>,
+        file_path: &PathBuf,
+        error: &anyhow::Error,
+    ) {
+        match fs::remove_file(file_path).await {
+            Ok(()) => log::info!("Removed unfinished download {}", file_path.display()),
+            Err(remove) if remove.kind() == std::io::ErrorKind::NotFound => {}
+            Err(remove) => log::warn!(
+                "Could not remove unfinished download {}: {}",
+                file_path.display(),
+                remove
+            ),
+        }
+        self.fail_download(model_name, control, error.to_string()).await;
     }
 
     async fn finish_cancelled_download(
@@ -992,6 +1053,19 @@ impl ModelManager {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_model_in_error_serializes_with_its_message() {
+        // A model list holding one failed model used to fail to serialize
+        // altogether, and the window kept showing the stale list.
+        let status = ModelStatus::Error { message: "Not enough disk space".into() };
+        let value = serde_json::to_value(&status).unwrap();
+        assert_eq!(value, serde_json::json!({ "type": "error", "message": "Not enough disk space" }));
+        assert_eq!(serde_json::from_value::<ModelStatus>(value).unwrap(), status);
+
+        let list = vec![ModelStatus::Available, status];
+        assert!(serde_json::to_string(&list).is_ok());
+    }
 
     #[tokio::test]
     async fn scan_marks_partial_model_incomplete_and_exact_model_available() {

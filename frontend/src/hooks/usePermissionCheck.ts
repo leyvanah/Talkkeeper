@@ -1,9 +1,12 @@
 import { useState, useEffect, useRef } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { usePlatform } from './usePlatform';
+import { microphoneProblem, type MicrophoneProblem } from '@/lib/microphone-access';
 
 export interface PermissionStatus {
   hasMicrophone: boolean;
+  /** Why there is no usable microphone; null when there is one. */
+  microphoneProblem: MicrophoneProblem;
   hasSystemAudio: boolean;
   isChecking: boolean;
   error: string | null;
@@ -18,6 +21,7 @@ export function usePermissionCheck() {
   const requestInFlight = useRef<Promise<void> | null>(null);
   const [status, setStatus] = useState<PermissionStatus>({
     hasMicrophone: false,
+    microphoneProblem: null,
     hasSystemAudio: false,
     isChecking: true,
     error: null,
@@ -30,9 +34,15 @@ export function usePermissionCheck() {
       // Get audio devices to check for microphone and system audio availability
       const devices = await invoke<Array<{ name: string; device_type: 'Input' | 'Output' }>>('get_audio_devices');
 
-      // Check for microphone devices (Input)
+      // Check for microphone devices (Input). Windows keeps listing them when
+      // its privacy settings deny the app the microphone, so ask about that too.
       const inputDevices = devices.filter(d => d.device_type === 'Input');
-      const hasMicrophone = inputDevices.length > 0;
+      const blockedBySystem = await invoke<boolean>('microphone_access_blocked').catch((error) => {
+        console.warn('Could not read the microphone privacy setting:', error);
+        return false;
+      });
+      const problem = microphoneProblem(inputDevices.length, blockedBySystem);
+      const hasMicrophone = problem === null;
 
       // Output availability is separate from macOS Audio Capture authorization;
       // requestPermissions runs the native tap probe when the user asks.
@@ -44,6 +54,7 @@ export function usePermissionCheck() {
 
       console.log('Permission check:', {
         hasMicrophone,
+        microphoneProblem: problem,
         hasSystemAudio,
         inputDevices: inputDevices.length,
         outputDevices: outputDevices.length
@@ -51,6 +62,7 @@ export function usePermissionCheck() {
 
       setStatus({
         hasMicrophone,
+        microphoneProblem: problem,
         hasSystemAudio,
         isChecking: false,
         error: null,
@@ -61,6 +73,7 @@ export function usePermissionCheck() {
       console.error('Failed to check audio permissions:', error);
       setStatus({
         hasMicrophone: false,
+        microphoneProblem: 'missing',
         hasSystemAudio: false,
         isChecking: false,
         error: error instanceof Error ? error.message : 'Failed to check permissions',

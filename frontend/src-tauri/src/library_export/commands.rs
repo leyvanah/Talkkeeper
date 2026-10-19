@@ -227,6 +227,11 @@ pub async fn import_library_package<R: Runtime>(
     refuse_when_locked()?;
     let root = existing_folder(&package_dir)?;
     let _busy = session::busy();
+    // Checked after the guard, so setting or removing the password either
+    // sees this import and refuses, or this import sees the change and refuses.
+    if session::protection_changing() {
+        return Err("Archive protection is being changed".to_string());
+    }
 
     let (package, manifest) = tokio::task::spawn_blocking(move || SealedPackage::open(&root, &password))
         .await

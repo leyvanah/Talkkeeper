@@ -3,6 +3,9 @@
 import { useState } from 'react';
 import { useTranslations } from 'next-intl';
 import { toast } from 'sonner';
+import { toastFailure } from '@/lib/failure';
+import { isTemplateDraftEmpty } from '@/lib/template-draft';
+import { ConfirmAction, type ConfirmRequest } from '@/components/ui/confirm-action';
 
 type Format = 'paragraph' | 'list' | 'table' | 'string';
 
@@ -46,6 +49,7 @@ export function TemplateEditorModal({
   const [description, setDescription] = useState('');
   const [sections, setSections] = useState<SectionDraft[]>([emptySection()]);
   const [saving, setSaving] = useState(false);
+  const [confirm, setConfirm] = useState<ConfirmRequest | null>(null);
 
   if (!open) return null;
 
@@ -53,6 +57,17 @@ export function TemplateEditorModal({
     setName('');
     setDescription('');
     setSections([emptySection()]);
+  };
+
+  // Clearing an untouched form loses nothing, so it does not ask.
+  const askClear = () => {
+    if (isTemplateDraftEmpty({ name, description, sections })) return reset();
+    setConfirm({
+      title: t('templateClearConfirmTitle'),
+      description: t('templateClearConfirmDescription'),
+      confirmLabel: tc('clear'),
+      run: reset,
+    });
   };
 
   const updateSection = (i: number, patch: Partial<SectionDraft>) => {
@@ -86,7 +101,7 @@ export function TemplateEditorModal({
       reset();
       onClose();
     } catch (e) {
-      toast.error(typeof e === 'string' ? e : t('templateSaveFailed'));
+      toastFailure(t('templateSaveFailed'), 'template-save', e);
     } finally {
       setSaving(false);
     }
@@ -97,18 +112,23 @@ export function TemplateEditorModal({
       await onDelete(id);
       toast.success(t('templateDeleted', { name: tname }));
     } catch (e) {
-      const msg = typeof e === 'string' ? e : t('templateDeleteFailed');
       // Built-in templates aren't deletable and the backend returns "not found"
-      toast.error(msg.includes('not found') ? t('templateBuiltInNotDeletable') : msg);
+      if (typeof e === 'string' && e.includes('not found')) {
+        toast.error(t('templateBuiltInNotDeletable'));
+      } else {
+        toastFailure(t('templateDeleteFailed'), 'template-delete', e);
+      }
     }
   };
 
   return (
-    <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/40 p-4" onClick={onClose}>
+    // z-50 like the shared dialogs, so the confirmation opens above this one.
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4" onClick={onClose}>
       <div
         className="flex max-h-[85vh] w-full max-w-2xl flex-col overflow-hidden rounded-xl bg-white shadow-2xl"
         onClick={(e) => e.stopPropagation()}
       >
+        <ConfirmAction request={confirm} onClose={() => setConfirm(null)} />
         <div className="flex items-center justify-between border-b border-gray-100 px-5 py-3">
           <h2 className="text-lg font-semibold text-gray-800">{t('templatesTitle')}</h2>
           <button onClick={onClose} className="rounded px-2 py-1 text-gray-500 hover:bg-gray-100">✕</button>
@@ -191,7 +211,7 @@ export function TemplateEditorModal({
             </div>
 
             <div className="flex justify-end gap-2 pt-1">
-              <button onClick={reset} className="rounded-lg px-3 py-2 text-sm text-gray-600 hover:bg-gray-100">
+              <button onClick={askClear} className="rounded-lg px-3 py-2 text-sm text-gray-600 hover:bg-gray-100">
                 {tc('clear')}
               </button>
               <button
@@ -217,7 +237,13 @@ export function TemplateEditorModal({
                     <div className="truncate text-xs text-gray-400">{tpl.description}</div>
                   </div>
                   <button
-                    onClick={() => del(tpl.id, tpl.name)}
+                    onClick={() => setConfirm({
+                      title: t('templateDeleteConfirmTitle', { name: tpl.name }),
+                      description: t('templateDeleteConfirmDescription'),
+                      confirmLabel: tc('delete'),
+                      busyLabel: tc('deleting'),
+                      run: () => del(tpl.id, tpl.name),
+                    })}
                     className="ml-3 shrink-0 rounded px-2 py-1 text-xs text-red-500 hover:bg-red-50"
                     title={t('templateDeleteTitle')}
                   >

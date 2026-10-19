@@ -6,7 +6,6 @@ import { useWindowTitle } from '@/components/AppHeader';
 import { motion } from 'framer-motion';
 import { RecordingControls } from '@/components/RecordingControls';
 import { useSidebar } from '@/components/Sidebar/SidebarProvider';
-import { usePermissionCheck } from '@/hooks/usePermissionCheck';
 import { useRecordingState, RecordingStatus } from '@/contexts/RecordingStateContext';
 import { useTranscripts } from '@/contexts/TranscriptContext';
 import { useConfig } from '@/contexts/ConfigContext';
@@ -25,6 +24,7 @@ import { toast } from 'sonner';
 import { useRouter } from 'next/navigation';
 import { NotesEditor } from '@/components/Notes/NotesEditor';
 import { useRecordingNotes } from '@/hooks/useMeetingNotes';
+import { toastFailure } from '@/lib/failure';
 
 /** Whether the notes beside a recording are open; a habit, kept per machine. */
 const NOTES_OPEN_KEY = 'recording_notes_open';
@@ -36,7 +36,6 @@ export default function Home() {
   const tn = useTranslations('notes');
   // Local page state (not moved to contexts)
   const [isRecording, setIsRecordingState] = useState(false);
-  const [barHeights, setBarHeights] = useState(['58%', '76%', '58%']);
   const [showRecoveryDialog, setShowRecoveryDialog] = useState(false);
 
   // Use contexts for state management
@@ -75,7 +74,6 @@ export default function Home() {
   const showNotes = recordingState.isRecording && notesOpen;
 
   // Hooks
-  const { hasMicrophone } = usePermissionCheck();
   const { setIsMeetingActive, refetchMeetings } = useSidebar();
   const { begin: beginPostCall } = usePostCall();
   const { modals, messages, showModal, hideModal } = useModalState(transcriptModelConfig);
@@ -150,17 +148,26 @@ export default function Home() {
 
   // Handle recovery with toast notifications and navigation
   const handleRecovery = async (meetingId: string) => {
+    // Others still waiting: stay with the list rather than leave for the
+    // recovered meeting, which the toast offers to open instead.
+    const othersLeft = recoverableMeetings.some((meeting) => meeting.meetingId !== meetingId);
     try {
       const result = await recoverMeeting(meetingId);
 
       if (result.success && result.meetingId && result.transcribeFolder) {
         // Only the audio was left: recognise it the way a stopped recording is.
         beginPostCall(result.meetingId, result.transcribeFolder);
+        const recoveredId = result.meetingId;
         toast.success(t('restoredFromAudioTitle'), {
           description: t('restoredFromAudioDescription'),
+          action: othersLeft ? {
+            label: t('viewMeetingAction'),
+            onClick: () => router.push(`/meeting-details?id=${encodeURIComponent(recoveredId)}`),
+          } : undefined,
         });
+        if (!othersLeft) sessionStorage.removeItem('recovery_dialog_shown');
         await refetchMeetings();
-        router.push(`/meeting-details?id=${encodeURIComponent(result.meetingId)}`);
+        if (!othersLeft) router.push(`/meeting-details?id=${encodeURIComponent(recoveredId)}`);
         return;
       }
 
@@ -181,51 +188,31 @@ export default function Home() {
         // Refresh sidebar to show the newly recovered meeting
         await refetchMeetings();
 
-        // If no more recoverable meetings, clear session flag so dialog can show again
-        if (recoverableMeetings.length === 0) {
-          sessionStorage.removeItem('recovery_dialog_shown');
-        }
+        // Nothing left: a recording interrupted later this session opens the
+        // dialog by itself again.
+        if (!othersLeft) sessionStorage.removeItem('recovery_dialog_shown');
 
-        // Auto-navigate after a short delay
-        if (result.meetingId) {
+        // Auto-navigate after a short delay, once nothing else waits
+        if (result.meetingId && !othersLeft) {
           setTimeout(() => {
             router.push(`/meeting-details?id=${result.meetingId}`);
           }, 2000);
         }
       }
     } catch (error) {
-      toast.error(t('recoveryFailedTitle'), {
-        description: error instanceof Error ? error.message : t('unknownError'),
-      });
+      toastFailure(t('recoveryFailedTitle'), 'transcript-recovery', error);
       throw error;
     }
   };
 
-  // Handle dialog close - clear session flag if no meetings left
+  // The dialog opens by itself once per session; after that the line above
+  // the transcript opens it again for as long as anything waits.
   const handleDialogClose = () => {
     setShowRecoveryDialog(false);
-    // If user closes dialog and there are no more meetings, clear the flag
-    // This allows the dialog to show again next session if new meetings appear
     if (recoverableMeetings.length === 0) {
       sessionStorage.removeItem('recovery_dialog_shown');
     }
   };
-
-  useEffect(() => {
-    if (recordingState.isRecording) {
-      const interval = setInterval(() => {
-        setBarHeights(prev => {
-          const newHeights = [...prev];
-          newHeights[0] = Math.random() * 20 + 10 + 'px';
-          newHeights[1] = Math.random() * 20 + 10 + 'px';
-          newHeights[2] = Math.random() * 20 + 10 + 'px';
-          return newHeights;
-        });
-      }, 300);
-
-      return () => clearInterval(interval);
-    }
-  }, [recordingState.isRecording]);
 
   // Computed values using global status
   const isProcessingStop = status === RecordingStatus.PROCESSING_TRANSCRIPTS || isProcessing;
@@ -254,6 +241,21 @@ export default function Home() {
         onOpenWithOtherKey={openWithOtherKey}
         onLoadPreview={loadMeetingTranscripts}
       />
+      {recoverableMeetings.length > 0 && !showRecoveryDialog && !recordingState.isRecording && (
+        <div
+          role="status"
+          className="flex items-center justify-between gap-3 border-b border-[var(--af-border)] bg-[var(--af-bg)] px-4 py-2 text-sm"
+        >
+          <span>{t('interruptedRecordings', { count: recoverableMeetings.length })}</span>
+          <button
+            type="button"
+            onClick={() => setShowRecoveryDialog(true)}
+            className="rounded-md border border-[var(--af-border)] px-3 py-1 font-medium hover:bg-[var(--af-hover)]"
+          >
+            {t('interruptedRecordingsOpen')}
+          </button>
+        </div>
+      )}
       <div className="flex flex-1 overflow-hidden">
         <TranscriptPanel
           isProcessingStop={isProcessingStop}
@@ -274,9 +276,9 @@ export default function Home() {
           </aside>
         )}
 
-        {/* Recording controls - only show when permissions are granted or already recording and not showing status messages */}
-        {(hasMicrophone || isRecording) &&
-          status !== RecordingStatus.PROCESSING_TRANSCRIPTS &&
+        {/* Recording controls - hidden only behind the status overlays. Without a
+            usable microphone the start button stays, disabled, with the reason. */}
+        {status !== RecordingStatus.PROCESSING_TRANSCRIPTS &&
           status !== RecordingStatus.SAVING && (
             <div className="fixed bottom-12 left-0 right-0 z-30 pointer-events-none">
               <div
@@ -292,7 +294,6 @@ export default function Home() {
                       onRecordingStart={handleRecordingStart}
                       onTranscriptReceived={() => { }} // Not actually used by RecordingControls
                       onStopInitiated={() => setIsStopping(true)}
-                      barHeights={barHeights}
                       onTranscriptionError={(message) => {
                         showModal('errorAlert', message);
                       }}

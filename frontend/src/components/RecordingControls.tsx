@@ -30,13 +30,14 @@ import { ProcessRequest, SummaryResponse } from '@/types/summary';
 import { listen } from '@tauri-apps/api/event';
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
-import { useRecordingState } from '@/contexts/RecordingStateContext';
+import { useRecordingClock, useRecordingState } from '@/contexts/RecordingStateContext';
 import { usePermissionCheck } from '@/hooks/usePermissionCheck';
+import { usePlatform } from '@/hooks/usePlatform';
+import { permissionHelpFor, permissionKey } from '@/lib/microphone-access';
 import { useTranslations } from 'next-intl';
 
 interface RecordingControlsProps {
   isRecording: boolean;
-  barHeights: string[];
   onRecordingStop: (callApi?: boolean) => void;
   onRecordingStart: () => void;
   onTranscriptReceived: (summary: SummaryResponse) => void;
@@ -72,7 +73,6 @@ function safelyUnsubscribe(unsubscribe: (() => void) | undefined) {
 
 export const RecordingControls: React.FC<RecordingControlsProps> = ({
   isRecording,
-  barHeights,
   onRecordingStop,
   onRecordingStart,
   onTranscriptReceived,
@@ -86,6 +86,7 @@ export const RecordingControls: React.FC<RecordingControlsProps> = ({
   const t = useTranslations('recording');
   // Use global recording state context for pause state (syncs with tray operations)
   const recordingState = useRecordingState();
+  const { recordingDuration, activeDuration } = useRecordingClock();
   const isPaused = recordingState.isPaused;
   const isMicrophoneMuted = recordingState.isMicrophoneMuted;
   const isSystemAudioMuted = recordingState.isSystemAudioMuted;
@@ -95,7 +96,10 @@ export const RecordingControls: React.FC<RecordingControlsProps> = ({
   const startupMessage = recordingState.statusMessage;
 
   // For the idle bar: the selected mic name, and a live-ish system-audio check.
-  const { hasSystemAudio, checkPermissions } = usePermissionCheck();
+  // The same check also says when there is no usable microphone: the button
+  // stays in place, disabled, with the reason under it.
+  const { hasSystemAudio, microphoneProblem, checkPermissions } = usePermissionCheck();
+  const permissionHelp = permissionHelpFor(usePlatform());
   const micName = selectedDevices?.micDevice?.trim() || t('defaultMicrophone');
   useEffect(() => {
     if (isRecording) return;
@@ -137,7 +141,7 @@ export const RecordingControls: React.FC<RecordingControlsProps> = ({
 
   // Elapsed timer for the in-app bar, mirroring the floating compact bar and
   // the status line: time recorded, so it stands still while paused.
-  const shownDuration = recordingState.activeDuration ?? recordingState.recordingDuration;
+  const shownDuration = activeDuration ?? recordingDuration;
   const elapsedSeconds = Math.max(0, Math.floor(shownDuration ?? 0));
   const formatElapsed = (totalSeconds: number) => {
     const h = Math.floor(totalSeconds / 3600);
@@ -211,17 +215,17 @@ export const RecordingControls: React.FC<RecordingControlsProps> = ({
       if (errorMsg.includes('microphone') || errorMsg.includes('mic') || errorMsg.includes('input')) {
         setDeviceError({
           title: t('micNotAvailableTitle'),
-          message: t('micNotAvailableMessage')
+          message: t(permissionKey('micNotAvailableMessage', permissionHelp, ['windows']))
         });
       } else if (errorMsg.includes('system audio') || errorMsg.includes('speaker') || errorMsg.includes('output')) {
         setDeviceError({
           title: t('systemAudioNotAvailableTitle'),
-          message: t('systemAudioNotAvailableMessage')
+          message: t(permissionKey('systemAudioNotAvailableMessage', permissionHelp, ['macos']))
         });
       } else if (errorMsg.includes('permission')) {
         setDeviceError({
           title: t('permissionRequiredTitle'),
-          message: t('permissionRequiredMessage')
+          message: t(permissionKey('permissionRequiredMessage', permissionHelp, ['windows', 'macos']))
         });
       } else {
         setDeviceError({
@@ -232,7 +236,7 @@ export const RecordingControls: React.FC<RecordingControlsProps> = ({
     } finally {
       setIsStarting(false);
     }
-  }, [onRecordingStart, isStarting, isValidatingModel, selectedDevices, meetingName, isRecording]);
+  }, [onRecordingStart, isStarting, isValidatingModel, selectedDevices, meetingName, isRecording, permissionHelp]);
 
   const stopRecordingAction = useCallback(async () => {
     console.log('Executing stop recording...');
@@ -533,11 +537,13 @@ export const RecordingControls: React.FC<RecordingControlsProps> = ({
                   onClick={() => {
                     handleStartRecording();
                   }}
-                  disabled={isStarting || isProcessing || isRecordingDisabled || isValidatingModel}
+                  disabled={isStarting || isProcessing || isRecordingDisabled || isValidatingModel || microphoneProblem !== null}
                   aria-label={t('startRecording')}
                   className={`relative flex h-14 w-14 shrink-0 items-center justify-center rounded-full text-white transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-red-500 focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--af-bg)] ${
-                    isStarting || isProcessing || isValidatingModel ? 'bg-red-500/50' : 'bg-red-500 hover:bg-red-600'
-                  }`}
+                    isStarting || isProcessing || isValidatingModel || microphoneProblem !== null
+                      ? 'bg-red-500/50'
+                      : 'bg-red-500 hover:bg-red-600'
+                  } ${microphoneProblem !== null ? 'cursor-not-allowed' : ''}`}
                 >
                   {isStarting || isValidatingModel ? <Loader2 size={22} className="animate-spin" /> : <Mic size={24} />}
                 </button>
@@ -551,18 +557,24 @@ export const RecordingControls: React.FC<RecordingControlsProps> = ({
               {isStarting || isValidatingModel ? startupMessage || t('starting') : t('startRecording')}
             </div>
 
-            <div className="flex max-w-[28rem] items-center gap-1.5 text-xs text-[var(--af-text-3)]">
-              <span className="min-w-0 truncate" title={t('microphoneTitle', { micName })}>{micName}</span>
-              <span aria-hidden>·</span>
-              <span
-                className={`inline-flex shrink-0 items-center gap-1.5 ${hasSystemAudio ? '' : 'text-red-400'}`}
-                title={hasSystemAudio ? t('detected') : t('notDetected')}
-              >
-                {t('systemAudio')}
-                <span className={`h-1.5 w-1.5 rounded-full ${hasSystemAudio ? 'bg-emerald-500' : 'bg-red-500'}`} />
-                {!hasSystemAudio && <span>{t('notDetected')}</span>}
-              </span>
-            </div>
+            {microphoneProblem !== null ? (
+              <div className="max-w-[28rem] text-center text-xs text-amber-500">
+                {microphoneProblem === 'blocked' ? t('micUnavailableBlocked') : t('micUnavailableMissing')}
+              </div>
+            ) : (
+              <div className="flex max-w-[28rem] items-center gap-1.5 text-xs text-[var(--af-text-3)]">
+                <span className="min-w-0 truncate" title={t('microphoneTitle', { micName })}>{micName}</span>
+                <span aria-hidden>·</span>
+                <span
+                  className={`inline-flex shrink-0 items-center gap-1.5 ${hasSystemAudio ? '' : 'text-red-400'}`}
+                  title={hasSystemAudio ? t('detected') : t('notDetected')}
+                >
+                  {t('systemAudio')}
+                  <span className={`h-1.5 w-1.5 rounded-full ${hasSystemAudio ? 'bg-emerald-500' : 'bg-red-500'}`} />
+                  {!hasSystemAudio && <span>{t('notDetected')}</span>}
+                </span>
+              </div>
+            )}
           </div>
         ) : (
           // While recording: one line on the theme's own surface, readable
