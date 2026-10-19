@@ -11,7 +11,8 @@
  *
  * The transfer package is the same library sealed with a password chosen for
  * the transfer. Another installation imports it with that password and seals
- * everything again with its own key.
+ * everything again with its own key. The card offers it only while
+ * `LIBRARY_TRANSFER_AVAILABLE` is on (`lib/library-transfer.ts`).
  */
 
 import { useEffect, useState } from 'react'
@@ -34,6 +35,7 @@ import {
 } from '@/components/ui/dialog'
 import { toastFailure } from '@/lib/failure'
 import { failureText } from '@/lib/failure-text'
+import { libraryActions } from '@/lib/library-transfer'
 
 const MIN_PASSWORD = 8
 
@@ -64,6 +66,7 @@ async function pickFolder(): Promise<string | null> {
 
 export function LibraryExportCard() {
   const t = useTranslations('security')
+  const actions = libraryActions()
   const [step, setStep] = useState<Step>(null)
   const [running, setRunning] = useState<Running>(null)
   const [progress, setProgress] = useState<{ done: number; total: number } | null>(null)
@@ -189,21 +192,25 @@ export function LibraryExportCard() {
           <p className="mt-1 text-xs text-gray-500">{t('libraryExportReadableHint')}</p>
         </div>
 
-        <div>
-          <Button type="button" variant="outline" disabled={running !== null} onClick={() => setStep('packagePassword')}>
-            <Package className="mr-2 h-4 w-4" />
-            {t('libraryExportPackage')}
-          </Button>
-          <p className="mt-1 text-xs text-gray-500">{t('libraryExportPackageHint')}</p>
-        </div>
+        {actions.includes('package') && (
+          <div>
+            <Button type="button" variant="outline" disabled={running !== null} onClick={() => setStep('packagePassword')}>
+              <Package className="mr-2 h-4 w-4" />
+              {t('libraryExportPackage')}
+            </Button>
+            <p className="mt-1 text-xs text-gray-500">{t('libraryExportPackageHint')}</p>
+          </div>
+        )}
 
-        <div>
-          <Button type="button" variant="outline" disabled={running !== null} onClick={() => void chooseImport()}>
-            <FolderInput className="mr-2 h-4 w-4" />
-            {t('libraryImportPackage')}
-          </Button>
-          <p className="mt-1 text-xs text-gray-500">{t('libraryImportPackageHint')}</p>
-        </div>
+        {actions.includes('import') && (
+          <div>
+            <Button type="button" variant="outline" disabled={running !== null} onClick={() => void chooseImport()}>
+              <FolderInput className="mr-2 h-4 w-4" />
+              {t('libraryImportPackage')}
+            </Button>
+            <p className="mt-1 text-xs text-gray-500">{t('libraryImportPackageHint')}</p>
+          </div>
+        )}
 
         {running && (
           <div className="space-y-1">
