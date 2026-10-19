@@ -59,6 +59,7 @@ pub mod microphone_access;
 pub mod minibar;
 pub mod minibar_dock;
 pub mod model_integrity;
+pub mod navigation_guard;
 pub mod network_policy;
 pub mod gigaam_engine;
 pub mod parakeet_engine;
@@ -438,6 +439,8 @@ pub fn run() {
                 });
             },
         )
+        // Windows stay on the app's own pages; see `navigation_guard`.
+        .plugin(navigation_guard::init())
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_store::Builder::default().build())
         .plugin(tauri_plugin_dialog::init())
