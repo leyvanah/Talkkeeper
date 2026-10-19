@@ -948,6 +948,9 @@ Var DeleteAppDataCheckbox
 Var DeleteAppDataCheckboxState
 ; Whether the key reached its copy, and so whether the data may be wiped.
 Var KeyRescued
+; Where the copy of the key goes, and the file it was written to.
+Var KeyBackupDir
+Var KeyBackupFile
 !define /ifndef WS_EX_LAYOUTRTL         0x00400000
 !define MUI_PAGE_CUSTOMFUNCTION_SHOW un.ConfirmShow
 Function un.ConfirmShow ; Add add a `Delete app data` check box
@@ -988,8 +991,20 @@ Function un.ConfirmLeave
   ${If} $DeleteAppDataCheckboxState = 1
   ${AndIf} $PassiveMode <> 1
   ${AndIf} ${FileExists} "$INSTDIR\data\keystore.json"
-    MessageBox MB_ICONEXCLAMATION|MB_YESNO|MB_DEFBUTTON2 "$(tkKeyWarning)" IDYES +2
+    MessageBox MB_ICONEXCLAMATION|MB_YESNO|MB_DEFBUTTON2 "$(tkKeyWarning)" IDYES un_key_delete_confirmed
     StrCpy $DeleteAppDataCheckboxState 0
+    Return
+    un_key_delete_confirmed:
+    ; Documents is often synced to OneDrive, and a key that travels there can
+    ; be guessed at offline. Only the owner knows which folders stay on this
+    ; computer, so they choose; the dialog's own text says why.
+    nsDialogs::SelectFolderDialog "$(tkKeyFolderPrompt)" "$DOCUMENTS"
+    Pop $0
+    ${If} $0 == error
+      ; Cancelled: back to this page, nothing deleted.
+      Abort
+    ${EndIf}
+    StrCpy $KeyBackupDir "$0\Talkkeeper-key-backup"
   ${EndIf}
 FunctionEnd
 !define MUI_PAGE_CUSTOMFUNCTION_PRE un.SkipIfPassive
@@ -1498,9 +1513,23 @@ Section Uninstall
     StrCpy $KeyRescued 1
     ${If} ${FileExists} "$INSTDIR\data\keystore.json"
       StrCpy $KeyRescued 0
-      CreateDirectory "$DOCUMENTS\Talkkeeper-key-backup"
-      CopyFiles /SILENT "$INSTDIR\data\keystore.json" "$DOCUMENTS\Talkkeeper-key-backup\keystore.json"
-      ${If} ${FileExists} "$DOCUMENTS\Talkkeeper-key-backup\keystore.json"
+      ; A passive uninstall shows no page and so never asked for a folder.
+      ${If} $KeyBackupDir == ""
+        StrCpy $KeyBackupDir "$DOCUMENTS\Talkkeeper-key-backup"
+      ${EndIf}
+      CreateDirectory "$KeyBackupDir"
+      ; Never over an earlier copy: that one may be the only key to the
+      ; recordings of an archive uninstalled before this one.
+      ${GetTime} "" "L" $R0 $R1 $R2 $R3 $R4 $R5 $R6
+      StrCpy $R7 "keystore-$R2-$R1-$R0-$R4$R5"
+      StrCpy $KeyBackupFile "$KeyBackupDir\$R7.json"
+      StrCpy $R8 1
+      ${While} ${FileExists} "$KeyBackupFile"
+        IntOp $R8 $R8 + 1
+        StrCpy $KeyBackupFile "$KeyBackupDir\$R7-$R8.json"
+      ${EndWhile}
+      CopyFiles /SILENT "$INSTDIR\data\keystore.json" "$KeyBackupFile"
+      ${If} ${FileExists} "$KeyBackupFile"
         StrCpy $KeyRescued 1
         ${If} $PassiveMode <> 1
           MessageBox MB_ICONINFORMATION|MB_OK "$(tkKeyRescued)"

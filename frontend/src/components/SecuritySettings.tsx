@@ -194,6 +194,16 @@ export function SecuritySettings() {
           return t('errorRecordingInProgress')
         case 'jobInProgress':
           return t('errorJobInProgress')
+        case 'changeWhileRecording':
+          return t('errorChangeWhileRecording')
+        case 'changeWhileJob':
+          return t('errorChangeWhileJob')
+        case 'changeInProgress':
+          return t('errorChangeInProgress')
+        case 'keystoreSaveFailed':
+          return t('errorKeystoreSaveFailed')
+        case 'keystoreCorrupt':
+          return t('errorKeystoreCorrupt')
         case 'alreadyConfigured':
           return t('errorAlreadyConfigured')
         case 'quickDeclined':
