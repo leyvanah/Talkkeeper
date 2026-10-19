@@ -28,6 +28,7 @@ use anyhow::{anyhow, Result};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
+use crate::onnx_threads::Role;
 use models::{DiarizationModels, MAX_LOCAL_SPEAKERS};
 
 /// 10 second analysis window (pyannote segmentation-3.0 was trained on 10 s).
@@ -184,7 +185,7 @@ pub fn embeddings_for_debug(wav_path: &Path, model_dir: &Path) -> Result<Vec<Vec
     } else {
         samples
     };
-    let mut models = DiarizationModels::load(model_dir)?;
+    let mut models = DiarizationModels::load(model_dir, Role::OfflineSpeaker)?;
     let turns = collect_turns(&mut models, &samples)?;
     let mut out = Vec::new();
     for turn in &turns {
@@ -256,7 +257,7 @@ pub fn diarize_file_with_models(
     }
     log::info!("🧑‍🤝‍🧑 Diarization starting: {:.1}s of audio", duration);
 
-    let mut models = DiarizationModels::load(model_dir)?;
+    let mut models = DiarizationModels::load(model_dir, Role::OfflineSpeaker)?;
 
     // 2. Slide windows, decode segmentation, collect local turns.
     let turns = collect_turns(&mut models, &samples)?;
