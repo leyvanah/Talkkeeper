@@ -27,7 +27,7 @@ import { useConfig } from '@/contexts/ConfigContext';
 import { usePostCall } from '@/contexts/PostCallContext';
 import { MeetingExportDialog } from '@/components/MeetingDetails/MeetingExportDialog';
 import { SummaryRegenerationDialog } from '@/components/MeetingDetails/SummaryRegenerationDialog';
-import { toastFailure } from '@/lib/failure';
+import { logFailure, toastFailure } from '@/lib/failure';
 
 export default function PageContent({
   meeting,
@@ -87,7 +87,7 @@ export default function PageContent({
   const openModelSettingsRef = useRef<(() => void) | null>(null);
 
   // Sidebar context
-  const { serverAddress } = useSidebar();
+  const { serverAddress, activeSummaryPolls } = useSidebar();
 
   // Get model config from ConfigContext
   const { modelConfig, setModelConfig } = useConfig();
@@ -187,6 +187,37 @@ export default function PageContent({
     );
   }, [transcriptVersion]);
   const postCallDone = postCall.isDone(meeting.id);
+  // Processing under way for the meeting this page shows. Not the same as
+  // `isPostCallRecording`: that follows the URL, and while the page is being
+  // left for another meeting it already speaks of the new one, so the gate
+  // below was skipped and the summary started from the unrefined live text.
+  const postCallUnderway = postCall.isPending(meeting.id) && !postCallDone;
+
+  // A summary written while this page was not open (`BackgroundSummary`)
+  // polls under this meeting's id like the page's own, but its progress lives
+  // in that runner. The page shows it as being written — so Regenerate is not
+  // offered, which the backend would refuse as already active — and reads the
+  // result once the polling for it ends.
+  const ownSummaryRunning = ['processing', 'summarizing', 'regenerating'].includes(
+    summaryGeneration.summaryStatus,
+  );
+  const writtenElsewhere = activeSummaryPolls.has(meeting.id) && !ownSummaryRunning;
+  const shownSummaryStatus = writtenElsewhere ? 'summarizing' : summaryGeneration.summaryStatus;
+  const wasWrittenElsewhereRef = useRef(false);
+  useEffect(() => {
+    if (writtenElsewhere) {
+      wasWrittenElsewhereRef.current = true;
+      return;
+    }
+    if (!wasWrittenElsewhereRef.current) return;
+    wasWrittenElsewhereRef.current = false;
+    void invoke<{ data?: unknown }>('api_get_summary', { meetingId: meeting.id })
+      .then((result) => {
+        const data = typeof result?.data === 'string' ? JSON.parse(result.data) : result?.data;
+        if (data && typeof data === 'object') setAiSummary(data as Summary);
+      })
+      .catch((error) => logFailure('summary-reload', error));
+  }, [writtenElsewhere, meeting.id, setAiSummary]);
 
   // Auto-generate summary when flag is set
   useEffect(() => {
@@ -194,7 +225,8 @@ export default function PageContent({
       if (
         shouldAutoGenerate &&
         meetingData.transcripts.length > 0 &&
-        (!isPostCallRecording || postCallDone)
+        (!isPostCallRecording || postCallDone) &&
+        !postCallUnderway
       ) {
         // Every automatic summary goes through the shared attempt and mark: the
         // background runner may be starting the same one, and a page being left
@@ -230,6 +262,7 @@ export default function PageContent({
     meetingData.transcripts.length,
     isPostCallRecording,
     postCallDone,
+    postCallUnderway,
     postCall.release,
     modelConfig.provider,
     modelConfig.model,
@@ -298,7 +331,7 @@ export default function PageContent({
             onOpenExport={() => setExportOpen(true)}
             onOpenFolder={meetingOperations.handleOpenMeetingFolder}
             aiSummary={meetingData.aiSummary}
-            summaryStatus={summaryGeneration.summaryStatus}
+            summaryStatus={shownSummaryStatus}
             transcripts={meetingData.transcripts}
             modelConfig={modelConfig}
             setModelConfig={setModelConfig}
