@@ -710,6 +710,13 @@ pub async fn security_setup<R: Runtime>(
 ) -> Result<RecoveryCodeResponse, SecurityError> {
     let recovery_code = state.create(&password, with_recovery)?;
 
+    // The application log is not encrypted. Older versions wrote live
+    // transcript lines into it, and nothing written before this moment should
+    // sit in the clear beside an archive that now has a password.
+    if let Err(error) = crate::logging::erase() {
+        log::warn!("The application log could not be erased at setup: {error}");
+    }
+
     log::info!(
         "Archive protected with a password (recovery code kept: {})",
         with_recovery

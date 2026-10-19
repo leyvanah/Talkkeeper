@@ -272,8 +272,8 @@ pub async fn start_recording_with_meeting_name<R: Runtime>(
     meeting_name: Option<String>,
 ) -> Result<(), String> {
     info!(
-        "Starting recording with default devices, meeting: {:?}",
-        meeting_name
+        "Starting recording with default devices (named: {})",
+        meeting_name.is_some()
     );
 
     let _recording_lifecycle = RECORDING_LIFECYCLE_LOCK.lock().await;
@@ -610,8 +610,8 @@ pub async fn start_recording_with_devices_and_meeting<R: Runtime>(
     meeting_name: Option<String>,
 ) -> Result<(), String> {
     info!(
-        "Starting recording with specific devices: mic={:?}, system={:?}, meeting={:?}",
-        mic_device_name, system_device_name, meeting_name
+        "Starting recording with specific devices: mic={:?}, system={:?}, named: {}",
+        mic_device_name, system_device_name, meeting_name.is_some()
     );
 
     let _recording_lifecycle = RECORDING_LIFECYCLE_LOCK.lock().await;

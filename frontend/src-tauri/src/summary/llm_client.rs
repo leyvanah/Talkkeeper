@@ -1,4 +1,4 @@
-use reqwest::{header, Client};
+use reqwest::header;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
@@ -100,7 +100,6 @@ impl LLMProvider {
 /// Generates a summary using the specified LLM provider
 ///
 /// # Arguments
-/// * `client` - Reqwest HTTP client (reused for performance)
 /// * `provider` - The LLM provider to use
 /// * `model_name` - The specific model to use (e.g., "gpt-4", "claude-3-opus")
 /// * `api_key` - API key for the provider (not needed for Ollama)
@@ -117,7 +116,6 @@ impl LLMProvider {
 /// # Returns
 /// The generated summary text or an error message
 pub async fn generate_summary(
-    client: &Client,
     provider: &LLMProvider,
     model_name: &str,
     api_key: &str,
@@ -133,7 +131,6 @@ pub async fn generate_summary(
     hide: Shield<'_>,
 ) -> Result<String, String> {
     generate_reply(
-        client,
         provider,
         model_name,
         api_key,
@@ -170,7 +167,6 @@ fn stopped_on_length(reason: Option<&str>) -> bool {
 
 /// [`generate_summary`], also telling whether the answer was cut off.
 pub async fn generate_reply(
-    client: &Client,
     provider: &LLMProvider,
     model_name: &str,
     api_key: &str,
@@ -338,7 +334,9 @@ pub async fn generate_reply(
     info!("🐞 LLM Request to {}: model={}", provider_name(provider), model_name);
 
     // Send request with timeout and cancellation support
-    let request_future = client
+    // Picked by address: a request to this computer must not take the
+    // system proxy (network_policy).
+    let request_future = crate::network_policy::client(&api_url)
         .post(api_url)
         .headers(headers)
         .json(&request_body)

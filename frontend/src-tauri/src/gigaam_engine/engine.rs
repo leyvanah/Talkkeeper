@@ -325,7 +325,7 @@ impl GigaamEngine {
             fs::create_dir_all(&self.model_dir).await?;
         }
 
-        let client = reqwest::Client::builder()
+        let client = crate::network_policy::client_builder(BASE_URL)
             .tcp_nodelay(true)
             .pool_max_idle_per_host(1)
             .timeout(Duration::from_secs(3600))

@@ -336,8 +336,10 @@ async fn run_import<R: Runtime>(
     }
 
     info!(
-        "Starting import for '{}' from {} with language {:?}, model {:?}, provider {:?}",
-        title, source_path, language, model, provider
+        // Neither the title nor the file name: both are the owner's words for
+        // the meeting and would stay in the clear log after it is deleted.
+        "Starting import with language {:?}, model {:?}, provider {:?}",
+        language, model, provider
     );
 
     // Determine which provider to use (default to whisper)

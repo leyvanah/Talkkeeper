@@ -2,7 +2,6 @@ use crate::summary::llm_client::{generate_summary, LLMProvider};
 use crate::summary::templates::Template;
 use once_cell::sync::Lazy;
 use regex::Regex;
-use reqwest::Client;
 use std::path::PathBuf;
 use tokio_util::sync::CancellationToken;
 use tracing::{error, info};
@@ -314,7 +313,6 @@ pub fn extract_meeting_name_from_markdown(markdown: &str) -> Option<String> {
 /// Generates a complete meeting summary with conditional chunking strategy
 ///
 /// # Arguments
-/// * `client` - Reqwest HTTP client
 /// * `provider` - LLM provider to use
 /// * `model_name` - Specific model name
 /// * `api_key` - API key for the provider
@@ -338,7 +336,6 @@ pub fn extract_meeting_name_from_markdown(markdown: &str) -> Option<String> {
 /// where english_summary_markdown is the canonical AI-generated English summary
 /// (equals final_summary_markdown when target language is English)
 pub async fn generate_meeting_summary(
-    client: &Client,
     provider: &LLMProvider,
     model_name: &str,
     api_key: &str,
@@ -419,7 +416,6 @@ pub async fn generate_meeting_summary(
                 let user_prompt_chunk = build_chunk_summary_user_prompt(chunk);
 
                 match generate_summary(
-                    client,
                     provider,
                     model_name,
                     api_key,
@@ -471,7 +467,6 @@ pub async fn generate_meeting_summary(
                 let system_prompt_combine = "You are an expert at synthesizing meeting summaries.";
                 let user_prompt_combine = build_combine_summary_user_prompt(&combined_text);
                 generate_summary(
-                    client,
                     provider,
                     model_name,
                     api_key,
@@ -520,7 +515,6 @@ pub async fn generate_meeting_summary(
         }
 
         let raw_markdown = generate_summary(
-            client,
             provider,
             model_name,
             api_key,
@@ -546,7 +540,6 @@ pub async fn generate_meeting_summary(
     let final_markdown = match resolve_final_language_action(summary_language, detected_transcript_language) {
         FinalLanguageAction::Translate(name) => {
             match translate_markdown(
-                client,
                 provider,
                 model_name,
                 api_key,
@@ -575,7 +568,6 @@ pub async fn generate_meeting_summary(
             let normalized = english_markdown_after_normalization_result(
                 &english_markdown,
                 normalize_markdown_to_english(
-                    client,
                     provider,
                     model_name,
                     api_key,
@@ -603,7 +595,6 @@ pub async fn generate_meeting_summary(
 
 #[allow(clippy::too_many_arguments)]
 async fn run_markdown_transform(
-    client: &Client,
     provider: &LLMProvider,
     model_name: &str,
     api_key: &str,
@@ -626,7 +617,6 @@ async fn run_markdown_transform(
     }
 
     let raw = generate_summary(
-        client,
         provider,
         model_name,
         api_key,
@@ -649,7 +639,6 @@ async fn run_markdown_transform(
 
 #[allow(clippy::too_many_arguments)]
 async fn translate_markdown(
-    client: &Client,
     provider: &LLMProvider,
     model_name: &str,
     api_key: &str,
@@ -672,7 +661,6 @@ async fn translate_markdown(
     );
 
     run_markdown_transform(
-        client,
         provider,
         model_name,
         api_key,
@@ -693,7 +681,6 @@ async fn translate_markdown(
 
 #[allow(clippy::too_many_arguments)]
 async fn normalize_markdown_to_english(
-    client: &Client,
     provider: &LLMProvider,
     model_name: &str,
     api_key: &str,
@@ -714,7 +701,6 @@ async fn normalize_markdown_to_english(
     );
 
     run_markdown_transform(
-        client,
         provider,
         model_name,
         api_key,

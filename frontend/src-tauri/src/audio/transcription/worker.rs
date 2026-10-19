@@ -249,13 +249,15 @@ pub fn start_transcription_task<R: Runtime>(
                                         None => "N/A".to_string(),
                                     };
 
+                                    // The log sits in the clear beside the archive: say how
+                                    // much was recognised, never what (logging.rs).
                                     info!("🔍 Worker {} transcription result: {} chars, confidence={}, partial={}",
                                           worker_id, transcript.chars().count(), confidence_str, is_partial);
 
                                     if should_emit_transcript(&transcript, confidence_opt) {
                                         // PERFORMANCE: Only log transcription results, not every processing step
-                                        info!("✅ Worker {} transcribed {} words (confidence: {}, partial: {})",
-                                              worker_id, transcript.split_whitespace().count(), confidence_str, is_partial);
+                                        info!("✅ Worker {} transcribed {} chars (confidence: {}, partial: {})",
+                                              worker_id, transcript.chars().count(), confidence_str, is_partial);
 
                                         // Emit speech-detected event for frontend UX (only on first detection per session)
                                         // This is lightweight and provides better user feedback
@@ -299,8 +301,8 @@ pub fn start_transcription_task<R: Runtime>(
                                             )
                                         {
                                             info!(
-                                                "🔇 Worker {} dropped a microphone segment that repeats the system channel ({} words)",
-                                                worker_id, transcript.split_whitespace().count()
+                                                "🔇 Worker {} dropped a microphone segment that repeats the system channel ({} chars)",
+                                                worker_id, transcript.chars().count()
                                             );
                                             chunks_completed_clone.fetch_add(1, Ordering::SeqCst);
                                             continue;

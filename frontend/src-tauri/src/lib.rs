@@ -319,25 +319,27 @@ async fn start_recording_with_devices_and_meeting<R: Runtime>(
     system_device_name: Option<String>,
     meeting_name: Option<String>,
 ) -> Result<(), String> {
-    log_info!("🚀 CALLED start_recording_with_devices_and_meeting - Mic: {:?}, System: {:?}, Meeting: {:?}",
-             mic_device_name, system_device_name, meeting_name);
+    // Whether the meeting has a name, never the name: it outlives the
+    // meeting in the clear log (logging.rs).
+    log_info!("🚀 CALLED start_recording_with_devices_and_meeting - Mic: {:?}, System: {:?}, named: {}",
+             mic_device_name, system_device_name, meeting_name.is_some());
 
     // Call the recording module functions that support meeting names
     let recording_result = match (mic_device_name.clone(), system_device_name.clone()) {
         (None, None) => {
             log_info!(
-                "No devices specified, starting with defaults and meeting: {:?}",
-                meeting_name
+                "No devices specified, starting with defaults (named: {})",
+                meeting_name.is_some()
             );
             audio::recording_commands::start_recording_with_meeting_name(app.clone(), meeting_name)
                 .await
         }
         _ => {
             log_info!(
-                "Starting with specified devices: mic={:?}, system={:?}, meeting={:?}",
+                "Starting with specified devices: mic={:?}, system={:?}, named: {}",
                 mic_device_name,
                 system_device_name,
-                meeting_name
+                meeting_name.is_some()
             );
             audio::recording_commands::start_recording_with_devices_and_meeting(
                 app.clone(),

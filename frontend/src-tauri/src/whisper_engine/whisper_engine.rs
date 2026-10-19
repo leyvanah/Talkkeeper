@@ -8,7 +8,6 @@ use whisper_rs::{DtwMode, DtwModelPreset, DtwParameters, WhisperContext, Whisper
 use crate::audio::word_timing::{spell, words_from_pieces, TimedPiece, WordTiming};
 use serde::{Serialize, Deserialize};
 use anyhow::{Result, anyhow};
-use reqwest::Client;
 use tokio::fs;
 use tokio::io::AsyncWriteExt;
 use crate::config::WHISPER_MODEL_CATALOG;
@@ -452,7 +451,7 @@ impl WhisperEngine {
         let final_text = cleaned_words.join(" ");
         if Self::calculate_repetition_ratio(&final_text) > 0.7 {
             // Performance optimization: reduce repetition ratio logging to debug level
-            perf_debug!("High repetition ratio detected, filtering out {} words", cleaned_words.len());
+            perf_debug!("High repetition ratio detected, filtering out {} chars", final_text.chars().count());
             return String::new();
         }
 
@@ -917,8 +916,8 @@ impl WhisperEngine {
             // This was causing significant I/O overhead during transcription
             // Only log segments for very long audio (>30s) or when explicitly debugging
             if duration_seconds > 30.0 {
-                perf_trace!("Segment {} ({:.2}s-{:.2}s): {} chars",
-                           i, _start_time as f64 / 100.0, _end_time as f64 / 100.0, segment_text.chars().count());
+                perf_trace!("Segment {} ({:.2}s-{:.2}s): '{}'",
+                           i, _start_time as f64 / 100.0, _end_time as f64 / 100.0, segment_text);
             }
 
             // Clean and append segment text
@@ -944,17 +943,14 @@ impl WhisperEngine {
             }
         } else {
             if cleaned_result != final_result {
-                log::info!("Cleaned repetitive transcription #{}: {} -> {} words", transcription_count,
-                           final_result.split_whitespace().count(), cleaned_result.split_whitespace().count());
+                log::info!("Cleaned repetitive transcription #{}: {} -> {} chars", transcription_count, final_result.chars().count(), cleaned_result.chars().count());
             }
             // Reduce successful transcription logging frequency
             // Only log every 5th result or significant results (>50 chars) to reduce I/O overhead
             if transcription_count % 5 == 0 || cleaned_result.len() > 50 || duration_seconds > 10.0 {
-                log::info!("Transcription #{} result: {} chars, {} words", transcription_count,
-                           cleaned_result.chars().count(), cleaned_result.split_whitespace().count());
+                log::info!("Transcription #{} result: {} chars", transcription_count, cleaned_result.chars().count());
             } else {
-                perf_debug!("Transcription #{} result: {} chars, {} words", transcription_count,
-                            cleaned_result.chars().count(), cleaned_result.split_whitespace().count());
+                perf_debug!("Transcription #{} result: {} chars", transcription_count, cleaned_result.chars().count());
             }
         }
 
@@ -1129,7 +1125,7 @@ impl WhisperEngine {
         }
         
         log::info!("Creating HTTP client and starting request...");
-        let client = Client::new();
+        let client = crate::network_policy::client(&model_url);
         
         log::info!("Sending GET request to: {}", model_url);
         let response = client.get(&model_url).send().await

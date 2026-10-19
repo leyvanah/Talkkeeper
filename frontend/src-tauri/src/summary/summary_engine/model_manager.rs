@@ -7,7 +7,6 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use anyhow::{anyhow, Result};
-use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
 use tokio::fs::{self, OpenOptions};
@@ -512,7 +511,7 @@ impl ModelManager {
         }
 
         // Download the file with optimized client settings
-        let client = match Client::builder()
+        let client = match crate::network_policy::client_builder(&model_def.download_url)
             .tcp_nodelay(true) // Disable Nagle's algorithm for faster streaming
             .pool_max_idle_per_host(1) // Keep connection alive
             .timeout(Duration::from_secs(3600)) // 1 hour timeout for large files
