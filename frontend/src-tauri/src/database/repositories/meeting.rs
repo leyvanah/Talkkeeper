@@ -545,6 +545,78 @@ mod tests {
         .unwrap();
         assert_eq!(row, ("Manual".to_string(), true, "Manual".to_string()));
     }
+
+    /// The whole schema, one client and three meetings of theirs. "Тест А"
+    /// (notes) speaks only in m1, "Тест Б" (no notes) only in m1, "Тест В"
+    /// (notes) in no meeting at all, "Тест Г" (no notes) also in m2.
+    async fn archive_with_people() -> SqlitePool {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        crate::database::manager::MIGRATOR.run(&pool).await.unwrap();
+        sqlx::raw_sql(
+            "INSERT INTO clients (id, display_name, normalized_name, created_at, updated_at) \
+                 VALUES ('c1', 'Клиент', 'клиент', 'now', 'now'); \
+             INSERT INTO meetings (id, title, created_at, updated_at, client_id) VALUES \
+                 ('m1', 'm1', 'now', 'now', 'c1'), ('m2', 'm2', 'now', 'now', 'c1'), \
+                 ('m3', 'm3', 'now', 'now', 'c1'); \
+             INSERT INTO people (id, display_name, normalized_name, notes, created_at, \
+                     updated_at, client_id) VALUES \
+                 ('pa', 'Тест А', 'тест а', 'заметка А', 'now', 'now', 'c1'), \
+                 ('pb', 'Тест Б', 'тест б', NULL, 'now', 'now', 'c1'), \
+                 ('pv', 'Тест В', 'тест в', 'заметка В', 'now', 'now', 'c1'), \
+                 ('pg', 'Тест Г', 'тест г', NULL, 'now', 'now', 'c1'); \
+             INSERT INTO person_speakers (person_id, meeting_id, speaker_label) VALUES \
+                 ('pa', 'm1', 'Тест А'), ('pb', 'm1', 'Тест Б'), \
+                 ('pg', 'm1', 'Тест Г'), ('pg', 'm2', 'Тест Г');",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        pool
+    }
+
+    async fn people(pool: &SqlitePool) -> Vec<(String, Option<String>)> {
+        sqlx::query_as("SELECT id, notes FROM people ORDER BY id")
+            .fetch_all(pool)
+            .await
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn deleting_another_meeting_keeps_a_person_with_notes_and_no_meetings() {
+        let pool = archive_with_people().await;
+
+        assert!(MeetingsRepository::delete_meeting(&pool, "m3").await.unwrap());
+
+        assert!(people(&pool)
+            .await
+            .contains(&("pv".to_string(), Some("заметка В".to_string()))));
+    }
+
+    #[tokio::test]
+    async fn deleting_the_last_meeting_keeps_people_with_notes_only() {
+        let pool = archive_with_people().await;
+
+        assert!(MeetingsRepository::delete_meeting(&pool, "m1").await.unwrap());
+
+        // А keeps the notes, Б had none and goes as before, Г still has m2.
+        assert_eq!(
+            people(&pool).await,
+            vec![
+                ("pa".to_string(), Some("заметка А".to_string())),
+                ("pg".to_string(), None),
+                ("pv".to_string(), Some("заметка В".to_string())),
+            ]
+        );
+        let links: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM person_speakers")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(links, 1, "only Г's link to m2 is left");
+    }
 }
 
 async fn delete_meeting_with_transaction(
@@ -614,12 +686,9 @@ async fn delete_meeting_with_transaction(
         .execute(&mut *transaction)
         .await?;
 
-    sqlx::query(
-        "DELETE FROM people WHERE NOT EXISTS \
-         (SELECT 1 FROM person_speakers ps WHERE ps.person_id = people.id)",
-    )
-    .execute(&mut *transaction)
-    .await?;
+    // The same rule as every other edit: people left without meetings go,
+    // unless something was written about them.
+    super::person::delete_orphan_people(&mut *transaction).await?;
 
     Ok(result.rows_affected() > 0)
 }

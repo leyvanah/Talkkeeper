@@ -131,7 +131,7 @@ pub fn show_toast<R: tauri::Runtime>(
         .on_activated(move |_action| {
             if let Some(win) = app_click.get_webview_window("main") {
                 let _ = win.unminimize();
-                let _ = win.show();
+                let _ = crate::tray::show_main_window(&win);
                 let _ = win.set_focus();
             }
             Ok(())

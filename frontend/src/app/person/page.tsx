@@ -30,14 +30,18 @@ import {
   Search,
   Send,
   Sparkles,
+  Trash2,
   UserRound,
 } from 'lucide-react';
+import { toast } from 'sonner';
 import type { PersonProfile } from '@/types';
+import { ConfirmAction, type ConfirmRequest } from '@/components/ui/confirm-action';
 import { isCloudProvider, sendsOffThisComputer } from '@/lib/cloud-providers';
 import {
   allNotesDrafts,
   answerDestination,
   beginPersonRequest,
+  forgetPerson,
   keepNotesDraft,
   notesDraft,
   notesSaved,
@@ -51,7 +55,7 @@ import {
   type AnswerDestination,
   type PersonQuestion,
 } from '@/lib/person-page-memory';
-import { logFailure } from '@/lib/failure';
+import { logFailure, toastFailure } from '@/lib/failure';
 import { failureText } from '@/lib/failure-text';
 
 // The overview prompt is localized too, so the model answers in the UI language.
@@ -203,6 +207,7 @@ function ProfileProblem({ title, detail, retry }: { title: string; detail: strin
 
 function PersonProfileContent() {
   const t = useTranslations('person');
+  const tc = useTranslations('common');
   const locale = useLocale();
   const router = useRouter();
   const searchParams = useSearchParams();
@@ -236,6 +241,7 @@ function PersonProfileContent() {
   const [promptDraft, setPromptDraft] = useState('');
   const [promptSaving, setPromptSaving] = useState(false);
   const [promptError, setPromptError] = useState<string | null>(null);
+  const [confirm, setConfirm] = useState<ConfirmRequest | null>(null);
 
   useEffect(() => {
     invoke<string | null>('get_person_overview_prompt')
@@ -385,6 +391,21 @@ function PersonProfileContent() {
     return () => window.removeEventListener('beforeunload', flushAll);
   }, []);
 
+  // The meetings stay, and so do the names on their lines: only the profile
+  // and the notes about the person go.
+  const deletePerson = async (id: string) => {
+    try {
+      await invoke('api_delete_person', { personId: id });
+    } catch (error) {
+      toastFailure(t('personDeleteFailed'), 'person-delete', error);
+      return;
+    }
+    // Before leaving: the page saves a pending draft when it unmounts.
+    forgetPerson(id);
+    toast.success(t('personDeletedSuccess'));
+    router.back();
+  };
+
   const generateOverview = async () => {
     if (!personId || overviewLoading) return;
     const request = beginPersonRequest(personId, () => ({ overviewPending: true, overviewError: null }));
@@ -474,12 +495,29 @@ function PersonProfileContent() {
                 <span className="h-px w-6 bg-[var(--af-accent)]" /> {t('personProfile')}
               </div>
               <h1 className="truncate text-3xl font-semibold text-[var(--af-text)] sm:text-4xl">{profile.displayName}</h1>
+              {profile.clientDisplayName && (
+                <p className="mt-1 truncate text-base text-[var(--af-text)]">
+                  {t('clientLine', { client: profile.clientDisplayName })}
+                </p>
+              )}
               <p className="mt-2 flex flex-wrap items-center gap-x-2 gap-y-1 text-sm text-[var(--af-text-2)]">
                 <span>{t('sharedMeetingsCount', { count: profile.meetingCount })}</span>
                 <span className="text-[var(--af-text-3)]">/</span>
                 <span>{seenRange}</span>
               </p>
             </div>
+            <button
+              onClick={() => setConfirm({
+                title: t('deletePersonTitle', { name: profile.displayName }),
+                description: t('deletePersonDescription'),
+                confirmLabel: tc('delete'),
+                busyLabel: tc('deleting'),
+                run: () => deletePerson(profile.id),
+              })}
+              className="inline-flex shrink-0 items-center gap-2 self-start rounded-lg px-3 py-1.5 text-sm text-[var(--af-text-2)] hover:bg-red-500/10 hover:text-red-500 sm:ml-auto sm:self-center"
+            >
+              <Trash2 className="h-4 w-4" /> {t('deletePerson')}
+            </button>
           </div>
         </header>
 
@@ -779,6 +817,7 @@ function PersonProfileContent() {
           </aside>
         </div>
       </div>
+      <ConfirmAction request={confirm} onClose={() => setConfirm(null)} />
     </div>
   );
 }

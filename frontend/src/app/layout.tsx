@@ -11,11 +11,13 @@ import { BareWindowBar } from '@/components/BareWindowBar'
 import MainContent from '@/components/MainContent'
 import { Toaster, toast } from 'sonner'
 import "sonner/dist/styles.css"
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useRef } from 'react'
 import { usePathname, useRouter } from 'next/navigation'
 import { listen, UnlistenFn } from '@tauri-apps/api/event'
 import { invoke } from '@tauri-apps/api/core'
 import { applyAppTheme, getSavedAppTheme } from '@/lib/app-theme'
+import { copyText } from '@/lib/private-clipboard'
+import { installPrivateCopy } from '@/lib/private-copy-events'
 import { LocaleProvider, getLocaleMessages } from '@/contexts/LocaleContext'
 import { SecurityProvider, useSecurity } from '@/contexts/SecurityContext'
 import { LockScreen } from '@/components/security/LockScreen'
@@ -41,6 +43,7 @@ import CrashReportDialog from '@/components/CrashReportDialog'
 import { getPendingCrashReport, type PendingCrashReport } from '@/services/crashReportService'
 import { Button } from '@/components/ui/button'
 import { logFailure } from '@/lib/failure'
+import { archiveIsOpen } from '@/lib/archive-gate'
 
 
 const sourceSans3 = Source_Sans_3({
@@ -85,8 +88,20 @@ function ConditionalImportDialog({
  * unlocked. While the state is still being read it renders an empty ground
  * rather than a flash of the app.
  */
-function ArchiveGate({ children }: { children: React.ReactNode }) {
+function ArchiveGate({
+  children,
+  onOpenChange,
+}: {
+  children: React.ReactNode
+  /** Told whether the app is showing, for listeners that live above the gate. */
+  onOpenChange: (open: boolean) => void
+}) {
   const { status, loading } = useSecurity()
+  const open = archiveIsOpen({ status, loading })
+
+  useEffect(() => {
+    onOpenChange(open)
+  }, [open, onOpenChange])
 
   if (loading) {
     return (
@@ -136,6 +151,14 @@ export default function RootLayout({
 
   // Import audio state
   const [showDropOverlay, setShowDropOverlay] = useState(false)
+  // The drop listeners live above the archive gate, so the gate reports here
+  // whether the app is showing. A file dropped on the lock screen is ignored:
+  // no toast over it, and no import dialog waiting behind it.
+  const archiveOpenRef = useRef(false)
+  const handleArchiveOpenChange = useCallback((open: boolean) => {
+    archiveOpenRef.current = open
+    if (!open) setShowDropOverlay(false)
+  }, [])
   const [showImportDialog, setShowImportDialog] = useState(false)
   const [importFilePath, setImportFilePath] = useState<string | null>(null)
 
@@ -178,6 +201,15 @@ export default function RootLayout({
       cancelled = true
     }
   }, [startupAttempt])
+
+  // Ctrl+C / Ctrl+X on a selection go through the private clipboard write, so
+  // selected summary or transcript text stays out of clipboard history.
+  useEffect(() => {
+    return installPrivateCopy(window, copyText, (error) => {
+      console.error('[Layout] Private copy failed:', error);
+      toast.error(getLocaleMessages().app.copySelectionFailed);
+    });
+  }, []);
 
   // Disable context menu in production
   useEffect(() => {
@@ -269,6 +301,8 @@ export default function RootLayout({
 
   // Handle file drop for audio import
   const handleFileDrop = useCallback((paths: string[]) => {
+    if (!archiveOpenRef.current) return
+
     // Check if beta features are enabled (read from localStorage directly since we're outside ConfigProvider)
     const betaFeatures = loadBetaFeatures();
 
@@ -308,7 +342,7 @@ export default function RootLayout({
     const setupListeners = async () => {
       // Drag enter/over - show overlay only if beta feature is enabled
       const unlistenDragEnter = await listen('tauri://drag-enter', () => {
-        if (loadBetaFeatures().importAndRetranscribe) {
+        if (archiveOpenRef.current && loadBetaFeatures().importAndRetranscribe) {
           setShowDropOverlay(true);
         }
       });
@@ -423,7 +457,7 @@ export default function RootLayout({
           </>
         ) : (
           <SecurityProvider>
-          <ArchiveGate>
+          <ArchiveGate onOpenChange={handleArchiveOpenChange}>
             <RecordingStateProvider>
               <TranscriptProvider>
                 <ConfigProvider>

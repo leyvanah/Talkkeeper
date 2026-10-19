@@ -30,17 +30,28 @@ interface RecordingState {
   isMicrophoneMuted: boolean;     // Is only the microphone silenced
   isSystemAudioMuted: boolean;    // Is only system audio silenced
   isActive: boolean;              // Is actively recording (recording && !paused)
-  recordingDuration: number | null;  // Total duration including pauses
-  activeDuration: number | null;     // Active recording time (excluding pauses)
 
   // NEW: Lifecycle status
   status: RecordingStatus;
   statusMessage?: string;  // Optional message for current status
 }
 
+/**
+ * The recording's clock, kept apart from the state above: it changes on every
+ * poll, and in the shared context it re-rendered every consumer - the page,
+ * the transcript, the sidebar - twice a second for a whole recording, which
+ * cost a video call running beside the app its processor time.
+ */
+export interface RecordingClock {
+  recordingDuration: number | null;  // Total duration including pauses
+  activeDuration: number | null;     // Active recording time (excluding pauses)
+}
+
 interface RecordingStateContextType extends RecordingState {
   // NEW: Setters for status management
   setStatus: (status: RecordingStatus, message?: string) => void;
+  /** The clock as of now, without subscribing to its ticks. */
+  readClock: () => RecordingClock;
 
   // Computed helpers (derived from status)
   isStopping: boolean;
@@ -49,6 +60,12 @@ interface RecordingStateContextType extends RecordingState {
 }
 
 const RecordingStateContext = createContext<RecordingStateContextType | null>(null);
+
+const STOPPED_CLOCK: RecordingClock = { recordingDuration: null, activeDuration: null };
+const RecordingClockContext = createContext<RecordingClock>(STOPPED_CLOCK);
+
+/** Re-renders on every clock tick: only for components that show the time. */
+export const useRecordingClock = () => useContext(RecordingClockContext);
 
 export const useRecordingState = () => {
   const context = useContext(RecordingStateContext);
@@ -65,11 +82,19 @@ export function RecordingStateProvider({ children }: { children: React.ReactNode
     isMicrophoneMuted: false,
     isSystemAudioMuted: false,
     isActive: false,
-    recordingDuration: null,
-    activeDuration: null,
     status: RecordingStatus.IDLE,  // NEW: Initialize with IDLE status
     statusMessage: undefined,       // NEW: No message initially
   });
+  const [clock, setClock] = useState<RecordingClock>(STOPPED_CLOCK);
+  const clockRef = useRef<RecordingClock>(STOPPED_CLOCK);
+  const updateClock = useCallback((next: RecordingClock) => {
+    clockRef.current = next;
+    setClock(prev =>
+      prev.recordingDuration === next.recordingDuration && prev.activeDuration === next.activeDuration
+        ? prev
+        : next);
+  }, []);
+  const readClock = useCallback(() => clockRef.current, []);
 
   const pollingIntervalRef = useRef<NodeJS.Timeout | null>(null);
 
@@ -92,18 +117,27 @@ export function RecordingStateProvider({ children }: { children: React.ReactNode
     try {
       const backendState = await recordingService.getRecordingState();
 
-      setState(prev => ({
-        ...prev,
-        isRecording: backendState.is_recording,
-        isPaused: backendState.is_paused,
-        isMicrophoneMuted: backendState.is_microphone_muted,
-        isSystemAudioMuted: backendState.is_system_audio_muted,
-        isActive: backendState.is_active,
+      // An unchanged state keeps its identity, so a poll that only moved
+      // the clock re-renders nobody but the clock's readers.
+      setState(prev =>
+        prev.isRecording === backendState.is_recording &&
+        prev.isPaused === backendState.is_paused &&
+        prev.isMicrophoneMuted === backendState.is_microphone_muted &&
+        prev.isSystemAudioMuted === backendState.is_system_audio_muted &&
+        prev.isActive === backendState.is_active
+          ? prev
+          : {
+            ...prev,
+            isRecording: backendState.is_recording,
+            isPaused: backendState.is_paused,
+            isMicrophoneMuted: backendState.is_microphone_muted,
+            isSystemAudioMuted: backendState.is_system_audio_muted,
+            isActive: backendState.is_active,
+          });
+      updateClock({
         recordingDuration: backendState.recording_duration,
         activeDuration: backendState.active_duration,
-      }));
-
-      console.log('[RecordingStateContext] Synced with backend:', backendState);
+      });
     } catch (error) {
       console.error('[RecordingStateContext] Failed to sync with backend:', error);
       // Don't update state on error - keep current state
@@ -181,10 +215,9 @@ export function RecordingStateProvider({ children }: { children: React.ReactNode
               isMicrophoneMuted: false,
               isSystemAudioMuted: false,
               isActive: false,
-              recordingDuration: null,
-              activeDuration: null,
             };
           });
+          updateClock(STOPPED_CLOCK);
           stopPolling();
         });
         unsubscribers.push(unlistenStopped);
@@ -257,14 +290,17 @@ export function RecordingStateProvider({ children }: { children: React.ReactNode
   const contextValue = useMemo(() => ({
     ...state,
     setStatus,
+    readClock,
     isStopping: state.status === RecordingStatus.STOPPING,
     isProcessing: state.status === RecordingStatus.PROCESSING_TRANSCRIPTS,
     isSaving: state.status === RecordingStatus.SAVING,
-  }), [state, setStatus]);
+  }), [state, setStatus, readClock]);
 
   return (
     <RecordingStateContext.Provider value={contextValue}>
-      {children}
+      <RecordingClockContext.Provider value={clock}>
+        {children}
+      </RecordingClockContext.Provider>
     </RecordingStateContext.Provider>
   );
 }

@@ -584,15 +584,11 @@ export function RecordingSettings({ onSave }: RecordingSettingsProps) {
                 {t('storageOpenFolder')}
               </button>
             </div>
+            <p className="mt-3 text-xs text-gray-500">{t('recordingsFolderChangeNote')}</p>
           </div>
 
           <div className="p-4 border rounded-lg bg-blue-50">
-            <div className="text-sm text-blue-800">
-              <strong>{t('fileFormat')}</strong> {t('fileFormatValue', { format: preferences.file_format.toUpperCase() })}
-            </div>
-            <div className="text-xs text-blue-600 mt-1">
-              {t('fileNamePattern', { format: preferences.file_format })}
-            </div>
+            <div className="text-sm text-blue-800">{t('recordingFilesNote')}</div>
           </div>
         </div>
       )}

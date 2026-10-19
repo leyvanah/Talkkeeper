@@ -7,6 +7,7 @@ import { Button } from './ui/button';
 import { Progress } from './ui/progress';
 import { logFailure } from '@/lib/failure';
 import { useDiskSpaceText } from '@/hooks/useDiskSpaceText';
+import { useConfirmModelDelete } from '@/hooks/useConfirmModelDelete';
 
 export const GIGAAM_MODEL_NAME = 'gigaam-v3-e2e-rnnt-int8';
 
@@ -42,6 +43,7 @@ interface GigaamModelManagerProps {
 export function GigaamModelManager({ isSelected, disabled, onSelect, recommended }: GigaamModelManagerProps) {
     const t = useTranslations('settings');
     const diskSpaceText = useDiskSpaceText();
+    const confirmDelete = useConfirmModelDelete();
     const [status, setStatus] = useState<GigaamModelStatus | null>(null);
     const [percent, setPercent] = useState(0);
     const [speed, setSpeed] = useState<number | null>(null);
@@ -131,6 +133,9 @@ export function GigaamModelManager({ isSelected, disabled, onSelect, recommended
     const canSelect = installed && !disabled && !isSelected && !isDownloading;
 
     return (
+        <>
+        {/* Outside the card: a click or Enter in the dialog must not select the model. */}
+        {confirmDelete.dialog}
         <div
             className={`space-y-4 rounded-xl border p-4 transition-colors ${canSelect ? 'cursor-pointer hover:border-[var(--af-accent)]' : ''} ${isSelected
                 ? 'border-[var(--af-accent)] bg-[var(--af-accent-soft)] ring-1 ring-blue-500/20'
@@ -216,7 +221,7 @@ export function GigaamModelManager({ isSelected, disabled, onSelect, recommended
                             type="button"
                             variant="outline"
                             size="sm"
-                            onClick={() => void deleteModel()}
+                            onClick={() => confirmDelete.ask('GigaAM v3', status?.sizeMb ?? 215, deleteModel)}
                             disabled={isSelected}
                             title={isSelected ? t('gigaamDeleteBlocked') : undefined}
                         >
@@ -244,5 +249,6 @@ export function GigaamModelManager({ isSelected, disabled, onSelect, recommended
                 ) : null}
             </div>
         </div>
+        </>
     );
 }

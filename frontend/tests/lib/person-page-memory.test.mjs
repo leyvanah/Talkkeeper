@@ -3,6 +3,7 @@ import { beforeEach, describe, test } from 'node:test';
 import {
   answerDestination,
   beginPersonRequest,
+  forgetPerson,
   forgetPersonAnswers,
   keepNotesDraft,
   notesDraft,
@@ -106,6 +107,16 @@ describe('notes draft', () => {
     keepNotesDraft('p1', 'Секретная фраза');
     notesSaved('p1', 'Секрет');
     assert.equal(notesDraft('p1'), 'Секретная фраза');
+  });
+
+  test('a deleted person leaves no draft and no answers behind', () => {
+    keepNotesDraft('p1', 'Секрет');
+    keepNotesDraft('p2', 'Другое');
+    updatePersonAi('p1', () => ({ overview: 'Встреча в четверг' }));
+    forgetPerson('p1');
+    assert.equal(notesDraft('p1'), undefined);
+    assert.equal(personAiState('p1').overview, null);
+    assert.equal(notesDraft('p2'), 'Другое');
   });
 });
 

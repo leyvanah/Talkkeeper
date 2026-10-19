@@ -145,8 +145,16 @@ impl Keystore {
         let text = serde_json::to_string_pretty(self)
             .map_err(|error| KeystoreError::Corrupt(error.to_string()))?;
 
+        // The bytes reach the disk before the rename: NTFS can keep a rename
+        // across a power cut and lose the contents it pointed at, and this
+        // file is rewritten on every unlock attempt.
         let temporary = path.with_extension("json.tmp");
-        std::fs::write(&temporary, text)?;
+        {
+            use std::io::Write;
+            let mut file = std::fs::File::create(&temporary)?;
+            file.write_all(text.as_bytes())?;
+            file.sync_all()?;
+        }
         std::fs::rename(&temporary, path)?;
         Ok(())
     }

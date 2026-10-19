@@ -26,6 +26,7 @@ import { useRouter } from 'next/navigation';
 import { LANGUAGES } from '@/constants/languages';
 import { useTranscriptionModels, ModelOption } from '@/hooks/useTranscriptionModels';
 import { toastFailure } from '@/lib/failure';
+import { ConfirmAction, type ConfirmRequest } from '@/components/ui/confirm-action';
 
 interface RetranscribeDialogProps {
   open: boolean;
@@ -68,6 +69,7 @@ export function RetranscribeDialog({
   const [vocabularyScope, setVocabularyScope] = useState<'meeting' | 'global'>('meeting');
   const [savedMeetingVocabulary, setSavedMeetingVocabulary] = useState('');
   const [isClearingMeetingVocabulary, setIsClearingMeetingVocabulary] = useState(false);
+  const [confirm, setConfirm] = useState<ConfirmRequest | null>(null);
 
   // Use centralized model fetching hook
   const {
@@ -234,6 +236,7 @@ export function RetranscribeDialog({
       <DialogContent
         className="max-h-[85vh] overflow-y-auto sm:max-w-[500px]"
       >
+        <ConfirmAction request={confirm} onClose={() => setConfirm(null)} />
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2">
             {isProcessing ? (
@@ -416,7 +419,13 @@ export function RetranscribeDialog({
                       size="sm"
                       className="h-6 px-2 text-xs"
                       disabled={isClearingMeetingVocabulary}
-                      onClick={clearMeetingVocabulary}
+                      onClick={() => setConfirm({
+                        title: t('retranscribeVocabularyClearConfirmTitle'),
+                        description: t('retranscribeVocabularyClearConfirmDescription'),
+                        confirmLabel: tc('clear'),
+                        busyLabel: t('retranscribeVocabularyClearing'),
+                        run: clearMeetingVocabulary,
+                      })}
                     >
                       {isClearingMeetingVocabulary ? t('retranscribeVocabularyClearing') : tc('clear')}
                     </Button>

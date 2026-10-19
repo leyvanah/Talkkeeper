@@ -5,6 +5,7 @@
 //! Passwords cross this boundary and nowhere else — none of these commands
 //! returns one, and none of them logs one.
 
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -34,6 +35,9 @@ pub struct SecurityState {
     /// constant so the lifecycle can be tested against a temporary directory
     /// instead of the owner's real archive.
     path: std::path::PathBuf,
+    /// Set when the keystore file is there but could not be read at startup.
+    /// The archive then counts as protected and stays locked.
+    damaged: AtomicBool,
     /// The key itself.
     pub session: Arc<KeySession>,
 }
@@ -58,14 +62,29 @@ impl SecurityState {
         Self {
             keystore: Mutex::new(None),
             path,
+            damaged: AtomicBool::new(false),
             session: Arc::new(KeySession::new()),
         }
     }
 
     /// Reads the keystore from disk and tells the session whether a password
     /// exists. Called once at startup; a damaged file is reported, not ignored.
+    ///
+    /// A file that is there but cannot be read leaves the archive protected and
+    /// locked, with no way in until the file is put right. Treating it as "no
+    /// password" would write new recordings and texts in the clear next to an
+    /// archive that is still sealed. The file itself is left as it is.
     pub fn load(&self) -> Result<(), SecurityError> {
-        let keystore = Keystore::load_from(&self.path)?;
+        let keystore = match Keystore::load_from(&self.path) {
+            Ok(keystore) => keystore,
+            Err(error) => {
+                self.damaged.store(true, Ordering::SeqCst);
+                self.session.set_configured(true);
+                *self.keystore_guard() = None;
+                return Err(error.into());
+            }
+        };
+        self.damaged.store(false, Ordering::SeqCst);
         self.session.set_configured(keystore.is_some());
         self.session.set_auto_lock_after(
             keystore
@@ -83,23 +102,70 @@ impl SecurityState {
             .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 
+    /// Why there is no keystore to work with: none was ever set up, or the file
+    /// is there and could not be read.
+    fn missing_keystore(&self) -> SecurityError {
+        if self.damaged.load(Ordering::SeqCst) {
+            SecurityError::new("keystoreCorrupt", "the key file could not be read")
+        } else {
+            SecurityError::not_configured()
+        }
+    }
+
+    /// Runs an unlock attempt against the keystore and writes the result back.
+    ///
+    /// The keystore is saved even when the attempt fails, because a failed
+    /// unlock still moves the attempt counter, and that counter is worthless if
+    /// it does not survive closing the window. A save that fails is only
+    /// logged: a key file that cannot be written must not keep the owner out.
+    fn with_keystore_attempt<T>(
+        &self,
+        attempt: impl FnOnce(&mut Keystore) -> Result<T, KeystoreError>,
+    ) -> Result<T, SecurityError> {
+        let mut guard = self.keystore_guard();
+        let keystore = guard.as_mut().ok_or_else(|| self.missing_keystore())?;
+
+        let outcome = attempt(keystore);
+        if let Err(error) = keystore.save_to(&self.path) {
+            log::error!("Could not write the keystore: {error}");
+        }
+        outcome.map_err(SecurityError::from)
+    }
+
     /// Runs `change` against the keystore and writes the result back.
     ///
-    /// The keystore is saved even when `change` fails, because a failed unlock
-    /// still moves the attempt counter, and that counter is worthless if it does
-    /// not survive closing the window.
+    /// A change that worked counts only once it is on disk. If the file cannot
+    /// be written, the window hears so and the keystore in memory goes back to
+    /// what the file still holds: otherwise a new recovery code would be shown
+    /// that stops working at the next start, while the old one keeps working.
+    /// A refused change (wrong password) is saved as an attempt is, for the
+    /// counter.
     fn with_keystore<T>(
         &self,
         change: impl FnOnce(&mut Keystore) -> Result<T, KeystoreError>,
     ) -> Result<T, SecurityError> {
         let mut guard = self.keystore_guard();
-        let keystore = guard.as_mut().ok_or(SecurityError::not_configured())?;
+        let keystore = guard.as_mut().ok_or_else(|| self.missing_keystore())?;
 
-        let outcome = change(keystore);
+        let before = keystore.clone();
+        let value = match change(keystore) {
+            Ok(value) => value,
+            Err(error) => {
+                if let Err(error) = keystore.save_to(&self.path) {
+                    log::error!("Could not write the keystore: {error}");
+                }
+                return Err(error.into());
+            }
+        };
         if let Err(error) = keystore.save_to(&self.path) {
-            log::error!("Could not write the keystore: {error}");
+            log::error!("Could not write the keystore, change not kept: {error}");
+            *keystore = before;
+            return Err(SecurityError::new(
+                "keystoreSaveFailed",
+                format!("the key file could not be written: {error}"),
+            ));
         }
-        outcome.map_err(SecurityError::from)
+        Ok(value)
     }
 
     /// Protects a fresh archive and leaves it open. Shared by the command and
@@ -491,6 +557,10 @@ pub struct SecurityStatus {
     pub quick_available: bool,
     /// Whether the owner turned quick unlock on. Off unless they did.
     pub quick_enabled: bool,
+    /// Whether the key file is there but could not be read. The archive then
+    /// stays locked, and the lock screen says what to do instead of asking
+    /// for a password that has nothing to open.
+    pub keystore_damaged: bool,
 }
 
 /// A failure the window has to react to differently depending on which it is.
@@ -585,6 +655,7 @@ pub fn security_status(state: State<'_, SecurityState>) -> SecurityStatus {
         quick_enabled: guard.as_ref().is_some_and(Keystore::has_quick_unlock),
         #[cfg(not(windows))]
         quick_enabled: false,
+        keystore_damaged: state.damaged.load(Ordering::SeqCst),
     }
 }
 
@@ -653,7 +724,7 @@ pub async fn security_quick_unlock<R: Runtime>(
         let guard = state.keystore_guard();
         guard
             .as_ref()
-            .ok_or_else(SecurityError::not_configured)?
+            .ok_or_else(|| state.missing_keystore())?
             .quick
             .clone()
             .ok_or_else(|| SecurityError::new("quickNotConfigured", "quick unlock is not set up"))?
@@ -696,6 +767,33 @@ impl From<super::quick::QuickError> for SecurityError {
     }
 }
 
+/// Marks protection as changing, after making sure nothing is writing to the
+/// archive. A recording or a job that started before the change would write
+/// with the key it found when it opened its files — one about to be deleted, or
+/// none under a new password — and the conversion passes skip files that are
+/// still being written.
+async fn start_protection_change() -> Result<super::session::ProtectionChange, SecurityError> {
+    let change = super::session::begin_protection_change().ok_or_else(|| {
+        SecurityError::new("changeInProgress", "the protection is already being changed")
+    })?;
+    // A recording that is starting right now gets there first, so the check
+    // below sees it rather than letting it open its files mid-change.
+    crate::audio::recording_commands::wait_for_recording_lifecycle().await;
+    if crate::audio::recording_commands::is_recording().await {
+        return Err(SecurityError::new(
+            "changeWhileRecording",
+            "the protection cannot be changed while recording",
+        ));
+    }
+    if super::session::background_work_running() {
+        return Err(SecurityError::new(
+            "changeWhileJob",
+            "the protection cannot be changed while a summary, transcription or import is running",
+        ));
+    }
+    Ok(change)
+}
+
 /// Protects the archive for the first time and leaves it unlocked.
 ///
 /// The recovery code comes back once, here. It is never stored in the clear and
@@ -708,6 +806,7 @@ pub async fn security_setup<R: Runtime>(
     state: State<'_, SecurityState>,
     archive: State<'_, crate::state::AppState>,
 ) -> Result<RecoveryCodeResponse, SecurityError> {
+    let _change = start_protection_change().await?;
     let recovery_code = state.create(&password, with_recovery)?;
 
     log::info!(
@@ -748,7 +847,7 @@ pub fn security_unlock<R: Runtime>(
     password: String,
     state: State<'_, SecurityState>,
 ) -> Result<(), SecurityError> {
-    let dek = state.with_keystore(|keystore| keystore.unlock_with_password(&password))?;
+    let dek = state.with_keystore_attempt(|keystore| keystore.unlock_with_password(&password))?;
     state.session.unlock(dek);
     log::info!("Archive unlocked");
     discard_stale_backup_after_unlock(&app);
@@ -763,7 +862,7 @@ pub fn security_unlock_with_recovery<R: Runtime>(
     code: String,
     state: State<'_, SecurityState>,
 ) -> Result<(), SecurityError> {
-    let dek = state.with_keystore(|keystore| keystore.unlock_with_recovery(&code))?;
+    let dek = state.with_keystore_attempt(|keystore| keystore.unlock_with_recovery(&code))?;
     state.session.unlock(dek);
     log::info!("Archive unlocked with the recovery code");
     discard_stale_backup_after_unlock(&app);
@@ -836,7 +935,7 @@ pub fn security_reset_password<R: Runtime>(
     state.with_keystore(|keystore| {
         keystore.reset_password_with_recovery(&recovery_code, &new_password)
     })?;
-    let dek = state.with_keystore(|keystore| keystore.unlock_with_password(&new_password))?;
+    let dek = state.with_keystore_attempt(|keystore| keystore.unlock_with_password(&new_password))?;
     state.session.unlock(dek);
     log::info!("Archive password reset with the recovery code");
     discard_stale_backup_after_unlock(&app);
@@ -898,9 +997,11 @@ pub async fn security_disable<R: Runtime>(
     state: State<'_, SecurityState>,
     archive: State<'_, crate::state::AppState>,
 ) -> Result<(), SecurityError> {
+    let _change = start_protection_change().await?;
+
     // Opens the archive as well as proving the password: the key is what the
     // recordings have to be decrypted with.
-    let dek = state.with_keystore(|keystore| keystore.unlock_with_password(&password))?;
+    let dek = state.with_keystore_attempt(|keystore| keystore.unlock_with_password(&password))?;
     state.session.unlock(dek);
 
     // The database goes first: it converts inside a transaction, so a
@@ -929,6 +1030,11 @@ pub async fn security_disable<R: Runtime>(
             ));
         }
     }
+
+    // Decrypting the recordings can take minutes, and a summary or a note
+    // saved meanwhile was sealed with the key. A second pass right before the
+    // key goes picks those up; it has little to do and runs in one transaction.
+    convert_database(archive.db_manager.pool(), DatabaseDirection::Decrypt).await?;
 
     std::fs::remove_file(&state.path).map_err(KeystoreError::Io)?;
     *state.keystore_guard() = None;
@@ -1147,7 +1253,7 @@ mod tests {
         assert!(next_run.session.with_dek(|_| ()).is_err());
 
         next_run
-            .with_keystore(|keystore| keystore.unlock_with_password("correct horse"))
+            .with_keystore_attempt(|keystore| keystore.unlock_with_password("correct horse"))
             .map(|dek| next_run.session.unlock(dek))
             .unwrap();
         assert_eq!(next_run.session.state(), LockState::Unlocked);
@@ -1161,7 +1267,7 @@ mod tests {
         first_run.create("correct horse", false).unwrap();
 
         for _ in 0..2 {
-            let _ = first_run.with_keystore(|keystore| keystore.unlock_with_password("wrong"));
+            let _ = first_run.with_keystore_attempt(|keystore| keystore.unlock_with_password("wrong"));
         }
 
         let next_run = SecurityState::at(path);
@@ -1217,6 +1323,111 @@ mod tests {
             quick_enabled: guard.as_ref().is_some_and(Keystore::has_quick_unlock),
             #[cfg(not(windows))]
             quick_enabled: false,
+            keystore_damaged: state.damaged.load(Ordering::SeqCst),
         }
+    }
+
+    /// Makes the next save fail: the temporary file it writes first cannot be
+    /// created where a directory of the same name stands.
+    fn block_saving(state: &SecurityState) -> std::path::PathBuf {
+        let blocker = state.path.with_extension("json.tmp");
+        std::fs::create_dir(&blocker).unwrap();
+        blocker
+    }
+
+    #[test]
+    fn a_change_that_cannot_be_saved_is_refused_and_not_kept_in_memory() {
+        let (_directory, state) = temporary_state();
+        state.create("correct horse", true).unwrap();
+        let on_disk = std::fs::read_to_string(&state.path).unwrap();
+        block_saving(&state);
+
+        let error = state
+            .with_keystore(|keystore| keystore.regenerate_recovery("correct horse"))
+            .unwrap_err();
+        assert_eq!(error.code, "keystoreSaveFailed");
+
+        let error = state
+            .with_keystore(|keystore| {
+                keystore.auto_lock_minutes = Some(99);
+                Ok(())
+            })
+            .unwrap_err();
+        assert_eq!(error.code, "keystoreSaveFailed");
+
+        // Memory still matches the file, so the next start agrees with this one.
+        assert_eq!(
+            security_status_of(&state).auto_lock_minutes,
+            DEFAULT_AUTO_LOCK_MINUTES
+        );
+        let kept = serde_json::to_string_pretty(state.keystore_guard().as_ref().unwrap()).unwrap();
+        assert_eq!(kept, on_disk);
+    }
+
+    #[test]
+    fn an_unlock_still_works_when_the_attempt_cannot_be_saved() {
+        let (_directory, state) = temporary_state();
+        state.create("correct horse", false).unwrap();
+        block_saving(&state);
+
+        let dek = state
+            .with_keystore_attempt(|keystore| keystore.unlock_with_password("correct horse"));
+        assert!(dek.is_ok());
+    }
+
+    #[test]
+    fn a_change_that_was_saved_survives_a_restart() {
+        let (directory, state) = temporary_state();
+        state.create("correct horse", false).unwrap();
+        state
+            .with_keystore(|keystore| {
+                keystore.auto_lock_minutes = Some(42);
+                Ok(())
+            })
+            .unwrap();
+
+        let next_run = SecurityState::at(directory.path().join("keystore.json"));
+        next_run.load().unwrap();
+        assert_eq!(security_status_of(&next_run).auto_lock_minutes, Some(42));
+    }
+
+    #[test]
+    fn an_unreadable_key_file_leaves_the_archive_protected_and_locked() {
+        let (directory, state) = temporary_state();
+        let path = directory.path().join("keystore.json");
+        std::fs::write(&path, "{ \"version\": 1, \"password\": ").unwrap();
+
+        let error = state.load().unwrap_err();
+        assert_eq!(error.code, "keystoreCorrupt");
+
+        let status = security_status_of(&state);
+        assert_eq!(status.state, LockState::Locked);
+        assert!(status.keystore_damaged);
+
+        // Every way in says what is wrong instead of "no password".
+        let error = state
+            .with_keystore_attempt(|keystore| keystore.unlock_with_password("correct horse"))
+            .unwrap_err();
+        assert_eq!(error.code, "keystoreCorrupt");
+
+        // A new password is not laid over it, and the damaged file stays as it
+        // was for the owner to put the saved copy in its place.
+        let error = state.create("another password", false).unwrap_err();
+        assert_eq!(error.code, "alreadyConfigured");
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            "{ \"version\": 1, \"password\": "
+        );
+    }
+
+    #[test]
+    fn a_readable_key_file_clears_the_damaged_mark() {
+        let (directory, state) = temporary_state();
+        state.create("correct horse", false).unwrap();
+
+        let next_run = SecurityState::at(directory.path().join("keystore.json"));
+        next_run.load().unwrap();
+        assert!(!security_status_of(&next_run).keystore_damaged);
+        assert_eq!(next_run.session.state(), LockState::Locked);
     }
 }
