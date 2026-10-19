@@ -13,6 +13,7 @@ import { useRouter, useSearchParams } from 'next/navigation';
 import { invoke } from '@tauri-apps/api/core';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
+import { modelMarkdownComponents } from '@/lib/model-markdown';
 import {
   ArrowLeft,
   ArrowUpRight,
@@ -570,7 +571,7 @@ function PersonProfileContent() {
                 ) : overview ? (
                   <>
                     <div className="prose prose-sm max-w-none leading-relaxed text-[var(--af-text-2)] dark:prose-invert prose-headings:text-[var(--af-text)] prose-strong:text-[var(--af-text)] prose-p:my-2 prose-ul:my-2">
-                      <ReactMarkdown remarkPlugins={[remarkGfm]}>{overview}</ReactMarkdown>
+                      <ReactMarkdown remarkPlugins={[remarkGfm]} components={modelMarkdownComponents}>{overview}</ReactMarkdown>
                     </div>
                     {ai.overviewCutOff && <CutOffNote />}
                     {overviewError && <p className="mt-4 rounded-lg bg-red-500/10 px-3 py-2 text-xs text-red-400">{t('overviewRegenerateFailed')}</p>}
@@ -768,7 +769,7 @@ function PersonProfileContent() {
                           <>{message.answer}</>
                         ) : (
                           <div className="prose prose-xs max-w-none text-[var(--af-text-2)] dark:prose-invert prose-strong:text-[var(--af-text)] prose-p:my-1 prose-ul:my-1">
-                            <ReactMarkdown remarkPlugins={[remarkGfm]}>{message.answer}</ReactMarkdown>
+                            <ReactMarkdown remarkPlugins={[remarkGfm]} components={modelMarkdownComponents}>{message.answer}</ReactMarkdown>
                             {message.cutOff && <CutOffNote />}
                           </div>
                         )}
