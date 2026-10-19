@@ -711,7 +711,7 @@ impl SummaryService {
                             .map(|name| name.trim().to_string())
                             .filter(|name| !name.is_empty())
                         {
-                            info!("Extracted meeting name from summary: '{}'", name);
+                            info!("Extracted meeting name from summary ({} chars)", name.chars().count());
                             match MeetingsRepository::update_generated_meeting_title(
                                 &pool,
                                 &meeting_id,
