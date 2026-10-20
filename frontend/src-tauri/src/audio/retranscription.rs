@@ -95,6 +95,9 @@ pub struct RetranscriptionProgress {
 pub struct RetranscriptionResult {
     pub meeting_id: String,
     pub segments_count: usize,
+    /// Lines a person corrected or wrote, left as they were.
+    #[serde(default)]
+    pub kept_count: usize,
     pub duration_seconds: f64,
     pub language: Option<String>,
 }
@@ -163,6 +166,7 @@ async fn start_retranscription<R: Runtime>(
                 serde_json::json!({
                     "meeting_id": res.meeting_id,
                     "segments_count": res.segments_count,
+                    "kept_count": res.kept_count,
                     "duration_seconds": res.duration_seconds,
                     "language": res.language
                 }),
@@ -870,7 +874,7 @@ async fn run_retranscription<R: Runtime>(
     }
 
     // The recognizer's old lines go; the lines a person wrote stay.
-    TranscriptEditsRepository::clear_machine_lines(&mut tx, &meeting_id, tracks_known)
+    let kept_count = TranscriptEditsRepository::clear_machine_lines(&mut tx, &meeting_id, tracks_known)
         .await
         .map_err(|e| anyhow!("Failed to delete existing transcripts: {}", e))?;
 
@@ -949,6 +953,7 @@ async fn run_retranscription<R: Runtime>(
     Ok(RetranscriptionResult {
         meeting_id,
         segments_count: segments.len(),
+        kept_count,
         duration_seconds,
         language,
     })
