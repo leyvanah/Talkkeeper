@@ -51,9 +51,12 @@ pub fn init<R: Runtime>() -> TauriPlugin<R> {
 pub fn is_app_page(url: &Url, dev_url: Option<&Url>) -> bool {
     match url.scheme() {
         // The built frontend on macOS and Linux.
-        "tauri" => url.host_str() == Some("localhost"),
-        // The built frontend on Windows and Android.
-        "http" | "https" if url.host_str() == Some("tauri.localhost") => true,
+        "tauri" => url.host_str() == Some("localhost") && url.port().is_none(),
+        // The built frontend on Windows and Android, served only at the
+        // default port. Any `*.localhost` name resolves to loopback, so
+        // `tauri.localhost:<port>` is whatever local service listens there.
+        // (`port()` is also None for an explicit default port.)
+        "http" | "https" if url.host_str() == Some("tauri.localhost") => url.port().is_none(),
         "http" | "https" => dev_url.is_some_and(|dev| same_origin(url, dev)),
         // An empty page, such as the one the recovery code is printed from.
         "about" => url.path() == "blank",
@@ -79,6 +82,7 @@ mod tests {
     fn the_built_frontend_is_allowed() {
         assert!(is_app_page(&url("http://tauri.localhost/meeting-details?id=1"), None));
         assert!(is_app_page(&url("https://tauri.localhost/"), None));
+        assert!(is_app_page(&url("http://tauri.localhost:80/"), None));
         assert!(is_app_page(&url("tauri://localhost/person"), None));
         assert!(is_app_page(&url("about:blank"), None));
     }
@@ -89,6 +93,15 @@ mod tests {
         assert!(!is_app_page(&url("https://example.com/"), None));
         assert!(!is_app_page(&url("http://tauri.localhost.example.com/"), None));
         assert!(!is_app_page(&url("tauri://example.com/"), None));
+        // Another port on the app's own name is a local service, not the app.
+        assert!(!is_app_page(&url("http://tauri.localhost:8765/leak?q=Sekretnaya-fraza"), None));
+        assert!(!is_app_page(&url("https://tauri.localhost:8765/"), None));
+        assert!(!is_app_page(&url("http://tauri.localhost:443/"), None));
+        assert!(!is_app_page(&url("tauri://localhost:8765/"), None));
+        // Other `*.localhost` names are loopback too.
+        assert!(!is_app_page(&url("http://recording.localhost/"), None));
+        assert!(!is_app_page(&url("http://evil.tauri.localhost/"), None));
+        assert!(!is_app_page(&url("http://localhost/"), None));
         assert!(!is_app_page(&url("file:///C:/Windows/win.ini"), None));
         assert!(!is_app_page(&url("data:text/html,hello"), None));
         assert!(!is_app_page(&url("about:srcdoc"), None));
