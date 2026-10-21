@@ -105,12 +105,11 @@ export function OllamaDownloadProvider({ children }: { children: React.ReactNode
         const unlistenError = await listen<{ modelName: string; error: string }>(
           'ollama-model-download-error',
           (event) => {
-            const { modelName, error } = event.payload;
-            console.error(`❌ [OllamaDownloadContext] Download error for ${modelName}:`, error);
-
+            const { modelName } = event.payload;
+            // Not logged here: the same failure rejects `pull_ollama_model`,
+            // whose caller logs it.
             toast.error(t('modelDownloadFailedToast', { model: modelName }), {
-              description: error,
-              duration: 6000
+              duration: 6000,
             });
 
             // Clear progress and remove from downloading set

@@ -14,6 +14,7 @@ import {
 } from '@/lib/summary-language-preferences';
 import { clearPendingRecordingClient, getPendingRecordingClient } from '@/lib/recording-client';
 import { useTranslations } from 'next-intl';
+import { toastFailure } from '@/lib/failure';
 
 type SummaryStatus = 'idle' | 'processing' | 'summarizing' | 'regenerating' | 'completed' | 'error';
 
@@ -84,7 +85,7 @@ export function useRecordingStop(
 
     // Accidental taps: under 10s → discard, no meeting note.
     const MIN_MEETING_SECS = 10;
-    let elapsedSecs = recordingState.recordingDuration ?? 0;
+    let elapsedSecs = recordingState.readClock().recordingDuration ?? 0;
     let recordingStartedAtMs = 0;
     let recordingStartFallbackAtMs = 0;
     try {
@@ -107,19 +108,14 @@ export function useRecordingStop(
       setIsMeetingActive(false);
       clearTranscripts();
       try {
-        // stop_recording may still be publishing folder_path — brief wait.
-        let folderPath = sessionStorage.getItem('last_recording_folder_path');
-        if (!folderPath) {
-          await new Promise((r) => setTimeout(r, 400));
-          folderPath = sessionStorage.getItem('last_recording_folder_path');
-        }
         sessionStorage.removeItem('last_recording_folder_path');
         sessionStorage.removeItem('last_recording_meeting_name');
-        if (folderPath) {
-          await invoke('discard_recording_folder', { folderPath }).catch((e) =>
-            console.warn('Failed to discard short recording folder:', e),
-          );
-        }
+        // The backend knows which folder belongs to the take that just
+        // stopped. The path kept here can be an older, unsaved recording's,
+        // so it is never what decides what gets deleted.
+        await invoke('discard_short_recording').catch((e) =>
+          console.warn('Failed to discard short recording folder:', e),
+        );
       } catch {
         /* ignore cleanup errors */
       }
@@ -271,6 +267,12 @@ export function useRecordingStop(
             throw new Error('No meeting ID received from save operation');
           }
 
+          // The processing after Stop runs from a queue in this window; the mark
+          // lets the next start take it up if the window goes away first.
+          await invoke('api_set_post_call_pending', { meetingId, pending: true }).catch((error) =>
+            console.error('Could not mark the meeting as waiting for processing:', error),
+          );
+
           let shouldDetectSummaryLanguage = false;
           try {
             shouldDetectSummaryLanguage = !(await applyPinnedSummaryLanguageToMeeting(meetingId));
@@ -319,10 +321,6 @@ export function useRecordingStop(
           console.log(
             `🏷️ Live speaker labels on save: ${labeled}/${freshTranscripts.length} (${Math.round(labelRatio * 100)}%)`
           );
-          // Clean up session storage
-          sessionStorage.removeItem('last_recording_folder_path');
-          sessionStorage.removeItem('last_recording_meeting_name');
-
           // Refetch meetings and set current meeting
           await refetchMeetings();
 
@@ -355,9 +353,7 @@ export function useRecordingStop(
         } catch (saveError) {
           console.error('Failed to save meeting to database:', saveError);
           setStatus(RecordingStatus.ERROR, saveError instanceof Error ? saveError.message : 'Unknown error');
-          toast.error(t('saveMeetingFailedTitle'), {
-            description: saveError instanceof Error ? saveError.message : t('unknownErrorShort')
-          });
+          toastFailure(t('saveMeetingFailedTitle'), 'meeting-save', saveError);
           throw saveError;
         }
       } else {
@@ -374,6 +370,14 @@ export function useRecordingStop(
       // isRecording already set to false at function start
       setIsRecordingDisabled(false);
     } finally {
+      // The path belongs to this stop alone, saved or not: left behind, the
+      // next recording would take it for its own.
+      try {
+        sessionStorage.removeItem('last_recording_folder_path');
+        sessionStorage.removeItem('last_recording_meeting_name');
+      } catch {
+        /* ignore */
+      }
       // Always reset the guard flag when done
       stopInProgressRef.current = false;
     }
@@ -392,7 +396,7 @@ export function useRecordingStop(
     setIsMeetingActive,
     assignMeetingToClient,
     router,
-    recordingState.recordingDuration,
+    recordingState.readClock,
   ]);
 
   // Expose handleRecordingStop function to window for Rust callbacks

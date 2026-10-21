@@ -1052,24 +1052,31 @@ impl WhisperEngine {
     pub async fn download_model(&self, model_name: &str, progress_callback: Option<Box<dyn Fn(u8) + Send>>) -> Result<()> {
         log::info!("Starting download for model: {}", model_name);
 
-        // Check if download is already in progress for this model
+        // Checked and marked under one lock: with a read, then a separate
+        // write, two quick clicks could both get through.
         {
             let mut active = self.active_downloads.write().await;
-            if active.contains(model_name) {
+            if !active.insert(model_name.to_string()) {
                 log::warn!("Download already in progress for model: {}", model_name);
                 return Err(anyhow!("Download already in progress for model: {}", model_name));
             }
-            active.insert(model_name.to_string());
         }
 
-        let result = self.download_model_marked(model_name, progress_callback).await;
+        // Clear any previous cancellation flag for this model
+        {
+            let mut cancel_flag = self.cancel_download_flag.write().await;
+            *cancel_flag = None;
+        }
 
-        // Every way out lets go of the download. A failure before the first
-        // byte (no network, no models folder) used to leave the model marked as
-        // downloading, and every retry was refused as already in progress
-        // until the application was restarted.
+        // Every way out releases the reservation: a failed write, or a failure
+        // before the first byte (no network, no models folder), used to keep
+        // it, and a retry was refused as "in progress" until a restart.
+        let result = self.download_model_reserved(model_name, progress_callback).await;
         self.active_downloads.write().await.remove(model_name);
         if let Err(error) = &result {
+            // A progress update can put `Downloading` back between
+            // `cancel_download` (which sets `Missing`) and the loop noticing the
+            // flag; a cancelled download is not an error to show.
             let cancelled = self.cancel_download_flag.read().await.as_deref() == Some(model_name);
             let mut models = self.available_models.write().await;
             if let Some(model_info) = models.get_mut(model_name) {
@@ -1083,15 +1090,7 @@ impl WhisperEngine {
         result
     }
 
-    /// The download itself, with the model already marked as downloading;
-    /// [`Self::download_model`] takes the mark away however this ends.
-    async fn download_model_marked(&self, model_name: &str, progress_callback: Option<Box<dyn Fn(u8) + Send>>) -> Result<()> {
-        // Clear any previous cancellation flag for this model
-        {
-            let mut cancel_flag = self.cancel_download_flag.write().await;
-            *cancel_flag = None;
-        }
-
+    async fn download_model_reserved(&self, model_name: &str, progress_callback: Option<Box<dyn Fn(u8) + Send>>) -> Result<()> {
         // A pinned commit of ggerganov/whisper.cpp on Hugging Face, and the
         // SHA-256 of each file there: see `crate::model_integrity`.
         let pinned = crate::model_integrity::find(
@@ -1116,7 +1115,10 @@ impl WhisperEngine {
             fs::create_dir_all(&self.models_dir).await
                 .map_err(|e| anyhow!("Failed to create models directory: {}", e))?;
         }
-        
+
+        // The file is written from scratch, so the whole of it has to fit.
+        crate::disk_space::ensure_room(&self.models_dir, pinned.size)?;
+
         // Update model status to downloading
         {
             let mut models = self.available_models.write().await;
@@ -1144,9 +1146,13 @@ impl WhisperEngine {
             log::warn!("Content length is 0 or unknown - download may not show accurate progress");
         }
         
+        // Whisper does not resume: a file that does not finish is only lost
+        // space. Made before the file so that it goes after it: Windows does
+        // not delete a file that is still open.
+        let unfinished = crate::disk_space::UnfinishedFile::new(&file_path);
         let mut file = fs::File::create(&file_path).await
             .map_err(|e| anyhow!("Failed to create file: {}", e))?;
-        
+
         log::info!("File created successfully at: {}", file_path.display());
         
         // Stream download with real progress reporting
@@ -1178,8 +1184,14 @@ impl WhisperEngine {
             let chunk = chunk_result
                 .map_err(|e| anyhow!("Failed to read chunk: {}", e))?;
 
-            file.write_all(&chunk).await
-                .map_err(|e| anyhow!("Failed to write chunk to file: {}", e))?;
+            file.write_all(&chunk).await.map_err(|e| {
+                crate::disk_space::write_error(
+                    e,
+                    &self.models_dir,
+                    pinned.size.saturating_sub(downloaded),
+                    "Failed to write chunk to file",
+                )
+            })?;
             integrity.update(&chunk);
 
             downloaded += chunk.len() as u64;
@@ -1231,8 +1243,9 @@ impl WhisperEngine {
             callback(100);
         }
         
-        file.flush().await
-            .map_err(|e| anyhow!("Failed to flush file: {}", e))?;
+        file.flush().await.map_err(|e| {
+            crate::disk_space::write_error(e, &self.models_dir, 0, "Failed to flush file")
+        })?;
         drop(file);
 
         if let Err(error) = integrity.finish(pinned, &file_path) {
@@ -1246,8 +1259,9 @@ impl WhisperEngine {
             return Err(error);
         }
 
+        unfinished.keep();
         log::info!("Download completed for model: {}", model_name);
-        
+
         // Update model status to available
         {
             let mut models = self.available_models.write().await;

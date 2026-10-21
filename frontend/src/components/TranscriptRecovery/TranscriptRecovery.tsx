@@ -23,7 +23,7 @@ import { Alert, AlertDescription } from '@/components/ui/alert';
 import type { AudioOnly, MeetingMetadata, StoredTranscript } from '@/lib/unsaved-recordings';
 import { cn } from '@/lib/utils';
 import { useFormatter, useTranslations } from 'next-intl';
-import { toast } from 'sonner';
+import { logFailure, toastFailure } from '@/lib/failure';
 
 interface TranscriptRecoveryProps {
   isOpen: boolean;
@@ -64,7 +64,8 @@ function OtherKeyForm({
         setError(null);
       }
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : String(cause));
+      logFailure('key-file-choose', cause);
+      setError(t('otherKeyChooseFailed'));
     }
   };
 
@@ -74,7 +75,8 @@ function OtherKeyForm({
     if (message.includes('does not open this key file')) return t('otherKeyWrongSecret');
     if (message.includes('does not open this recording')) return t('otherKeyWrongKey');
     if (message.includes('Could not read the key file')) return t('otherKeyNotAKeyFile');
-    return message;
+    logFailure('recording-open-with-key', cause);
+    return t('otherKeyFailed');
   };
 
   const submit = async () => {
@@ -195,7 +197,17 @@ export function TranscriptRecovery({
     try {
       const result = await onRecover(selectedMeetingId);
       console.log('Recovery successful:', result);
-      onClose();
+      // With others left, the dialog stays and moves on to the next one.
+      // Selected here: the list dropped the recovered recording while it was
+      // still selected, so the auto-select effect has already run and passed.
+      // `recoverableMeetings` is the list from before, with that recording in
+      // it, hence the filter by id.
+      const next = recoverableMeetings.find((m) => m.meetingId !== selectedMeetingId);
+      if (!next) {
+        onClose();
+      } else {
+        void handleMeetingSelect(next.meetingId);
+      }
     } catch (error) {
       // The caller has already said what went wrong.
       console.error('Recovery failed:', error);
@@ -214,9 +226,7 @@ export function TranscriptRecovery({
       setPreviewTranscripts([]);
     } catch (error) {
       console.error('Delete failed:', error);
-      toast.error(t('deleteFailedAlert'), {
-        description: error instanceof Error ? error.message : String(error),
-      });
+      toastFailure(t('deleteFailedAlert'), 'recovery-delete', error);
     } finally {
       setIsDeleting(false);
     }
@@ -386,11 +396,13 @@ export function TranscriptRecovery({
                       </div>
                     ) : previewTranscripts.length > 0 ? (
                       <div className="space-y-3">
-                        <Alert>
-                          <AlertDescription>
-                            {t('showingFirstSegments', { shown: previewTranscripts.length, total: selectedMeeting.transcriptCount })}
-                          </AlertDescription>
-                        </Alert>
+                        {selectedMeeting.transcriptCount > previewTranscripts.length && (
+                          <Alert>
+                            <AlertDescription>
+                              {t('showingFirstSegments', { shown: previewTranscripts.length, total: selectedMeeting.transcriptCount })}
+                            </AlertDescription>
+                          </Alert>
+                        )}
                         {previewTranscripts.map((transcript, index) => {
                           // Handle different timestamp formats
                           const getTimestamp = () => {
