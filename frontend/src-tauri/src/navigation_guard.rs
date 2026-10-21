@@ -5,7 +5,15 @@
 //! one has neither a title nor a way back but Alt+Left. The pages render model
 //! answers as text rather than links (`frontend/src/lib/model-markdown.ts`);
 //! this is the backstop for anything else that would navigate a window away:
-//! every navigation to an address that is not the app's own is refused.
+//! every navigation to an address that is not the app's own is refused, so the
+//! window stays on the app's page.
+//!
+//! It is not a network filter. The refusal cancels a navigation that has
+//! already started, and by then WebView2 may have sent the request to the
+//! foreign address; what is stopped is the page being shown. Keeping such a
+//! request from leaving at all is up to the pages (model answers have no links
+//! or remote images to follow) and, for images and other resources a page
+//! loads, the CSP, which does not cover navigation.
 //!
 //! Links the app opens on purpose ("About", licences) go to the system browser
 //! through `open_external_url` and never navigate a window, so they are not
@@ -14,7 +22,8 @@
 use tauri::plugin::TauriPlugin;
 use tauri::{Manager, Runtime, Url};
 
-/// The plugin that refuses navigation away from the app, for every window.
+/// The plugin that keeps every window from navigating away from the app. It
+/// stops the foreign page from showing, not necessarily its request.
 pub fn init<R: Runtime>() -> TauriPlugin<R> {
     tauri::plugin::Builder::new("navigation-guard")
         .on_navigation(|webview, url| {
