@@ -6,6 +6,7 @@ import { toast } from 'sonner';
 import { useTranscripts } from '@/contexts/TranscriptContext';
 import { useSidebar } from '@/components/Sidebar/SidebarProvider';
 import { useRecordingState, RecordingStatus } from '@/contexts/RecordingStateContext';
+import { usePostCall } from '@/contexts/PostCallContext';
 import { storageService } from '@/services/storageService';
 import { transcriptService } from '@/services/transcriptService';
 import {
@@ -53,6 +54,9 @@ export function useRecordingStop(
     isProcessing: isProcessingTranscript,
     isSaving: isSavingTranscript
   } = recordingState;
+  // Read by the timer after Stop, which outlives the render it was set in.
+  const statusRef = useRef(status);
+  statusRef.current = status;
 
   const {
     transcriptsRef,
@@ -71,6 +75,7 @@ export function useRecordingStop(
   } = useSidebar();
 
   const router = useRouter();
+  const { begin: beginPostCall } = usePostCall();
 
   // Guard to prevent duplicate/concurrent stop calls (e.g., from UI and tray simultaneously)
   const stopInProgressRef = useRef(false);
@@ -341,13 +346,24 @@ export function useRecordingStop(
           // Mark as completed
           setStatus(RecordingStatus.COMPLETED);
 
-          // Auto-navigate after a short delay with source parameter
+          // Auto-navigate after a short delay with source parameter - unless a
+          // new recording has started meanwhile. The window then stays with it,
+          // its live transcript and status untouched, and this meeting's
+          // processing starts here instead of on the page it was to open.
           setTimeout(() => {
-            router.push(`/meeting-details?id=${meetingId}&source=recording`);
-            clearTranscripts()
+            void invoke<boolean>('is_recording')
+              .catch(() => false)
+              .then((recordingAgain) => {
+                if (recordingAgain || statusRef.current === RecordingStatus.STARTING) {
+                  beginPostCall(meetingId, folderPath);
+                  return;
+                }
+                router.push(`/meeting-details?id=${meetingId}&source=recording`);
+                clearTranscripts();
 
-            // Reset to IDLE after navigation
-            setStatus(RecordingStatus.IDLE);
+                // Reset to IDLE after navigation
+                setStatus(RecordingStatus.IDLE);
+              });
           }, 2000);
 
         } catch (saveError) {
@@ -396,6 +412,7 @@ export function useRecordingStop(
     setIsMeetingActive,
     assignMeetingToClient,
     router,
+    beginPostCall,
     recordingState.readClock,
   ]);
 
