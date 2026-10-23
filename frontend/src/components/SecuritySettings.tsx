@@ -43,6 +43,7 @@ import { LocalOnlyCard } from '@/components/security/LocalOnlyCard'
 import { NewPasswordFields } from '@/components/security/NewPasswordFields'
 import { PasswordInput } from '@/components/security/PasswordInput'
 import { MIN_PASSWORD_LENGTH, checkNewPassword } from '@/lib/password-rules'
+import { keystoreFilePath } from '@/lib/keystore-location'
 import {
   IDLE_PANEL,
   outcomeAt,
@@ -100,6 +101,8 @@ export function SecuritySettings() {
   const [confirmingBackupDelete, setConfirmingBackupDelete] = useState(false)
   /** Progress of a conversion, while one is running. */
   const [converting, setConverting] = useState<{ done: number; total: number } | null>(null)
+  /** Where a key backup goes back to; null until the backend has said. */
+  const [keystoreFile, setKeystoreFile] = useState<string | null>(null)
 
   // Setting protection up.
   const [newPassword, setNewPassword] = useState('')
@@ -153,6 +156,23 @@ export function SecuritySettings() {
       current = false
     }
   }, [status?.state, fieldEncryption])
+
+  // Shown beside the key backup, so restoring it does not start with a hunt for
+  // the data folder. On screen only — the path carries the home folder's name.
+  useEffect(() => {
+    if (status?.state !== 'unlocked' || keystoreFile !== null) return
+    let current = true
+    invoke<string>('get_database_directory')
+      .then((folder) => {
+        if (current) setKeystoreFile(keystoreFilePath(folder))
+      })
+      .catch(() => {
+        if (current) setKeystoreFile(keystoreFilePath(null))
+      })
+    return () => {
+      current = false
+    }
+  }, [status?.state, keystoreFile])
 
   // A conversion reports itself as it goes: an archive of a year's sessions is
   // gigabytes, and a panel showing nothing is a panel the owner force-quits.
@@ -386,7 +406,7 @@ export function SecuritySettings() {
           </form>
         ) : (
           <div className="mt-6 space-y-6">
-            {/* Status, and the way to close the archive right now — at the
+            {/* Status, and the way to lock the archive right now — at the
                 top, away from removing protection. */}
             <div>
               <div className="flex flex-wrap items-center justify-between gap-3">
@@ -394,15 +414,18 @@ export function SecuritySettings() {
                   <ShieldCheck className="h-4 w-4" />
                   {t('protectionOn')}
                 </div>
-                <Button
-                  type="button"
-                  variant="outline"
-                  disabled={busy}
-                  onClick={() => void run('lock', () => lock())}
-                >
-                  <Lock className="mr-2 h-4 w-4" />
-                  {label('lock', t('lockNow'))}
-                </Button>
+                <div className="flex flex-col items-end gap-1">
+                  <Button
+                    type="button"
+                    variant="outline"
+                    disabled={busy}
+                    onClick={() => void run('lock', () => lock())}
+                  >
+                    <Lock className="mr-2 h-4 w-4" />
+                    {label('lock', t('lockNow'))}
+                  </Button>
+                  <p className="text-xs text-gray-500">{t('lockNowHint')}</p>
+                </div>
               </div>
               {message('lock')}
               {message('setup')}
@@ -795,7 +818,13 @@ export function SecuritySettings() {
 
             <Group title={t('keyBackupTitle')}>
               <div>
-                <p className="mb-3 text-xs text-gray-500">{t('keyBackupDescription')}</p>
+                <p className="mb-2 text-xs text-gray-500">{t('keyBackupDescription')}</p>
+                <p className="mb-2 text-xs text-gray-500">{t('keyBackupRestoreHint')}</p>
+                {keystoreFile && (
+                  <p className="mb-3 select-all break-all font-mono text-xs text-gray-500">
+                    {keystoreFile}
+                  </p>
+                )}
                 <Button
                   type="button"
                   variant="outline"
