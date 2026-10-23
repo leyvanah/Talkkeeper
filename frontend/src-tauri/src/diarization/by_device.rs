@@ -218,6 +218,8 @@ pub async fn assign(
         lines.iter().map(|line| (line.1.clone(), line.2)).collect();
     let (local_name, remote_name) = chosen_names(&chosen);
 
+    // Counted for the window: a pass that changed nothing has to say so.
+    let before = super::line_labels(pool, meeting_id).await?;
     let mut transaction = pool
         .begin()
         .await
@@ -251,14 +253,17 @@ pub async fn assign(
         .await
         .map_err(|error| format!("Failed to save the labels: {error}"))?;
     crate::database::repositories::transcript_history::forget(meeting_id);
+    let (changed, unchanged, kept_by_hand) =
+        super::label_outcome(&before, &super::line_labels(pool, meeting_id).await?);
 
     let mut distinct: Vec<&String> = assignments.iter().map(|(_, label)| label).collect();
     distinct.sort();
     distinct.dedup();
     log::info!(
-        "🎙️ Labelled {} lines by device ({} voices){}",
+        "🎙️ Labelled {} lines by device ({} voices, {} changed){}",
         assignments.len(),
         distinct.len(),
+        changed,
         if unplaced > 0 {
             format!(", {unplaced} left as they were: no track to place them on")
         } else {
@@ -270,6 +275,9 @@ pub async fn assign(
         num_speakers: distinct.len(),
         labeled: assignments.len(),
         assignments,
+        changed,
+        unchanged,
+        kept_by_hand,
     })
 }
 
@@ -421,6 +429,25 @@ mod against_the_schema {
                 ("t4".into(), "Анна".into(), Some("system".into())),
             ]
         );
+        // t2 and t3 took the name; t1 was already "You", t4 already named.
+        assert_eq!((result.changed, result.unchanged, result.kept_by_hand), (2, 2, 1));
+    }
+
+    #[tokio::test]
+    async fn labelling_a_labelled_meeting_again_says_nothing_changed() {
+        let pool = migrated().await;
+        line(&pool, "t1", "You", Some("mic"), 0.0).await;
+        line(&pool, "t2", "Guest", Some("system"), 1.0).await;
+        line(&pool, "t3", "Анна", Some("system"), 2.0).await;
+        let folder = tempfile::tempdir().unwrap();
+
+        let first = assign(&pool, "m1", folder.path()).await.unwrap();
+        let second = assign(&pool, "m1", folder.path()).await.unwrap();
+
+        assert_eq!((first.changed, first.unchanged), (1, 2));
+        // Every line already carries what this pass would give it.
+        assert_eq!((second.changed, second.unchanged, second.kept_by_hand), (0, 3, 2));
+        assert_eq!(second.labeled, 3);
     }
 
     #[tokio::test]
