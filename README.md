@@ -6,11 +6,13 @@
 
 <p align="center"><b>Private recording, transcription and notes for conversations that must never leave your computer.</b></p>
 
+<p align="center"><b><a href="https://leyvanah.github.io/Talkkeeper/">Website</a></b> (in Russian) · <a href="https://github.com/leyvanah/Talkkeeper/releases/latest">Download for Windows</a></p>
+
 > **Коротко по-русски.** Talkkeeper записывает разговор, расшифровывает его и
 > помогает с заметками — целиком на вашем компьютере. Записи и текст зашифрованы
 > на диске, телеметрии нет, облако подключается только если вы сами этого
 > захотите. Интерфейс по умолчанию русский; распознавание русской речи — GigaAM.
-> Сборка для Windows 10/11.
+> Сборка для Windows 10/11. Сайт: <https://leyvanah.github.io/Talkkeeper/>.
 
 Talkkeeper is developed by [leyvanah](https://github.com/leyvanah). It started
 life as a fork of an open-source meeting recorder and has since been reshaped
