@@ -566,9 +566,10 @@ pub async fn rename_meeting_speaker(
     )
     .await
     .map_err(|e| format!("Failed to rename speaker: {}", e))?;
+    // Neither name: the new one is usually a person's (logging.rs).
     log::info!(
-        "🧑‍🤝‍🧑 Renamed speaker '{}' → '{}' across {} segments of meeting {}",
-        from, outcome.speaker, outcome.count, meeting_id
+        "🧑‍🤝‍🧑 Renamed a speaker across {} segments of meeting {}",
+        outcome.count, meeting_id
     );
     Ok(MeetingSpeakerRenameResult {
         speaker: outcome.speaker,
@@ -602,6 +603,76 @@ pub struct MeetingDiarizationResult {
     pub labeled: usize,
     /// (transcript_id, speaker_label) pairs, e.g. ("transcript-…", "Speaker 1").
     pub assignments: Vec<(String, String)>,
+    /// Lines whose label is different now from before the pass.
+    pub changed: usize,
+    /// Lines whose label the pass left as it was.
+    pub unchanged: usize,
+    /// Of the unchanged, lines carrying a speaker a person chose or named.
+    pub kept_by_hand: usize,
+}
+
+/// Whether a label is one the capture or the model makes for a voice nobody
+/// has named: "You", "Guest", "Speaker N", or several of them joined.
+pub(crate) fn is_generated_label(label: &str) -> bool {
+    label.split(" + ").all(|part| {
+        part.eq_ignore_ascii_case("guest")
+            || part.eq_ignore_ascii_case("you")
+            || part.to_ascii_lowercase().starts_with("speaker ")
+    })
+}
+
+/// A line's speaker as stored, read in the clear.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct LineLabel {
+    pub label: Option<String>,
+    /// A person chose this line's speaker, or the speaker has a name.
+    pub by_hand: bool,
+}
+
+/// Every line's speaker in a meeting, by line id.
+pub(crate) async fn line_labels(
+    pool: &sqlx::SqlitePool,
+    meeting_id: &str,
+) -> Result<std::collections::HashMap<String, LineLabel>, String> {
+    let rows: Vec<(String, Option<String>, i64)> = sqlx::query_as(
+        "SELECT id, speaker, speaker_set_at IS NOT NULL FROM transcripts WHERE meeting_id = ?",
+    )
+    .bind(meeting_id)
+    .fetch_all(pool)
+    .await
+    .map_err(|e| format!("Failed to read speaker labels: {e}"))?;
+    let mut labels = std::collections::HashMap::with_capacity(rows.len());
+    for (id, sealed, set_by_hand) in rows {
+        let label = fields::open_opt(fields::TRANSCRIPT_SPEAKER, sealed)
+            .map_err(|e| format!("Failed to read a speaker label: {e}"))?;
+        let named = label
+            .as_deref()
+            .map(|label| !label.trim().is_empty() && !is_generated_label(label.trim()))
+            .unwrap_or(false);
+        labels.insert(id, LineLabel { label, by_hand: set_by_hand != 0 || named });
+    }
+    Ok(labels)
+}
+
+/// What a labelling pass did, told by the lines before and after it:
+/// (changed, unchanged, unchanged lines whose speaker a person chose or named).
+pub(crate) fn label_outcome(
+    before: &std::collections::HashMap<String, LineLabel>,
+    after: &std::collections::HashMap<String, LineLabel>,
+) -> (usize, usize, usize) {
+    let (mut changed, mut unchanged, mut kept_by_hand) = (0, 0, 0);
+    for (id, now) in after {
+        match before.get(id) {
+            Some(was) if was.label == now.label => {
+                unchanged += 1;
+                if now.by_hand {
+                    kept_by_hand += 1;
+                }
+            }
+            _ => changed += 1,
+        }
+    }
+    (changed, unchanged, kept_by_hand)
 }
 
 /// Audio container extensions a meeting recording may use. Recordings are
@@ -1275,12 +1346,7 @@ pub async fn diarize_meeting(
         if let Some(ref live) = existing {
             let live_trim = live.trim();
             if !live_trim.is_empty() {
-                let is_generated = live_trim.split(" + ").all(|part| {
-                    part.eq_ignore_ascii_case("guest")
-                        || part.eq_ignore_ascii_case("you")
-                        || part.to_ascii_lowercase().starts_with("speaker ")
-                });
-                let is_named = !is_generated;
+                let is_named = !is_generated_label(live_trim);
                 if is_named {
                     preserved += 1;
                     assignments.push((id, live_trim.to_string()));
@@ -1382,6 +1448,8 @@ pub async fn diarize_meeting(
             updates.push((id, source_hint));
         }
     }
+    // Counted for the window: a pass that changed nothing has to say so.
+    let before = line_labels(pool, &meeting_id).await?;
     let mut tx = pool
         .begin()
         .await
@@ -1408,6 +1476,8 @@ pub async fn diarize_meeting(
             *label = as_settled(label, &lone);
         }
     }
+    let (changed, unchanged, kept_by_hand) =
+        label_outcome(&before, &line_labels(pool, &meeting_id).await?);
     crate::database::repositories::transcript_history::forget(&meeting_id);
     if preserved > 0 {
         log::info!(
@@ -1417,16 +1487,21 @@ pub async fn diarize_meeting(
     }
 
     log::info!(
-        "✅ Meeting {} diarized: {} speakers, {} segments labeled",
+        "✅ Meeting {} diarized: {} speakers, {} segments labeled, {} changed, {} unchanged",
         meeting_id,
         result.num_speakers,
-        assignments.len()
+        assignments.len(),
+        changed,
+        unchanged
     );
 
     Ok(MeetingDiarizationResult {
         num_speakers: result.num_speakers,
         labeled: assignments.len(),
         assignments,
+        changed,
+        unchanged,
+        kept_by_hand,
     })
 }
 
@@ -1537,6 +1612,45 @@ fn collect_turns(models: &mut DiarizationModels, samples: &[f32]) -> Result<Vec<
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn labelled(lines: &[(&str, Option<&str>, bool)]) -> std::collections::HashMap<String, LineLabel> {
+        lines
+            .iter()
+            .map(|(id, label, by_hand)| {
+                (id.to_string(), LineLabel { label: label.map(str::to_string), by_hand: *by_hand })
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_pass_counts_the_lines_it_changed_and_the_ones_it_kept() {
+        let before = labelled(&[
+            ("t1", Some("You"), false),
+            ("t2", Some("Speaker 1"), false),
+            ("t3", Some("Анна"), true),
+            ("t4", None, false),
+        ]);
+        let after = labelled(&[
+            ("t1", Some("You"), false),
+            ("t2", Some("Guest"), false),
+            ("t3", Some("Анна"), true),
+            ("t4", Some("Guest"), false),
+            // A line the pass never saw before is a change too.
+            ("t5", Some("You"), false),
+        ]);
+        assert_eq!(label_outcome(&before, &after), (3, 2, 1));
+        // Nothing moved: all kept, the named one counted as kept by hand.
+        assert_eq!(label_outcome(&after, &after), (0, 5, 1));
+    }
+
+    #[test]
+    fn a_generated_label_is_told_from_a_name() {
+        assert!(is_generated_label("You"));
+        assert!(is_generated_label("Speaker 2"));
+        assert!(is_generated_label("You + Guest"));
+        assert!(!is_generated_label("Анна"));
+        assert!(!is_generated_label("You + Анна"));
+    }
 
     /// The decode diarization reads as "You" loses the stretches the record
     /// marked, keeps everything else, and nothing is left under a temporary

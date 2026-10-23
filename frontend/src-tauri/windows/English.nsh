@@ -46,6 +46,7 @@ LangString tkDirBrowse ${LANG_ENGLISH} "Browse…"
 LangString tkDirBrowseTitle ${LANG_ENGLISH} "Choose the Talkkeeper install folder"
 LangString tkDirSpace ${LANG_ENGLISH} "About 810 MB is needed — the app, the models and the graphics libraries. WebView2 adds a little more on first run."
 LangString tkDirRuntimes ${LANG_ENGLISH} "After the files are copied, setup quietly adds WebView2, Visual C++ and the CUDA libraries. An NVIDIA card is used on its own when a driver is present."
+LangString tkDirOwnFolder ${LANG_ENGLISH} "Talkkeeper gets a folder of its own, so that it never mixes with the files already there:$\r$\n$INSTDIR$\r$\n$\r$\nClick OK to install there, or Cancel to choose another folder."
 
 ; --- installing page ---
 LangString tkInstallHeader ${LANG_ENGLISH} "Installing Talkkeeper"
@@ -75,3 +76,4 @@ LangString tkKeyRescued ${LANG_ENGLISH} "Your recordings are encrypted, and the 
 LangString tkKeyWarning ${LANG_ENGLISH} "You are about to delete the app data, and with it the key that encrypts every recording you have made.$\r$\n$\r$\nThe recordings themselves live elsewhere and will stay on disk, but without this key and your password they can never be opened again.$\r$\n$\r$\nA copy of the key will be saved first, in a folder you choose next (Documents by default).$\r$\n$\r$\nDelete the app data?"
 LangString tkKeyFolderPrompt ${LANG_ENGLISH} "Where should the copy of the key go? If this folder syncs to the cloud (OneDrive or similar), the key leaves this computer. Choose a folder that stays here, or a USB drive."
 LangString tkKeyKept ${LANG_ENGLISH} "The key could not be copied, so the app data has been left where it is:$\r$\n$INSTDIR\data$\r$\n$\r$\nIt holds keystore.json, without which the recordings cannot be opened. Save it yourself, then delete the folder by hand."
+LangString tkDataKept ${LANG_ENGLISH} "The data folder has been left where it is:$\r$\n$INSTDIR\data$\r$\n$\r$\nTalkkeeper did not create it, so it may hold files that are not Talkkeeper's. Look through it and delete it by hand if you want. If it holds keystore.json, keep a copy: without it the recordings cannot be opened."

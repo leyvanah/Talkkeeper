@@ -27,6 +27,7 @@ import { LANGUAGES } from '@/constants/languages';
 import { useTranscriptionModels, ModelOption } from '@/hooks/useTranscriptionModels';
 import { toastFailure } from '@/lib/failure';
 import { ConfirmAction, type ConfirmRequest } from '@/components/ui/confirm-action';
+import { retranscriptionText } from '@/lib/rerun-outcome';
 
 interface RetranscribeDialogProps {
   open: boolean;
@@ -183,7 +184,11 @@ export function RetranscribeDialog({
       onOpenChangeRef.current(false);
 
       const result = await completion;
-      toast.success(t('retranscribeComplete', { count: result.segments_count }));
+      // Corrected lines are not recognised again: the count says so.
+      const text = retranscriptionText(result);
+      toast.success(t(text.title.key, text.title.values), {
+        description: text.description ? t(text.description.key, text.description.values) : undefined,
+      });
       onCompleteRef.current?.();
       onOpenChangeRef.current(false);
     } catch (err: any) {
@@ -436,6 +441,10 @@ export function RetranscribeDialog({
                 </div>
               )}
             </div>
+          )}
+
+          {!isProcessing && !error && (
+            <p className="text-xs text-muted-foreground">{t('retranscribeKeeps')}</p>
           )}
 
           {isProcessing && progress && (

@@ -107,7 +107,6 @@ async fn generate_assistant_answer(
     hide: crate::privacy::Shield<'_>,
 ) -> Result<Reply, String> {
     generate_reply(
-        &reqwest::Client::new(),
         &model.provider,
         &model.model_name,
         &model.api_key,
@@ -284,7 +283,7 @@ pub async fn ollama_embed(
         .filter(|m| !m.trim().is_empty())
         .unwrap_or_else(|| "nomic-embed-text".to_string());
 
-    let client = reqwest::Client::new();
+    let client = crate::network_policy::client(&endpoint);
     let mut out = Vec::with_capacity(texts.len());
     for t in texts {
         if t.trim().is_empty() {

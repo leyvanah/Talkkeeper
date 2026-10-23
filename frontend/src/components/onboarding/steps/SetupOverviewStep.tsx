@@ -10,6 +10,7 @@ import {
   type WhisperBackend,
 } from '@/lib/transcription-acceleration';
 import { OnboardingContainer } from '../OnboardingContainer';
+import { toastFailure } from '@/lib/failure';
 import { useOnboarding, type SttEngine } from '@/contexts/OnboardingContext';
 import { onboardingDownloadMb } from '@/lib/onboarding-summary-model';
 import { formatDiskSize } from '@/lib/disk-space';
@@ -112,7 +113,7 @@ export function SetupOverviewStep() {
   const openIssues = () => {
     invoke('open_external_url', {
       url: 'https://github.com/leyvanah/Talkkeeper',
-    }).catch((error) => console.error('Failed to open GitHub issues:', error));
+    }).catch((error) => toastFailure(t('openLinkFailed'), 'onboarding-open-link', error));
   };
 
   const accelerationLabel = whisperBackend === undefined

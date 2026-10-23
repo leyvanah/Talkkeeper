@@ -57,12 +57,32 @@ pub struct DeviceInfo {
 /// Where each track goes, and what the saver reports when it is done.
 struct FinishedTracks {
     mixed: Result<PathBuf, String>,
+    /// Seconds of audio handed to the mixed track: the length the player shows.
+    mixed_seconds: Option<f64>,
     mic: Option<PathBuf>,
     system: Option<PathBuf>,
 }
 
 /// The rate everything in the recording pipeline runs at.
 const RECORDING_SAMPLE_RATE: u32 = 48000;
+
+/// The length saved with a recording, in seconds.
+///
+/// What went into the mixed track is the recording as it is played back:
+/// pauses left out, silence at the end kept. The recording clock comes next,
+/// though by the time a meeting is saved it has usually been reset already;
+/// where the transcript ends is the last resort, and misses trailing silence.
+fn recorded_duration(
+    track_seconds: Option<f64>,
+    clock_seconds: Option<f64>,
+    transcript_end: Option<f64>,
+) -> Option<f64> {
+    let positive = |seconds: &f64| *seconds > 0.0;
+    track_seconds
+        .filter(positive)
+        .or(clock_seconds.filter(positive))
+        .or(transcript_end.filter(positive))
+}
 
 #[derive(Clone, Copy)]
 enum Track {
@@ -175,9 +195,11 @@ impl RecordingTracks {
         let mixed_path = self.path_of(Track::Mixed);
         let mic_path = self.path_of(Track::Mic);
         let system_path = self.path_of(Track::System);
+        let mixed_seconds = self.mixed.as_ref().map(|encoder| encoder.seconds_written(1));
         FinishedTracks {
             mixed: close(self.mixed.take(), Track::Mixed, mixed_path)
                 .ok_or_else(|| "The recording could not be written".to_string()),
+            mixed_seconds,
             mic: close(self.mic.take(), Track::Mic, mic_path),
             system: close(self.system.take(), Track::System, system_path),
         }
@@ -361,6 +383,7 @@ impl RecordingSaver {
                     Some(tracks) => tracks.finish(),
                     None => FinishedTracks {
                         mixed: Err("Audio saving was not enabled".to_string()),
+                        mixed_seconds: None,
                         mic: None,
                         system: None,
                     },
@@ -447,7 +470,8 @@ impl RecordingSaver {
     ///
     /// # Arguments
     /// * `app` - Tauri app handle for emitting events
-    /// * `recording_duration` - Actual recording duration in seconds (from RecordingState)
+    /// * `recording_duration` - Recording duration from RecordingState, if it is still known;
+    ///   the length of the mixed track comes first (see [`recorded_duration`])
     pub async fn stop_and_save<R: Runtime>(
         &mut self,
         app: &AppHandle<R>,
@@ -476,6 +500,7 @@ impl RecordingSaver {
                 .map_err(|_| "The track writer stopped without reporting".to_string())?,
             None => return Err("No track writer was started".to_string()),
         };
+        let mixed_seconds = finished.mixed_seconds;
         let final_audio_path = finished.mixed?;
         let mic_audio_path = finished.mic;
         let system_audio_path = finished.system;
@@ -491,15 +516,13 @@ impl RecordingSaver {
                 .as_ref()
                 .map(|path| path.file_name().unwrap_or_default().to_string_lossy().into_owned());
 
-            // Use actual recording duration from RecordingState (more accurate than transcript segments)
-            // Falls back to last transcript segment if duration not provided
-            metadata.duration_seconds = recording_duration.or_else(|| {
-                if let Ok(segments) = self.transcript_segments.lock() {
-                    segments.last().map(|seg| seg.audio_end_time)
-                } else {
-                    None
-                }
-            });
+            let transcript_end = self
+                .transcript_segments
+                .lock()
+                .ok()
+                .and_then(|segments| segments.last().map(|seg| seg.audio_end_time));
+            metadata.duration_seconds =
+                recorded_duration(mixed_seconds, recording_duration, transcript_end);
 
             if let Err(e) = self.write_metadata(folder, &metadata) {
                 error!("❌ Failed to update metadata to completed: {}", e);
@@ -586,6 +609,17 @@ mod tests {
         assert_eq!(segments[0].text, "updated");
     }
 
+    #[test]
+    fn the_saved_length_is_the_length_of_the_mixed_track() {
+        // Trailing silence is in the track and not in the transcript.
+        assert_eq!(recorded_duration(Some(30.0), None, Some(24.5)), Some(30.0));
+        assert_eq!(recorded_duration(Some(30.0), Some(31.2), Some(24.5)), Some(30.0));
+        // A track that took nothing in says nothing about the length.
+        assert_eq!(recorded_duration(Some(0.0), Some(31.2), Some(24.5)), Some(31.2));
+        assert_eq!(recorded_duration(None, None, Some(24.5)), Some(24.5));
+        assert_eq!(recorded_duration(None, None, None), None);
+    }
+
     /// The three tracks of a meeting, end to end: samples in as the pipeline
     /// delivers them, three readable recordings of the right length out.
     #[test]
@@ -612,6 +646,7 @@ mod tests {
         }
 
         let finished = tracks.finish();
+        assert_eq!(finished.mixed_seconds, Some(2.0));
         let mixed = finished.mixed.expect("the mixed track is the recording");
         assert_eq!(mixed.file_name().unwrap(), "audio.mp4");
         assert_eq!(finished.mic.unwrap().file_name().unwrap(), "mic.mp4");

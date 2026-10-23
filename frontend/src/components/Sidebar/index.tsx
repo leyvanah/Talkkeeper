@@ -25,7 +25,7 @@
  */
 
 import React, { useState, useMemo, useEffect } from 'react';
-import { ChevronDown, ChevronRight, FileText, AudioLines, ArrowRight, Settings, Trash2, Mic, Square, Plus, Search, Pencil, NotebookPen, Upload, User, Users, FolderInput, Inbox } from 'lucide-react';
+import { ChevronDown, ChevronRight, FileText, AudioLines, ArrowRight, Settings, Trash2, Mic, Plus, Search, Pencil, NotebookPen, Upload, User, Users, FolderInput, Inbox } from 'lucide-react';
 import { useTranslations } from 'next-intl';
 import { useRouter, usePathname } from 'next/navigation';
 import { useSidebar, UNASSIGNED_FOLDER_ID, clientFolderId } from './SidebarProvider';
@@ -80,7 +80,8 @@ function readExpandedFolders(): Set<string> | null {
 
 function formatDurationShort(secs?: number): string {
   if (secs == null || !Number.isFinite(secs) || secs <= 0) return '';
-  const total = Math.round(secs);
+  // Whole seconds dropped, not rounded: the player counts them the same way.
+  const total = Math.floor(secs);
   const h = Math.floor(total / 3600);
   const m = Math.floor((total % 3600) / 60);
   const s = total % 60;
@@ -654,18 +655,18 @@ const Sidebar: React.FC = () => {
               <TooltipTrigger asChild>
                 <button
                   onClick={handleRecordingToggle}
-                  disabled={isRecording}
-                  className={`p-2 ${isRecording ? 'bg-red-500 cursor-not-allowed' : 'bg-red-500 hover:bg-red-600'} rounded-full transition-colors duration-150 shadow-sm`}
+                  aria-label={isRecording ? t('recordingInProgressTooltip') : t('newRecording')}
+                  className="p-2 bg-red-500 hover:bg-red-600 rounded-full transition-colors duration-150 shadow-sm"
                 >
                   {isRecording ? (
-                    <Square className="w-5 h-5 text-white" />
+                    <span aria-hidden="true" className="flex w-5 h-5 items-center justify-center"><span className="h-2.5 w-2.5 rounded-full bg-white animate-pulse" /></span>
                   ) : (
                     <Mic className="w-5 h-5 text-white" />
                   )}
                 </button>
               </TooltipTrigger>
               <TooltipContent side="right">
-                <p>{isRecording ? t('recordingInProgressTooltip') : t('startRecording')}</p>
+                <p>{isRecording ? t('recordingInProgressTooltip') : t('newRecording')}</p>
               </TooltipContent>
             </Tooltip>
 
@@ -963,12 +964,12 @@ const Sidebar: React.FC = () => {
 
               <button
                 onClick={handleRecordingToggle}
-                disabled={isRecording}
-                className={`w-full flex items-center justify-center gap-2 rounded-lg px-3 py-2.5 text-sm font-semibold text-[var(--af-accent-contrast)] transition-[filter] bg-[var(--af-accent)] ${isRecording ? 'opacity-70 cursor-not-allowed' : 'hover:brightness-110'}`}
+                title={isRecording ? t('recordingInProgressTooltip') : undefined}
+                className="w-full flex items-center justify-center gap-2 rounded-lg px-3 py-2.5 text-sm font-semibold text-[var(--af-accent-contrast)] transition-[filter] bg-[var(--af-accent)] hover:brightness-110"
               >
                 {isRecording ? (
                   <>
-                    <Square className="w-4 h-4" />
+                    <span aria-hidden="true" className="flex w-4 h-4 items-center justify-center"><span className="h-2.5 w-2.5 rounded-full bg-white animate-pulse" /></span>
                     <span>{t('recordingInProgress')}</span>
                   </>
                 ) : (

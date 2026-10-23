@@ -29,8 +29,7 @@ const formatOptions: Array<{
   descriptionKey: string;
   icon: typeof FileText;
 }> = [
-  // PDF is left out until its export can print Cyrillic, wrap long lines and lay
-  // out tables (talkkeeper-tasks#98); today it produces an unreadable file.
+  { value: 'pdf', label: 'PDF', descriptionKey: 'exportFormatPdfDescription', icon: FileText },
   { value: 'docx', label: 'Word', labelKey: 'exportFormatWord', descriptionKey: 'exportFormatWordDescription', icon: FileType },
   { value: 'txt', label: 'Text', labelKey: 'exportFormatText', descriptionKey: 'exportFormatTextDescription', icon: ScrollText },
   { value: 'markdown', label: 'Markdown', descriptionKey: 'exportFormatMarkdownDescription', icon: Files },

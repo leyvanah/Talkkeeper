@@ -9,6 +9,7 @@ import { configService } from '@/services/configService';
 import { showRecordingNotification } from '@/lib/recordingNotification';
 import { toast } from 'sonner';
 import { useTranslations } from 'next-intl';
+import { toastFailure } from '@/lib/failure';
 
 interface UseRecordingStartReturn {
   handleRecordingStart: () => Promise<void>;
@@ -277,9 +278,10 @@ export function useRecordingStart(
             // Show recording notification if enabled
             await showRecordingNotification();
           } catch (error) {
-            console.error('Failed to auto-start recording:', error);
             setStatus(RecordingStatus.ERROR, error instanceof Error ? error.message : 'Failed to auto-start recording');
-            alert(t('startRecordingFailedAlert'));
+            toastFailure(t('startRecordingFailed'), 'recording-auto-start', error, {
+              description: t('startRecordingFailedDetail'),
+            });
           } finally {
             setIsAutoStarting(false);
           }
@@ -363,9 +365,10 @@ export function useRecordingStart(
         // Show recording notification if enabled
         await showRecordingNotification();
       } catch (error) {
-        console.error('Failed to start recording from sidebar:', error);
         setStatus(RecordingStatus.ERROR, error instanceof Error ? error.message : 'Failed to start recording from sidebar');
-        alert(t('startRecordingFailedAlert'));
+        toastFailure(t('startRecordingFailed'), 'recording-sidebar-start', error, {
+          description: t('startRecordingFailedDetail'),
+        });
       } finally {
         setIsAutoStarting(false);
       }
