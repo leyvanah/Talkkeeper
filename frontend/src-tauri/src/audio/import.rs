@@ -336,8 +336,10 @@ async fn run_import<R: Runtime>(
     }
 
     info!(
-        "Starting import for '{}' from {} with language {:?}, model {:?}, provider {:?}",
-        title, source_path, language, model, provider
+        // Neither the title nor the file name: both are the owner's words for
+        // the meeting and would stay in the clear log after it is deleted.
+        "Starting import with language {:?}, model {:?}, provider {:?}",
+        language, model, provider
     );
 
     // Determine which provider to use (default to whisper)
@@ -668,9 +670,8 @@ async fn run_import<R: Runtime>(
         let trimmed = text.trim();
         if !trimmed.is_empty() {
             debug!(
-                "Segment {}/{}: {:.1}s, conf={:.2}, text='{}'",
-                i + 1, processable_count, segment_duration_sec, conf,
-                if trimmed.len() > 80 { let mut end = 80; while !trimmed.is_char_boundary(end) { end -= 1; } &trimmed[..end] } else { trimmed }
+                "Segment {}/{}: {:.1}s, conf={:.2}, {} chars",
+                i + 1, processable_count, segment_duration_sec, conf, trimmed.chars().count()
             );
             all_transcripts.push((text, segment.start_timestamp_ms, segment.end_timestamp_ms));
             total_confidence += conf;

@@ -25,8 +25,11 @@ Talkkeeper receive no data from the app.
 - **Models** you download (speech recognition, speaker separation, the
   built-in summary model).
 - **The application log** (`logs/` in the data folder). It is written to hold
-  states, counts, durations and identifiers, not what was said; it may hold
-  file paths on your computer. It is not encrypted.
+  states, counts, durations and identifiers, not what was said, and no
+  meeting titles, search queries or names of people; it may hold
+  file paths on your computer. It is not encrypted. Earlier builds wrote
+  recognised speech into it, so the log is erased once when the app is
+  updated, and again whenever an archive password is set.
 
 ## Encryption at rest
 
@@ -70,7 +73,9 @@ in these cases, each of which you choose:
    enter its address. Audio is sent to it.
 
 All three are blocked while **"This computer only"** is on, which is the
-default: the request is refused before it is built.
+default: the request is refused before it is built. A request to this
+computer never goes through a proxy, even one set in Windows or in
+`HTTP_PROXY`; other requests use the Windows proxy as usual.
 
 **Other network use** sends nothing from your archive:
 

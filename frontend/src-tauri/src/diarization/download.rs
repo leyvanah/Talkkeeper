@@ -91,7 +91,7 @@ pub async fn download_models<R: Runtime>(app: &AppHandle<R>) -> Result<()> {
     }
     crate::disk_space::ensure_room(&dir, bytes_left)?;
     let mut completed_bytes: u64 = 0;
-    let client = reqwest::Client::builder()
+    let client = crate::network_policy::client_builder(RELEASE_BASE)
         .timeout(std::time::Duration::from_secs(1800))
         .build()?;
 

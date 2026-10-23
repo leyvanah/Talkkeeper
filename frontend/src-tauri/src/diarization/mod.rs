@@ -566,9 +566,10 @@ pub async fn rename_meeting_speaker(
     )
     .await
     .map_err(|e| format!("Failed to rename speaker: {}", e))?;
+    // Neither name: the new one is usually a person's (logging.rs).
     log::info!(
-        "🧑‍🤝‍🧑 Renamed speaker '{}' → '{}' across {} segments of meeting {}",
-        from, outcome.speaker, outcome.count, meeting_id
+        "🧑‍🤝‍🧑 Renamed a speaker across {} segments of meeting {}",
+        outcome.count, meeting_id
     );
     Ok(MeetingSpeakerRenameResult {
         speaker: outcome.speaker,

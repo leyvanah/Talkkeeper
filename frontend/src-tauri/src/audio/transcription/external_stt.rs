@@ -205,11 +205,14 @@ pub fn extract_text(body: &str, response_path: &str) -> Result<String, String> {
         Err(_) => return Ok(trimmed.to_string()),
     };
 
+    // The error names the fields that did come back, not their values: the
+    // answer carries the transcript under some other name, and this text ends
+    // up in the application log.
     let found = value_at_path(&parsed, response_path).ok_or_else(|| {
         format!(
-            "Response has no field '{}' (got: {})",
+            "Response has no field '{}' (fields: {})",
             response_path,
-            snippet(trimmed)
+            field_names(&parsed)
         )
     })?;
 
@@ -223,6 +226,21 @@ pub fn extract_text(body: &str, response_path: &str) -> Result<String, String> {
             .collect::<Vec<_>>()
             .join(" ")),
         other => Ok(other.to_string()),
+    }
+}
+
+/// The top-level field names of a JSON answer, for an error message.
+fn field_names(value: &Value) -> String {
+    match value {
+        Value::Object(map) if !map.is_empty() => map
+            .keys()
+            .take(20)
+            .map(String::as_str)
+            .collect::<Vec<_>>()
+            .join(", "),
+        Value::Object(_) => "none".to_string(),
+        Value::Array(_) => "a list, not an object".to_string(),
+        _ => "a single value, not an object".to_string(),
     }
 }
 
@@ -249,7 +267,7 @@ pub struct ExternalSttProvider {
 impl ExternalSttProvider {
     pub fn new(config: ExternalSttConfig) -> Result<Self, String> {
         config.validate()?;
-        let client = reqwest::Client::builder()
+        let client = crate::network_policy::client_builder(config.url.trim())
             .timeout(Duration::from_millis(config.timeout_ms))
             .build()
             .map_err(|e| format!("Failed to create HTTP client: {}", e))?;
@@ -486,6 +504,17 @@ mod tests {
         );
         assert_eq!(extract_text("plain answer", "text").unwrap(), "plain answer");
         assert!(extract_text(r#"{"other":1}"#, "text").is_err());
+    }
+
+    #[test]
+    fn a_missing_field_error_names_fields_but_not_what_was_said() {
+        let error = extract_text(
+            r#"{"transcript":"secret phrase","language":"ru"}"#,
+            "text",
+        )
+        .unwrap_err();
+        assert!(error.contains("transcript, language") || error.contains("language, transcript"));
+        assert!(!error.contains("secret"), "{error}");
     }
 
     #[test]

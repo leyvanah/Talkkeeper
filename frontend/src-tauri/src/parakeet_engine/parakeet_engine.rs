@@ -512,7 +512,7 @@ impl ParakeetEngine {
             .transcribe_samples(audio_data)
             .map_err(|e| anyhow!("Parakeet transcription failed: {}", e))?;
 
-        log::debug!("Parakeet transcription result: '{}'", result.text);
+        log::debug!("Parakeet transcription result: {} chars", result.text.chars().count());
 
         Ok(result.text)
     }
@@ -751,7 +751,8 @@ impl ParakeetEngine {
         }
 
         // Optimized HTTP client for large file downloads
-        let client = reqwest::Client::builder()
+        // Every source is a remote mirror, so any of them picks the client.
+        let client = crate::network_policy::client_builder(base_urls.first().copied().unwrap_or_default())
             .tcp_nodelay(true) // Disable Nagle's algorithm for better streaming
             .pool_max_idle_per_host(1) // Keep connection alive
             .timeout(Duration::from_secs(3600)) // 1 hour timeout for large files
