@@ -227,6 +227,7 @@ Var MeetilyDirDlg
 Var MeetilyDirText
 Var MeetilyDirBrowse
 Var MeetilyDirHint
+Var MeetilyDirMoved
 Var MeetilyFontTitle
 Var MeetilyFontBody
 Var MeetilyFinishLaunch
@@ -544,12 +545,64 @@ Function MeetilyRefreshInstallProgress
 FunctionEnd
 
 ; ----- Custom install-location page (no stock groupbox wizard look) -----
+; Written into $INSTDIR\data when that folder is Talkkeeper's own. The
+; uninstaller deletes `data` only while this file is in it.
+!define TK_DATA_MARKER "installed-by-talkkeeper.txt"
+
+; The app keeps its data in a `data` folder beside itself, and uninstalling
+; with "delete data" removes that folder. Installed straight into D:\ or
+; Documents, the app would share `data` with whatever was there first. So a
+; folder that is not Talkkeeper's own gets a Talkkeeper folder inside it, the
+; way stock NSIS does. Kept as it is: a missing or empty folder, one already
+; named Talkkeeper, the folder the installed copy lives in, and an earlier
+; install. A drive root is never kept, even when empty.
+; In: a path on the stack. Out: the folder to install into, on the stack;
+; $MeetilyDirMoved is 1 when a Talkkeeper folder was added.
+Function MeetilyOwnInstallDir
+  Exch $0
+  Push $1
+  Push $2
+  Push $3
+  StrCpy $MeetilyDirMoved 0
+  ; D:\ and D:\Apps\ come back from the folder dialog with a trailing slash.
+  ${Do}
+    StrCpy $1 $0 1 -1
+    ${IfThen} $1 != "\" ${|} ${ExitDo} ${|}
+    StrCpy $0 $0 -1
+  ${Loop}
+  ${GetFileName} $0 $1
+  ReadRegStr $2 SHCTX "${MANUPRODUCTKEY}" ""
+  ; 1 = holds something. What is left of D:\ is "D:", which counts as taken.
+  StrCpy $3 $0 1 -1
+  ${If} $3 == ":"
+    StrCpy $3 1
+  ${Else}
+    ${DirState} $0 $3
+  ${EndIf}
+  ${If} $0 != ""
+  ${AndIf} $1 != "${PRODUCTNAME}"
+  ${AndIf} $2 != $0
+  ${AndIf} $2 != "$0\"
+  ${AndIfNot} ${FileExists} "$0\${MAINBINARYNAME}.exe"
+  ${AndIf} $3 = 1
+    StrCpy $0 "$0\${PRODUCTNAME}"
+    StrCpy $MeetilyDirMoved 1
+  ${EndIf}
+  Pop $3
+  Pop $2
+  Pop $1
+  Exch $0
+FunctionEnd
+
 Function MeetilyDirBrowseClick
   ${NSD_GetText} $MeetilyDirText $0
   nsDialogs::SelectFolderDialog "$(tkDirBrowseTitle)" "$0"
   Pop $0
   ${If} $0 != "error"
   ${AndIf} $0 != ""
+    Push $0
+    Call MeetilyOwnInstallDir
+    Pop $0
     ${NSD_SetText} $MeetilyDirText "$0"
   ${EndIf}
 FunctionEnd
@@ -597,10 +650,21 @@ Function MeetilyDirPageShow
 FunctionEnd
 
 Function MeetilyDirPageLeave
-  ${NSD_GetText} $MeetilyDirText $INSTDIR
+  ${NSD_GetText} $MeetilyDirText $0
+  Push $0
+  Call MeetilyOwnInstallDir
+  Pop $INSTDIR
   ${If} $INSTDIR == ""
     MessageBox MB_ICONEXCLAMATION "Choose an install folder."
     Abort
+  ${EndIf}
+  ; A path typed by hand never went through the folder dialog. Show where it
+  ; goes now; Cancel stays on the page to pick another folder.
+  ${If} $MeetilyDirMoved = 1
+    ${NSD_SetText} $MeetilyDirText "$INSTDIR"
+    ${If} ${Cmd} `MessageBox MB_ICONINFORMATION|MB_OKCANCEL "$(tkDirOwnFolder)" IDCANCEL`
+      Abort
+    ${EndIf}
   ${EndIf}
   ; Create the directory now so a bad path fails early
   CreateDirectory "$INSTDIR"
@@ -988,8 +1052,11 @@ Function un.ConfirmLeave
   ; Deleting the data takes the key to every recording with it, while the
   ; recordings themselves stay on disk. Say so plainly, and make it its own
   ; yes rather than a tick box read in passing.
+  ; Only a marked `data` folder is deleted (see Section Uninstall), so only
+  ; then is the key at stake.
   ${If} $DeleteAppDataCheckboxState = 1
   ${AndIf} $PassiveMode <> 1
+  ${AndIf} ${FileExists} "$INSTDIR\data\${TK_DATA_MARKER}"
   ${AndIf} ${FileExists} "$INSTDIR\data\keystore.json"
     MessageBox MB_ICONEXCLAMATION|MB_YESNO|MB_DEFBUTTON2 "$(tkKeyWarning)" IDYES un_key_delete_confirmed
     StrCpy $DeleteAppDataCheckboxState 0
@@ -1219,6 +1286,24 @@ SectionEnd
 Section Install
   !insertmacro MeetilyReportProgress 12
   SetOutPath $INSTDIR
+
+  ; Mark `data` as Talkkeeper's own so the uninstaller may delete it. A `data`
+  ; folder this installer creates gets the mark, and so does one inside a
+  ; folder named Talkkeeper (an install made before the mark existed). A `data`
+  ; folder that was here first stays unmarked and is never deleted.
+  ${GetFileName} $INSTDIR $R0
+  ${IfNot} ${FileExists} "$INSTDIR\data\*.*"
+  ${OrIf} $R0 == "${PRODUCTNAME}"
+    CreateDirectory "$INSTDIR\data"
+    ${IfNot} ${FileExists} "$INSTDIR\data\${TK_DATA_MARKER}"
+      ClearErrors
+      FileOpen $R1 "$INSTDIR\data\${TK_DATA_MARKER}" w
+      ${IfNot} ${Errors}
+        FileWrite $R1 "Created by the ${PRODUCTNAME} installer. Uninstalling ${PRODUCTNAME} with $\"delete data$\" removes this folder only while this file is here.$\r$\n"
+        FileClose $R1
+      ${EndIf}
+    ${EndIf}
+  ${EndIf}
 
   !ifmacrodef NSIS_HOOK_PREINSTALL
     !insertmacro NSIS_HOOK_PREINSTALL
@@ -1510,8 +1595,12 @@ Section Uninstall
     ; live OUTSIDE $INSTDIR, so wiping it here leaves files on disk that nobody
     ; can ever read again — silently, and with no way back. It has cost a whole
     ; archive before; copy it out first and say where it went.
+    ; Only a `data` folder carrying the installer's mark is Talkkeeper's own;
+    ; one without it may have been here first and hold someone else's files,
+    ; so it stays, key and all, and nothing needs rescuing from it.
     StrCpy $KeyRescued 1
-    ${If} ${FileExists} "$INSTDIR\data\keystore.json"
+    ${If} ${FileExists} "$INSTDIR\data\${TK_DATA_MARKER}"
+    ${AndIf} ${FileExists} "$INSTDIR\data\keystore.json"
       StrCpy $KeyRescued 0
       ; A passive uninstall shows no page and so never asked for a folder.
       ${If} $KeyBackupDir == ""
@@ -1538,7 +1627,12 @@ Section Uninstall
     ${EndIf}
 
     ; Only wipe the data once the key is safe somewhere else.
-    ${If} $KeyRescued = 1
+    ${IfNot} ${FileExists} "$INSTDIR\data\${TK_DATA_MARKER}"
+      ${If} ${FileExists} "$INSTDIR\data\*.*"
+      ${AndIf} $PassiveMode <> 1
+        MessageBox MB_ICONINFORMATION|MB_OK "$(tkDataKept)"
+      ${EndIf}
+    ${ElseIf} $KeyRescued = 1
       RmDir /r "$INSTDIR\data"
     ${ElseIf} $PassiveMode <> 1
       MessageBox MB_ICONEXCLAMATION|MB_OK "$(tkKeyKept)"
