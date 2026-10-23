@@ -466,6 +466,7 @@ mod tests {
         "cleaned_result",
         "final_result",
         "final_text",
+        "segment_text",
         "trimmed",
         "summary",
         "markdown",
