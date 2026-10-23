@@ -60,8 +60,7 @@ the machine, and the software should behave accordingly.**
 **Notes and summaries**
 - Summaries with local models (a bundled llama.cpp helper using Vulkan on the GPU,
   or the CPU), Ollama, or any OpenAI-compatible endpoint you choose.
-- Custom templates, exports to DOCX, Markdown, text and JSON (PDF returns once
-  it can print Cyrillic).
+- Custom templates, exports to PDF, DOCX, Markdown, text and JSON.
 
 **Library and interface**
 - A library organised by client, with recordings filed under each.

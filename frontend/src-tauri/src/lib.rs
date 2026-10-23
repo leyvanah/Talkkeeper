@@ -42,6 +42,7 @@ pub mod crash_report;
 pub mod disk_space;
 pub mod database;
 pub mod diarization;
+pub mod export_fonts;
 pub mod notifications;
 pub mod onnx_threads;
 pub mod ollama;
@@ -623,6 +624,7 @@ pub fn run() {
             library_export::commands::export_library_readable,
             library_export::commands::export_library_package,
             library_export::commands::import_library_package,
+            export_fonts::pdf_export_font,
             meeting_notes::commands::recording_note_add,
             meeting_notes::commands::recording_note_edit,
             meeting_notes::commands::recording_note_remove,
