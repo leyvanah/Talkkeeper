@@ -953,7 +953,11 @@ async fn stop_recording_inner<R: Runtime>(
         global_manager.take()
     };
 
+    // How long the recording ran without its pauses, read while it still has
+    // its start: a too-short take is discarded only if it really was short.
+    let mut recorded_seconds = None;
     let stop_result = if let Some(mut manager) = manager_for_cleanup {
+        recorded_seconds = manager.get_active_recording_duration();
         // Use FORCE FLUSH to immediately process all accumulated audio - eliminates 30s delay!
         info!("🚀 Using FORCE FLUSH to eliminate pipeline accumulation delays");
         let result = manager.stop_streams_and_force_flush().await;
@@ -1222,6 +1226,7 @@ async fn stop_recording_inner<R: Runtime>(
     // too-short take deletes this folder and no other.
     super::recording_preferences::recording_stopped(
         folder_path_str.as_ref().map(std::path::PathBuf::from),
+        recorded_seconds,
     );
 
     info!("📤 Preparing recording metadata for frontend save");
