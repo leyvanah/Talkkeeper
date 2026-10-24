@@ -1538,6 +1538,7 @@
     "copy": "Copy",
     "copied": "Copied",
     "print": "Print",
+    "printFailed": "Could not open printing. Copy the code or write it down by hand.",
     "settingsTitle": "Password and keys",
     "settingsDescription": "A password protects the archive of recordings and transcripts. You can change it at any time; the recordings are not re-encrypted when you do.",
     "scopeNotice": "The app does not open the archive without the password. The recordings on disk and the text in the database — meeting titles, names, transcripts, summaries — are encrypted: without the password not a word can be read out of the files. Whatever was in the archive before protection was turned on is encrypted with the buttons below, under “Data encryption”. What stays visible is the shape of the archive: how many meetings, when each was recorded, how long it ran and who it is filed under.",
