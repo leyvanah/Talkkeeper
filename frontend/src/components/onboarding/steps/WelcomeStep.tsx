@@ -7,6 +7,7 @@ import { OnboardingContainer } from '../OnboardingContainer';
 import { useOnboarding } from '@/contexts/OnboardingContext';
 import { usePlatform } from '@/hooks/usePlatform';
 import { UPDATES_AVAILABLE } from '@/lib/updates';
+import { toastFailure } from '@/lib/failure';
 
 export function WelcomeStep() {
   const t = useTranslations('onboarding');
@@ -36,7 +37,9 @@ export function WelcomeStep() {
       await invoke('set_check_updates_on_launch', { enabled: checkUpdates });
       goNext();
     } catch (error) {
-      console.error('Failed to save update preference:', error);
+      toastFailure(t('preferenceSaveFailed'), 'onboarding-update-preference', error, {
+        description: t('retryDetail'),
+      });
       setSaving(false);
     }
   };

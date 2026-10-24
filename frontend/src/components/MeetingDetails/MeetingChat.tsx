@@ -14,6 +14,7 @@ import { useTranslations } from 'next-intl';
 import { invoke } from '@tauri-apps/api/core';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
+import { modelMarkdownComponents } from '@/lib/model-markdown';
 import { MessageSquare, Send } from 'lucide-react';
 import { Transcript } from '@/types';
 import { logFailure } from '@/lib/failure';
@@ -82,7 +83,7 @@ export function MeetingChat({ transcripts }: { transcripts: Transcript[] }) {
                   </span>
                 ) : (
                   <div className="prose prose-sm max-w-none dark:prose-invert prose-p:my-1 prose-ul:my-1">
-                    <ReactMarkdown remarkPlugins={[remarkGfm]}>{qa.answer}</ReactMarkdown>
+                    <ReactMarkdown remarkPlugins={[remarkGfm]} components={modelMarkdownComponents}>{qa.answer}</ReactMarkdown>
                   </div>
                 )}
               </div>

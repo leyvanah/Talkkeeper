@@ -42,6 +42,7 @@ pub mod crash_report;
 pub mod disk_space;
 pub mod database;
 pub mod diarization;
+pub mod export_fonts;
 pub mod notifications;
 pub mod onnx_threads;
 pub mod ollama;
@@ -59,6 +60,7 @@ pub mod microphone_access;
 pub mod minibar;
 pub mod minibar_dock;
 pub mod model_integrity;
+pub mod navigation_guard;
 pub mod network_policy;
 pub mod gigaam_engine;
 pub mod parakeet_engine;
@@ -321,25 +323,27 @@ async fn start_recording_with_devices_and_meeting<R: Runtime>(
     system_device_name: Option<String>,
     meeting_name: Option<String>,
 ) -> Result<(), String> {
-    log_info!("🚀 CALLED start_recording_with_devices_and_meeting - Mic: {:?}, System: {:?}, Meeting: {:?}",
-             mic_device_name, system_device_name, meeting_name);
+    // Whether the meeting has a name, never the name: it outlives the
+    // meeting in the clear log (logging.rs).
+    log_info!("🚀 CALLED start_recording_with_devices_and_meeting - Mic: {:?}, System: {:?}, named: {}",
+             mic_device_name, system_device_name, meeting_name.is_some());
 
     // Call the recording module functions that support meeting names
     let recording_result = match (mic_device_name.clone(), system_device_name.clone()) {
         (None, None) => {
             log_info!(
-                "No devices specified, starting with defaults and meeting: {:?}",
-                meeting_name
+                "No devices specified, starting with defaults (named: {})",
+                meeting_name.is_some()
             );
             audio::recording_commands::start_recording_with_meeting_name(app.clone(), meeting_name)
                 .await
         }
         _ => {
             log_info!(
-                "Starting with specified devices: mic={:?}, system={:?}, meeting={:?}",
+                "Starting with specified devices: mic={:?}, system={:?}, named: {}",
                 mic_device_name,
                 system_device_name,
-                meeting_name
+                meeting_name.is_some()
             );
             audio::recording_commands::start_recording_with_devices_and_meeting(
                 app.clone(),
@@ -438,6 +442,8 @@ pub fn run() {
                 });
             },
         )
+        // Windows stay on the app's own pages; see `navigation_guard`.
+        .plugin(navigation_guard::init())
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_store::Builder::default().build())
         .plugin(tauri_plugin_dialog::init())
@@ -621,6 +627,7 @@ pub fn run() {
             library_export::commands::export_library_readable,
             library_export::commands::export_library_package,
             library_export::commands::import_library_package,
+            export_fonts::pdf_export_font,
             meeting_notes::commands::recording_note_add,
             meeting_notes::commands::recording_note_edit,
             meeting_notes::commands::recording_note_remove,

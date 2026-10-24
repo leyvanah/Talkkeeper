@@ -16,6 +16,7 @@ import { useTranslations } from 'next-intl';
 import { toast } from 'sonner';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
+import { modelMarkdownComponents } from '@/lib/model-markdown';
 import {
   Plus,
   Circle,
@@ -312,7 +313,7 @@ export function InsightTabs({
             <>
               {summaryText ? (
                 <div className="prose prose-sm max-w-none leading-relaxed text-[var(--af-text-2)] dark:prose-invert prose-strong:text-[var(--af-text)] prose-p:my-2">
-                  <ReactMarkdown remarkPlugins={[remarkGfm]}>{summaryText}</ReactMarkdown>
+                  <ReactMarkdown remarkPlugins={[remarkGfm]} components={modelMarkdownComponents}>{summaryText}</ReactMarkdown>
                 </div>
               ) : (
                 <p className="text-sm text-[var(--af-text-3)]">{t('noSummaryText')}</p>

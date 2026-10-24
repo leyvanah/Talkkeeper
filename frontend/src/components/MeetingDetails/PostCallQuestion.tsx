@@ -58,22 +58,29 @@ export function PostCallQuestion({
   };
 
   const error = countError ?? run.error;
+  const failed = run.stage === 'error';
 
   return (
     <Dialog open onOpenChange={handleOpenChange}>
+      {/* No cross: what closing would do is a choice of its own, and says so. */}
       <DialogContent
         aria-describedby="post-call-processing-description"
         className="sm:max-w-md"
+        showCloseButton={false}
         onEscapeKeyDown={(event) => event.preventDefault()}
         onPointerDownOutside={(event) => event.preventDefault()}
       >
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2">
             <Users size={18} className="text-blue-400" />
-            {t('postCallHowMany')}
+            {!failed
+              ? t('postCallHowMany')
+              : run.failedStage === 'diarizing'
+                ? t('postCallFailedSpeakers')
+                : t('postCallFailedEnhancing')}
           </DialogTitle>
           <DialogDescription id="post-call-processing-description">
-            {t('postCallHowManyDescription')}
+            {run.singleRemoteSpeaker ? t('postCallSingleSpeaker') : t('postCallHowManyDescription')}
           </DialogDescription>
         </DialogHeader>
 
@@ -120,12 +127,24 @@ export function PostCallQuestion({
             aria-label={t('postCallSpeakerCountAria')}
           />
           {error && <p className="text-sm text-red-400">{error}</p>}
+          {!failed && <p className="text-xs text-[var(--af-text-2)]">{t('postCallSkipEnhanceHint')}</p>}
         </div>
 
         <DialogFooter>
-          {run.stage === 'error' && (
+          {failed ? (
             <Button type="button" variant="outline" onClick={onUseLive}>
               {t('postCallUseLiveTranscript')}
+            </Button>
+          ) : (
+            <Button
+              type="button"
+              variant="outline"
+              onClick={() => {
+                const count = selectedCount();
+                if (count !== undefined) onSkipEnhancement(count);
+              }}
+            >
+              {t('postCallSkipEnhance')}
             </Button>
           )}
           <Button
@@ -135,7 +154,7 @@ export function PostCallQuestion({
               if (count !== undefined) onRun(count);
             }}
           >
-            {run.stage === 'error' ? t('postCallRetry') : t('postCallEnhance')}
+            {failed ? t('postCallRetry') : t('postCallEnhance')}
           </Button>
         </DialogFooter>
       </DialogContent>

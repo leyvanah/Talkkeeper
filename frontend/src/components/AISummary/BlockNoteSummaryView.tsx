@@ -8,6 +8,8 @@ import { Block } from '@blocknote/core';
 import { useCreateBlockNote } from '@blocknote/react';
 import { BlockNoteView } from '@blocknote/shadcn';
 import { blocksToMarkdownSafely } from '@/lib/blocknote-markdown';
+import { toastFailure } from '@/lib/failure';
+import { useTranslations } from 'next-intl';
 import "@blocknote/shadcn/style.css";
 
 // Dynamically import BlockNote Editor to avoid SSR issues
@@ -75,6 +77,7 @@ export const BlockNoteSummaryView = forwardRef<BlockNoteSummaryViewRef, BlockNot
   meeting,
   onDirtyChange
 }, ref) => {
+  const t = useTranslations('meetingDetails');
   const { format, data } = detectSummaryFormat(summaryData);
   const [isDirty, setIsDirty] = useState(false);
   const [currentBlocks, setCurrentBlocks] = useState<Block[]>([]);
@@ -168,12 +171,11 @@ export const BlockNoteSummaryView = forwardRef<BlockNoteSummaryViewRef, BlockNot
       setIsDirty(false);
       console.log('✅ Save successful');
     } catch (err) {
-      console.error('❌ Save failed:', err);
-      alert('Failed to save changes. Please try again.');
+      toastFailure(t('changesSaveFailed'), 'summary-save', err);
     } finally {
       setIsSaving(false);
     }
-  }, [onSave, isDirty, currentBlocks, editor]);
+  }, [onSave, isDirty, currentBlocks, editor, t]);
 
   // Expose methods to parent via ref
   useImperativeHandle(ref, () => ({

@@ -8,7 +8,6 @@ use whisper_rs::{DtwMode, DtwModelPreset, DtwParameters, WhisperContext, Whisper
 use crate::audio::word_timing::{spell, words_from_pieces, TimedPiece, WordTiming};
 use serde::{Serialize, Deserialize};
 use anyhow::{Result, anyhow};
-use reqwest::Client;
 use tokio::fs;
 use tokio::io::AsyncWriteExt;
 use crate::config::WHISPER_MODEL_CATALOG;
@@ -433,7 +432,7 @@ impl WhisperEngine {
         // Check for obviously meaningless patterns first
         if Self::is_meaningless_output(text) {
             // Performance optimization: reduce meaningless output logging to debug level
-            perf_debug!("Detected meaningless output, returning empty: '{}'", text);
+            perf_debug!("Detected meaningless output ({} chars), returning empty", text.chars().count());
             return String::new();
         }
 
@@ -452,7 +451,7 @@ impl WhisperEngine {
         let final_text = cleaned_words.join(" ");
         if Self::calculate_repetition_ratio(&final_text) > 0.7 {
             // Performance optimization: reduce repetition ratio logging to debug level
-            perf_debug!("High repetition ratio detected, filtering out: '{}'", final_text);
+            perf_debug!("High repetition ratio detected, filtering out {} chars", final_text.chars().count());
             return String::new();
         }
 
@@ -917,8 +916,8 @@ impl WhisperEngine {
             // This was causing significant I/O overhead during transcription
             // Only log segments for very long audio (>30s) or when explicitly debugging
             if duration_seconds > 30.0 {
-                perf_trace!("Segment {} ({:.2}s-{:.2}s): '{}'",
-                           i, _start_time as f64 / 100.0, _end_time as f64 / 100.0, segment_text);
+                perf_trace!("Segment {} ({:.2}s-{:.2}s): {} chars",
+                           i, _start_time as f64 / 100.0, _end_time as f64 / 100.0, segment_text.chars().count());
             }
 
             // Clean and append segment text
@@ -944,14 +943,14 @@ impl WhisperEngine {
             }
         } else {
             if cleaned_result != final_result {
-                log::info!("Cleaned repetitive transcription #{}: '{}' -> '{}'", transcription_count, final_result, cleaned_result);
+                log::info!("Cleaned repetitive transcription #{}: {} -> {} chars", transcription_count, final_result.chars().count(), cleaned_result.chars().count());
             }
             // Reduce successful transcription logging frequency
             // Only log every 5th result or significant results (>50 chars) to reduce I/O overhead
             if transcription_count % 5 == 0 || cleaned_result.len() > 50 || duration_seconds > 10.0 {
-                log::info!("Transcription #{} result: '{}'", transcription_count, cleaned_result);
+                log::info!("Transcription #{} result: {} chars", transcription_count, cleaned_result.chars().count());
             } else {
-                perf_debug!("Transcription #{} result: '{}'", transcription_count, cleaned_result);
+                perf_debug!("Transcription #{} result: {} chars", transcription_count, cleaned_result.chars().count());
             }
         }
 
@@ -1052,19 +1051,14 @@ impl WhisperEngine {
     pub async fn download_model(&self, model_name: &str, progress_callback: Option<Box<dyn Fn(u8) + Send>>) -> Result<()> {
         log::info!("Starting download for model: {}", model_name);
 
-        // Check if download is already in progress for this model
+        // Checked and marked under one lock: with a read, then a separate
+        // write, two quick clicks could both get through.
         {
-            let active = self.active_downloads.read().await;
-            if active.contains(model_name) {
+            let mut active = self.active_downloads.write().await;
+            if !active.insert(model_name.to_string()) {
                 log::warn!("Download already in progress for model: {}", model_name);
                 return Err(anyhow!("Download already in progress for model: {}", model_name));
             }
-        }
-
-        // Add to active downloads
-        {
-            let mut active = self.active_downloads.write().await;
-            active.insert(model_name.to_string());
         }
 
         // Clear any previous cancellation flag for this model
@@ -1073,14 +1067,21 @@ impl WhisperEngine {
             *cancel_flag = None;
         }
 
-        // Every way out releases the reservation: a failed write used to keep
-        // it, and a retry after freeing the disk was refused as "in progress".
+        // Every way out releases the reservation: a failed write, or a failure
+        // before the first byte (no network, no models folder), used to keep
+        // it, and a retry was refused as "in progress" until a restart.
         let result = self.download_model_reserved(model_name, progress_callback).await;
         self.active_downloads.write().await.remove(model_name);
         if let Err(error) = &result {
+            // A progress update can put `Downloading` back between
+            // `cancel_download` (which sets `Missing`) and the loop noticing the
+            // flag; a cancelled download is not an error to show.
+            let cancelled = self.cancel_download_flag.read().await.as_deref() == Some(model_name);
             let mut models = self.available_models.write().await;
             if let Some(model_info) = models.get_mut(model_name) {
-                if matches!(model_info.status, ModelStatus::Downloading { .. }) {
+                if cancelled {
+                    model_info.status = ModelStatus::Missing;
+                } else if matches!(model_info.status, ModelStatus::Downloading { .. }) {
                     model_info.status = ModelStatus::Error(error.to_string());
                 }
             }
@@ -1126,7 +1127,7 @@ impl WhisperEngine {
         }
         
         log::info!("Creating HTTP client and starting request...");
-        let client = Client::new();
+        let client = crate::network_policy::client(&model_url);
         
         log::info!("Sending GET request to: {}", model_url);
         let response = client.get(&model_url).send().await
@@ -1134,9 +1135,6 @@ impl WhisperEngine {
         
         log::info!("Received response with status: {}", response.status());
         if !response.status().is_success() {
-            // Remove from active downloads on error
-            let mut active = self.active_downloads.write().await;
-            active.remove(model_name);
             return Err(anyhow!("Download failed with status: {}", response.status()));
         }
         
@@ -1178,9 +1176,6 @@ impl WhisperEngine {
                 let cancel_flag = self.cancel_download_flag.read().await;
                 if cancel_flag.as_ref() == Some(&model_name.to_string()) {
                     log::info!("Download cancelled for {}", model_name);
-                    // Remove from active downloads on cancellation
-                    let mut active = self.active_downloads.write().await;
-                    active.remove(model_name);
                     return Err(anyhow!("Download cancelled by user"));
                 }
             }
@@ -1260,8 +1255,6 @@ impl WhisperEngine {
                     model_info.status = ModelStatus::Error(error.to_string());
                 }
             }
-            let mut active = self.active_downloads.write().await;
-            active.remove(model_name);
             return Err(error);
         }
 
@@ -1275,12 +1268,6 @@ impl WhisperEngine {
                 model_info.status = ModelStatus::Available;
                 model_info.path = file_path.clone();
             }
-        }
-
-        // Remove from active downloads on completion
-        {
-            let mut active = self.active_downloads.write().await;
-            active.remove(model_name);
         }
 
         Ok(())
@@ -1323,5 +1310,29 @@ impl WhisperEngine {
         }
 
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod download_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn a_download_that_fails_before_the_first_byte_can_be_retried() {
+        // The models folder cannot be created: its parent is a file. The
+        // download fails before any request is made.
+        let dir = tempfile::tempdir().unwrap();
+        let blocker = dir.path().join("not-a-folder");
+        std::fs::write(&blocker, b"").unwrap();
+        let engine = WhisperEngine::new_with_models_dir(Some(blocker.join("models"))).unwrap();
+
+        let first = engine.download_model("tiny", None).await.unwrap_err();
+        assert!(first.to_string().contains("models directory"), "{first}");
+        assert!(engine.active_downloads.read().await.is_empty());
+
+        // A retry meets the same failure, not "already in progress".
+        let retry = engine.download_model("tiny", None).await.unwrap_err();
+        assert!(!retry.to_string().contains("already in progress"), "{retry}");
+        assert!(engine.active_downloads.read().await.is_empty());
     }
 }

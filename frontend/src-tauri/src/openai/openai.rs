@@ -126,7 +126,7 @@ pub async fn get_openai_models(api_key: Option<String>) -> Result<Vec<OpenAIMode
 
     // Fetch from API
     log::info!("Fetching OpenAI models from API...");
-    let client = reqwest::Client::new();
+    let client = crate::network_policy::client("https://api.openai.com/v1/models");
 
     let response = match client
         .get("https://api.openai.com/v1/models")

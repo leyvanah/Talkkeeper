@@ -509,7 +509,7 @@ export function PostCallProvider({ children }: { children: React.ReactNode }) {
             void proceed(asking.meetingId, count, from);
           }}
           onSkipEnhancement={(count) => {
-            // The X at the count question: keep the live transcript, but still
+            // "Don't refine" at the count question: keep the live transcript, but still
             // tell the speakers apart and let the summary go ahead. A recording
             // made while another was being refined has no live text: there is
             // nothing to label or summarise, and "complete" would be untrue.

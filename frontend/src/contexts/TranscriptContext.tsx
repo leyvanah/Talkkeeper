@@ -266,8 +266,9 @@ export function TranscriptProvider({ children }: { children: ReactNode }) {
         });
         console.log('✅ MAIN transcript listener setup complete');
       } catch (error) {
-        console.error('❌ Failed to setup MAIN transcript listener:', error);
-        alert('Failed to setup transcript listener. Check console for details.');
+        toastFailure(t('transcriptListenerFailed'), 'transcript-listener', error, {
+          description: t('transcriptListenerFailedDetail'),
+        });
       }
     };
 
