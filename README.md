@@ -132,7 +132,8 @@ installer over the old one: your meetings, recordings, models and keys are kept.
 **Before updating or uninstalling**, stop any recording, then quit Talkkeeper
 from its tray icon (closing the window only hides it there). The installer
 closes a running app once you press OK in its message, the uninstaller without
-asking; either way a recording still in progress is lost.
+asking (also when an update is set to *Uninstall before installing*); either
+way a recording still in progress is lost.
 
 **Uninstalling.** Use *Settings → Apps → Installed apps → Talkkeeper* in Windows.
 
@@ -142,8 +143,9 @@ asking; either way a recording still in progress is lost.
   there before is left alone. If a password is set, the uninstaller first asks
   separately, then asks where to save a copy of the key
   (`Documents\Talkkeeper-key-backup` by default), under a new name each time.
-  If that copy could not be written, the data folder is kept; the app's window
-  settings (language, theme) are removed either way.
+  If that copy could not be written, the data folder is kept; the app's
+  settings outside the data folder (language, theme, recording settings such as
+  the recordings folder) are removed either way.
 - **The recordings folder is never deleted by the uninstaller.** Delete it
   yourself if you no longer need it. Recordings made without a password are
   ordinary audio files that anyone with access to the disk can play.
@@ -169,8 +171,9 @@ The app itself connects only when you ask it to:
 
 - **Downloading a model** you chose: speech recognition and summary models from
   Hugging Face; speaker models, and a fallback copy of one speech model, from
-  the original project's GitHub releases. Every source is pinned to a fixed
-  version, and every downloaded file is checked against its SHA-256.
+  the GitHub releases of *Meetily - Actually Free*. Hugging Face sources are
+  pinned to a commit; every downloaded file, from either host, is checked
+  against its SHA-256 before use.
 - **Downloading a model through Ollama**, if you use it: the app asks Ollama on
   this computer to fetch the model, and Ollama downloads it from its own
   registry. That download is Ollama's: Talkkeeper neither pins nor checks it.
