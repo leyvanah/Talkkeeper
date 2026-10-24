@@ -8,7 +8,7 @@
 
 use futures_util::TryStreamExt;
 use serde::Serialize;
-use sqlx::{Sqlite, SqlitePool, Transaction};
+use sqlx::{Sqlite, SqliteConnection, SqlitePool, Transaction};
 use std::cmp::Ordering;
 use std::collections::HashMap;
 use uuid::Uuid;
@@ -46,6 +46,10 @@ pub struct GlobalSearchResult {
     pub audio_start_time: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub meeting_count: Option<i64>,
+    /// The client a person belongs to. Two clients can each have an "Anna",
+    /// and the name alone does not say whose profile a row opens.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub client_display_name: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -65,6 +69,8 @@ pub struct PersonMeeting {
 pub struct PersonProfile {
     pub id: String,
     pub display_name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub client_display_name: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub notes: Option<String>,
     pub meeting_count: i64,
@@ -139,18 +145,19 @@ impl PeopleRepository {
         let needle = normalize_person_name(query);
         let mut ranked = Vec::new();
 
-        let people = sqlx::query_as::<_, (String, String, Option<String>, i64)>(
-            "SELECT p.id, p.display_name, p.notes, COUNT(DISTINCT ps.meeting_id) \
+        let people = sqlx::query_as::<_, (String, String, Option<String>, i64, Option<String>)>(
+            "SELECT p.id, p.display_name, p.notes, COUNT(DISTINCT ps.meeting_id), c.display_name \
              FROM people p \
              LEFT JOIN person_speakers ps ON ps.person_id = p.id \
-             GROUP BY p.id, p.display_name, p.notes, p.updated_at \
+             LEFT JOIN clients c ON c.id = p.client_id \
+             GROUP BY p.id, p.display_name, p.notes, p.updated_at, c.display_name \
              ORDER BY p.updated_at DESC",
         )
         .fetch_all(pool)
         .await?;
 
         let mut taken = 0usize;
-        for (id, display_name, notes, meeting_count) in people {
+        for (id, display_name, notes, meeting_count, client_display_name) in people {
             if taken == wanted {
                 break;
             }
@@ -160,6 +167,8 @@ impl PeopleRepository {
             if !normalized.contains(&needle) {
                 continue;
             }
+            let client_display_name =
+                fields::open_opt(fields::CLIENT_DISPLAY_NAME, client_display_name)?;
             taken += 1;
             ranked.push(RankedResult {
                 score: match_quality(&normalized, &needle),
@@ -171,11 +180,14 @@ impl PeopleRepository {
                     person_id: Some(id),
                     transcript_id: None,
                     title: display_name,
-                    snippet: notes.unwrap_or_else(|| format!("{} mapped meetings", meeting_count)),
+                    // Empty without notes: the interface has its own words for
+                    // that, in the owner's language.
+                    snippet: notes.unwrap_or_default(),
                     timestamp: None,
                     speaker: None,
                     audio_start_time: None,
                     meeting_count: Some(meeting_count),
+                    client_display_name,
                 },
             });
         }
@@ -212,6 +224,7 @@ impl PeopleRepository {
                     speaker: None,
                     audio_start_time: None,
                     meeting_count: None,
+                    client_display_name: None,
                 },
             });
         }
@@ -272,6 +285,7 @@ impl PeopleRepository {
                         speaker,
                         audio_start_time,
                         meeting_count: None,
+                        client_display_name: None,
                     },
                 });
             }
@@ -316,6 +330,7 @@ impl PeopleRepository {
                         speaker: None,
                         audio_start_time: None,
                         meeting_count: None,
+                        client_display_name: None,
                     },
                 });
             }
@@ -335,8 +350,10 @@ impl PeopleRepository {
         pool: &SqlitePool,
         person_id: &str,
     ) -> Result<PersonProfile, sqlx::Error> {
-        let person = sqlx::query_as::<_, (String, String, Option<String>)>(
-            "SELECT id, display_name, notes FROM people WHERE id = ?",
+        let person = sqlx::query_as::<_, (String, String, Option<String>, Option<String>)>(
+            "SELECT p.id, p.display_name, p.notes, c.display_name \
+             FROM people p LEFT JOIN clients c ON c.id = p.client_id \
+             WHERE p.id = ?",
         )
         .bind(person_id)
         .fetch_optional(pool)
@@ -393,6 +410,7 @@ impl PeopleRepository {
         Ok(PersonProfile {
             id: person.0,
             display_name: fields::open(fields::PERSON_NAME, &person.1)?,
+            client_display_name: fields::open_opt(fields::CLIENT_DISPLAY_NAME, person.3)?,
             notes: fields::open_opt(fields::PERSON_NOTES, person.2)?,
             meeting_count: meetings.len() as i64,
             message_count,
@@ -421,6 +439,29 @@ impl PeopleRepository {
         if result.rows_affected() == 0 {
             return Err(sqlx::Error::RowNotFound);
         }
+        Ok(())
+    }
+
+    /// Deletes a person and the notes about them. The meetings they spoke in
+    /// stay as they are, names on the lines included: only the profile and its
+    /// links to those lines go.
+    pub async fn delete(pool: &SqlitePool, person_id: &str) -> Result<(), sqlx::Error> {
+        let mut tx = pool.begin().await?;
+        // Not every connection has foreign keys on to cascade the links.
+        sqlx::query("DELETE FROM person_speakers WHERE person_id = ?")
+            .bind(person_id)
+            .execute(&mut *tx)
+            .await?;
+        let removed = sqlx::query("DELETE FROM people WHERE id = ?")
+            .bind(person_id)
+            .execute(&mut *tx)
+            .await?
+            .rows_affected();
+        if removed == 0 {
+            tx.rollback().await?;
+            return Err(sqlx::Error::RowNotFound);
+        }
+        tx.commit().await?;
         Ok(())
     }
 
@@ -502,13 +543,16 @@ impl PeopleRepository {
             .execute(&mut **tx)
             .await?;
 
-        if !is_person_name(to) {
+        // A capture label names nobody, and a meeting without a client has no
+        // people: either way the line keeps its name and links to no profile.
+        let client_id = meeting_client(tx, meeting_id).await?;
+        let (true, Some(client_id)) = (is_person_name(to), client_id) else {
             delete_orphan_people(tx).await?;
             return Ok(());
-        }
+        };
 
         let normalized = normalize_person_name(to);
-        let named_person = find_person_by_normalized_name(tx, &normalized).await?;
+        let named_person = find_person_by_normalized_name(tx, &client_id, &normalized).await?;
         // Removing this meeting/label mapping first lets us distinguish a truly
         // private profile from a shared identity. Any surviving mapping, even a
         // second alias in this same meeting, means changing the person row would
@@ -544,20 +588,7 @@ impl PeopleRepository {
             }
             // Shared profiles split here. This keeps the rename meeting-local
             // while leaving the other meetings attached to the original person.
-            _ => {
-                let id = format!("person-{}", Uuid::new_v4());
-                sqlx::query(
-                    "INSERT INTO people \
-                     (id, display_name, normalized_name, notes, created_at, updated_at) \
-                     VALUES (?, ?, ?, NULL, datetime('now'), datetime('now'))",
-                )
-                .bind(&id)
-                .bind(fields::seal(fields::PERSON_NAME, to)?)
-                .bind(fields::lookup(fields::PERSON_LOOKUP, &normalized)?)
-                .execute(&mut **tx)
-                .await?;
-                id
-            }
+            _ => insert_person(tx, &client_id, to, &normalized).await?,
         };
 
         sqlx::query(
@@ -680,24 +711,88 @@ pub async fn api_update_person_notes(
         })
 }
 
+#[tauri::command]
+pub async fn api_delete_person(
+    state: tauri::State<'_, AppState>,
+    person_id: String,
+) -> Result<(), String> {
+    PeopleRepository::delete(state.db_manager.pool(), &person_id)
+        .await
+        .map_err(|error| match error {
+            sqlx::Error::RowNotFound => "Person not found".to_string(),
+            _ => format!("Failed to delete the person: {}", error),
+        })
+}
+
 pub(crate) fn normalize_person_name(name: &str) -> String {
     name.trim().to_lowercase()
 }
 
 pub(crate) fn is_person_name(name: &str) -> bool {
     let trimmed = name.trim();
-    let lower = trimmed.to_ascii_lowercase();
+    let lower = trimmed.to_lowercase();
+    // The capture labels, and the same words as the Russian interface shows
+    // them: someone who typed "Гость" over a label has not named a person.
     if trimmed.is_empty()
         || matches!(
             lower.as_str(),
             "you" | "guest" | "mic" | "microphone" | "system" | "system audio" | "speaker"
+                | "вы" | "гость" | "спикер" | "микрофон" | "система"
         )
         || lower.starts_with("speaker ")
+        || lower.starts_with("спикер ")
         || trimmed.contains(" + ")
     {
         return false;
     }
     true
+}
+
+/// The client a meeting belongs to. A person exists only within a client, so
+/// `None` means the meeting's speakers are not linked to anyone.
+async fn meeting_client(
+    tx: &mut Transaction<'_, Sqlite>,
+    meeting_id: &str,
+) -> Result<Option<String>, sqlx::Error> {
+    let client: Option<Option<String>> =
+        sqlx::query_scalar("SELECT client_id FROM meetings WHERE id = ?")
+            .bind(meeting_id)
+            .fetch_optional(&mut **tx)
+            .await?;
+    Ok(client.flatten())
+}
+
+/// Links every named speaker of a meeting to the people of its client, from
+/// scratch. Run when the meeting changes client: the names stay on the lines,
+/// the people they point to are the new client's. Without a client the
+/// meeting ends up linked to no one.
+pub(crate) async fn relink_meeting_speakers(
+    tx: &mut Transaction<'_, Sqlite>,
+    meeting_id: &str,
+) -> Result<(), sqlx::Error> {
+    sqlx::query("DELETE FROM person_speakers WHERE meeting_id = ?")
+        .bind(meeting_id)
+        .execute(&mut **tx)
+        .await?;
+
+    if meeting_client(tx, meeting_id).await?.is_some() {
+        let stored: Vec<Option<String>> = sqlx::query_scalar(
+            "SELECT DISTINCT speaker FROM transcripts WHERE meeting_id = ?",
+        )
+        .bind(meeting_id)
+        .fetch_all(&mut **tx)
+        .await?;
+        let mut labels = std::collections::BTreeSet::new();
+        for sealed in stored {
+            if let Some(label) = fields::open_opt(fields::TRANSCRIPT_SPEAKER, sealed)? {
+                labels.insert(label);
+            }
+        }
+        for label in labels {
+            link_speaker_to_person(tx, meeting_id, &label, &label).await?;
+        }
+    }
+    delete_orphan_people(tx).await
 }
 
 async fn next_available_speaker_label(
@@ -984,23 +1079,13 @@ pub(crate) async fn link_speaker_to_person(
     if !is_person_name(person_name) {
         return Ok(());
     }
+    let Some(client_id) = meeting_client(tx, meeting_id).await? else {
+        return Ok(());
+    };
     let normalized = normalize_person_name(person_name);
-    let person_id = match find_person_by_normalized_name(tx, &normalized).await? {
+    let person_id = match find_person_by_normalized_name(tx, &client_id, &normalized).await? {
         Some(id) => id,
-        None => {
-            let id = format!("person-{}", Uuid::new_v4());
-            sqlx::query(
-                "INSERT INTO people \
-                 (id, display_name, normalized_name, notes, created_at, updated_at) \
-                 VALUES (?, ?, ?, NULL, datetime('now'), datetime('now'))",
-            )
-            .bind(&id)
-            .bind(fields::seal(fields::PERSON_NAME, person_name.trim())?)
-            .bind(fields::lookup(fields::PERSON_LOOKUP, &normalized)?)
-            .execute(&mut **tx)
-            .await?;
-            id
-        }
+        None => insert_person(tx, &client_id, person_name.trim(), &normalized).await?,
     };
     sqlx::query(
         "INSERT INTO person_speakers (person_id, meeting_id, speaker_label) \
@@ -1054,34 +1139,69 @@ pub(crate) async fn retain_present_speaker_mappings(
     delete_orphan_people(tx).await
 }
 
-async fn delete_orphan_people(tx: &mut Transaction<'_, Sqlite>) -> Result<(), sqlx::Error> {
+/// Removes the people no meeting points to any more — unless the owner wrote
+/// notes about them. A rename or a move to another client can leave a profile
+/// without meetings for a while, and losing the notes with the last link would
+/// make an ordinary edit destroy something nobody asked to delete. Deleting a
+/// meeting is no different: a person's notes go only with the person or the
+/// client.
+pub(crate) async fn delete_orphan_people(conn: &mut SqliteConnection) -> Result<(), sqlx::Error> {
     sqlx::query(
-        "DELETE FROM people WHERE NOT EXISTS \
+        "DELETE FROM people WHERE notes IS NULL AND NOT EXISTS \
          (SELECT 1 FROM person_speakers ps WHERE ps.person_id = people.id)",
     )
-    .execute(&mut **tx)
+    .execute(conn)
     .await?;
     Ok(())
 }
 
+/// A new person of `client_id`, with no notes yet.
+async fn insert_person(
+    tx: &mut Transaction<'_, Sqlite>,
+    client_id: &str,
+    display_name: &str,
+    normalized: &str,
+) -> Result<String, sqlx::Error> {
+    let id = format!("person-{}", Uuid::new_v4());
+    sqlx::query(
+        "INSERT INTO people \
+         (id, display_name, normalized_name, notes, created_at, updated_at, client_id) \
+         VALUES (?, ?, ?, NULL, datetime('now'), datetime('now'), ?)",
+    )
+    .bind(&id)
+    .bind(fields::seal(fields::PERSON_NAME, display_name)?)
+    .bind(fields::lookup(fields::PERSON_LOOKUP, normalized)?)
+    .bind(client_id)
+    .execute(&mut **tx)
+    .await?;
+    Ok(id)
+}
+
+/// The person of `client_id` going by this name. Only that client's people are
+/// considered: the same name at another client is somebody else.
+///
 /// SQLite's built-in lower/LIKE folding is ASCII-only. Migration values remain
 /// compatible with SQL search, while this Rust fallback compares display names
 /// with Unicode lowercase before deciding that a new identity is necessary.
 async fn find_person_by_normalized_name(
     tx: &mut Transaction<'_, Sqlite>,
+    client_id: &str,
     normalized: &str,
 ) -> Result<Option<String>, sqlx::Error> {
-    if let Some(id) = sqlx::query_scalar("SELECT id FROM people WHERE normalized_name = ?")
-        .bind(fields::lookup(fields::PERSON_LOOKUP, normalized)?)
-        .fetch_optional(&mut **tx)
-        .await?
+    if let Some(id) =
+        sqlx::query_scalar("SELECT id FROM people WHERE client_id = ? AND normalized_name = ?")
+            .bind(client_id)
+            .bind(fields::lookup(fields::PERSON_LOOKUP, normalized)?)
+            .fetch_optional(&mut **tx)
+            .await?
     {
         return Ok(Some(id));
     }
 
     let candidates = sqlx::query_as::<_, (String, String, String)>(
-        "SELECT id, display_name, normalized_name FROM people",
+        "SELECT id, display_name, normalized_name FROM people WHERE client_id = ?",
     )
+    .bind(client_id)
     .fetch_all(&mut **tx)
     .await?;
     for (id, display_name, stored_normalized) in candidates {
@@ -1124,6 +1244,9 @@ mod tests {
             "SYSTEM",
             "system audio",
             "Alice + Bob",
+            "Гость",
+            " ВЫ ",
+            "Спикер 2",
         ] {
             assert!(!is_person_name(label), "{} should not be a person", label);
         }
@@ -1227,7 +1350,11 @@ mod tests {
              INSERT INTO person_speakers VALUES \
                  ('person-alice', 'm1', 'Alice'), ('person-alice', 'm2', 'Alice'), \
                  ('person-bob', 'm3', 'Bob'), ('person-david', 'm4', 'David'); \
-             INSERT INTO transcripts VALUES ('t1', 'm1', 'Alice'), ('t2', 'm4', 'David');",
+             INSERT INTO transcripts VALUES ('t1', 'm1', 'Alice'), ('t2', 'm4', 'David'); \
+             ALTER TABLE people ADD COLUMN client_id TEXT; \
+             UPDATE people SET client_id = 'c1'; \
+             CREATE TABLE meetings (id TEXT PRIMARY KEY, client_id TEXT); \
+             INSERT INTO meetings VALUES ('m1', 'c1'), ('m2', 'c1'), ('m3', 'c1'), ('m4', 'c1');",
         )
         .execute(&pool)
         .await
@@ -1292,7 +1419,11 @@ mod tests {
              INSERT INTO people VALUES ('person-carol', 'Carol', 'carol', NULL, 'now', 'now'); \
              INSERT INTO person_speakers VALUES \
                  ('person-carol', 'm1', 'Carol'), ('person-carol', 'm1', 'C.'); \
-             INSERT INTO transcripts VALUES ('t1', 'm1', 'Carol'), ('t2', 'm1', 'C.');",
+             INSERT INTO transcripts VALUES ('t1', 'm1', 'Carol'), ('t2', 'm1', 'C.'); \
+             ALTER TABLE people ADD COLUMN client_id TEXT; \
+             UPDATE people SET client_id = 'c1'; \
+             CREATE TABLE meetings (id TEXT PRIMARY KEY, client_id TEXT); \
+             INSERT INTO meetings VALUES ('m1', 'c1');",
         )
         .execute(&pool)
         .await
@@ -1339,7 +1470,11 @@ mod tests {
                  PRIMARY KEY (meeting_id, speaker_label)); \
              CREATE TABLE transcripts (id TEXT PRIMARY KEY, meeting_id TEXT NOT NULL, speaker TEXT); \
              INSERT INTO people VALUES ('person-elodie', 'Élodie', 'Élodie', NULL, 'now', 'now'); \
-             INSERT INTO transcripts VALUES ('t1', 'm1', 'Speaker 1');",
+             INSERT INTO transcripts VALUES ('t1', 'm1', 'Speaker 1'); \
+             ALTER TABLE people ADD COLUMN client_id TEXT; \
+             UPDATE people SET client_id = 'c1'; \
+             CREATE TABLE meetings (id TEXT PRIMARY KEY, client_id TEXT); \
+             INSERT INTO meetings VALUES ('m1', 'c1');",
         )
         .execute(&pool)
         .await
@@ -1365,14 +1500,14 @@ mod tests {
     async fn replacement_cleanup_keeps_names_still_present_and_drops_the_rest() {
         let pool = sqlx::SqlitePool::connect(":memory:").await.unwrap();
         sqlx::raw_sql(
-            "CREATE TABLE people (id TEXT PRIMARY KEY); \
+            "CREATE TABLE people (id TEXT PRIMARY KEY, notes TEXT); \
              CREATE TABLE person_speakers (person_id TEXT NOT NULL, meeting_id TEXT NOT NULL, \
                  speaker_label TEXT NOT NULL, UNIQUE(meeting_id, speaker_label)); \
              CREATE TABLE meeting_speaker_roles (meeting_id TEXT NOT NULL, \
                  speaker_label TEXT NOT NULL, role TEXT NOT NULL, \
                  PRIMARY KEY (meeting_id, speaker_label)); \
              CREATE TABLE transcripts (meeting_id TEXT NOT NULL, speaker TEXT); \
-             INSERT INTO people VALUES ('only-m1'), ('shared'), ('kept'); \
+             INSERT INTO people (id) VALUES ('only-m1'), ('shared'), ('kept'); \
              INSERT INTO person_speakers VALUES \
                  ('only-m1', 'm1', 'Alice'), ('shared', 'm1', 'Bob'), ('shared', 'm2', 'Bob'), \
                  ('kept', 'm1', 'Carol'); \
@@ -1442,7 +1577,7 @@ mod tests {
     async fn removing_name_uses_available_local_label_and_unlinks_person() {
         let pool = sqlx::SqlitePool::connect(":memory:").await.unwrap();
         sqlx::raw_sql(
-            "CREATE TABLE people (id TEXT PRIMARY KEY); \
+            "CREATE TABLE people (id TEXT PRIMARY KEY, notes TEXT); \
              CREATE TABLE person_speakers (person_id TEXT NOT NULL, meeting_id TEXT NOT NULL, \
                  speaker_label TEXT NOT NULL, UNIQUE(meeting_id, speaker_label)); \
              CREATE TABLE meeting_speaker_roles (meeting_id TEXT NOT NULL, \
@@ -1497,9 +1632,10 @@ mod tests {
     async fn search_pool() -> sqlx::SqlitePool {
         let pool = sqlx::SqlitePool::connect(":memory:").await.unwrap();
         sqlx::raw_sql(
-            "CREATE TABLE people (id TEXT PRIMARY KEY, display_name TEXT NOT NULL, \
-                 normalized_name TEXT NOT NULL UNIQUE, notes TEXT, created_at TEXT NOT NULL, \
-                 updated_at TEXT NOT NULL); \
+            "CREATE TABLE clients (id TEXT PRIMARY KEY, display_name TEXT NOT NULL); \
+             CREATE TABLE people (id TEXT PRIMARY KEY, display_name TEXT NOT NULL, \
+                 normalized_name TEXT NOT NULL, notes TEXT, created_at TEXT NOT NULL, \
+                 updated_at TEXT NOT NULL, client_id TEXT); \
              CREATE TABLE person_speakers (person_id TEXT NOT NULL, meeting_id TEXT NOT NULL, \
                  speaker_label TEXT NOT NULL, UNIQUE(meeting_id, speaker_label)); \
              CREATE TABLE meeting_speaker_roles (meeting_id TEXT NOT NULL, \
@@ -1628,5 +1764,85 @@ mod tests {
             .unwrap();
         assert_eq!(results.len(), 2);
         assert_eq!(results[0].speaker.as_deref(), Some("Анна"));
+    }
+
+    #[tokio::test]
+    async fn a_person_row_names_the_client_and_leaves_the_wording_to_the_interface() {
+        let pool = search_pool().await;
+        sqlx::raw_sql(
+            "INSERT INTO clients VALUES ('c1', 'Клиент 1'); \
+             INSERT INTO people VALUES \
+                 ('p1', 'Тест А', 'тест а', NULL, 'now', 'now', 'c1'), \
+                 ('p2', 'Тест Б', 'тест б', NULL, 'now', 'now', NULL);",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let with_client = PeopleRepository::global_search(&pool, "тест а", None)
+            .await
+            .unwrap();
+        assert_eq!(with_client.len(), 1);
+        assert_eq!(
+            with_client[0].client_display_name.as_deref(),
+            Some("Клиент 1")
+        );
+        // No notes: an empty snippet, not English text in a Russian interface.
+        assert_eq!(with_client[0].snippet, "");
+
+        let without_client = PeopleRepository::global_search(&pool, "тест б", None)
+            .await
+            .unwrap();
+        assert_eq!(without_client.len(), 1);
+        assert_eq!(without_client[0].client_display_name, None);
+    }
+
+    #[tokio::test]
+    async fn deleting_a_person_takes_their_notes_and_leaves_the_lines() {
+        let pool = search_pool().await;
+        sqlx::raw_sql(
+            "INSERT INTO clients VALUES ('c1', 'Клиент 1'); \
+             INSERT INTO meetings VALUES ('m1', 'Встреча', 'now', 'now'); \
+             INSERT INTO people VALUES \
+                 ('p1', 'Тест А', 'тест а', 'заметка', 'now', 'now', 'c1'), \
+                 ('p2', 'Тест Б', 'тест б', NULL, 'now', 'now', 'c1'); \
+             INSERT INTO person_speakers VALUES ('p1', 'm1', 'Тест А'), ('p2', 'm1', 'Тест Б'); \
+             INSERT INTO transcripts VALUES ('t1', 'm1', 'привет', 'now', 'Тест А', 0.0);",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        PeopleRepository::delete(&pool, "p1").await.unwrap();
+
+        assert!(matches!(
+            PeopleRepository::get_profile(&pool, "p1").await,
+            Err(sqlx::Error::RowNotFound)
+        ));
+        let people: Vec<String> = sqlx::query_scalar("SELECT id FROM people")
+            .fetch_all(&pool)
+            .await
+            .unwrap();
+        assert_eq!(people, vec!["p2".to_string()]);
+        let links: Vec<String> = sqlx::query_scalar("SELECT person_id FROM person_speakers")
+            .fetch_all(&pool)
+            .await
+            .unwrap();
+        assert_eq!(links, vec!["p2".to_string()]);
+        // The line keeps the name it was given.
+        let speaker: String = sqlx::query_scalar("SELECT speaker FROM transcripts")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(speaker, "Тест А");
+        assert!(PeopleRepository::global_search(&pool, "заметка", None)
+            .await
+            .unwrap()
+            .is_empty());
+
+        assert!(matches!(
+            PeopleRepository::delete(&pool, "p1").await,
+            Err(sqlx::Error::RowNotFound)
+        ));
     }
 }

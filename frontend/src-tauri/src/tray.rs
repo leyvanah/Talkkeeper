@@ -2,8 +2,10 @@ use tauri::{
     image::Image,
     menu::{MenuBuilder, MenuItemBuilder, PredefinedMenuItem},
     tray::TrayIconBuilder,
-    AppHandle, Manager, Runtime,
+    AppHandle, Manager, Runtime, Webview, WebviewWindow,
 };
+
+use crate::ui_language::{text, Text};
 
 #[derive(Debug, Clone)]
 pub enum RecordingState {
@@ -66,7 +68,7 @@ fn handle_menu_event<R: Runtime>(app: &AppHandle<R>, item_id: &str) {
             }
         }
         "check_updates" => check_updates_handler(app),
-        "quit" => app.exit(0),
+        "quit" => crate::quit::request_quit(app),
         _ => {}
     }
 }
@@ -99,6 +101,7 @@ fn toggle_recording_handler<R: Runtime>(app: &AppHandle<R>) {
             match stop_result {
                 Ok(crate::audio::recording_commands::StopOutcome::Completed) => {
                     log::info!("Tray toggle: Recording stopped successfully");
+                    notify_stopped(&app_clone).await;
                 }
                 Ok(crate::audio::recording_commands::StopOutcome::AlreadyStopping) => {
                     log::info!("Tray toggle: Recording stop is already in progress");
@@ -117,10 +120,16 @@ fn toggle_recording_handler<R: Runtime>(app: &AppHandle<R>) {
             // Immediately show starting state
             set_tray_state(&app_clone, RecordingState::Starting);
 
+            // The window starts it, the same way as its own button, with the
+            // settings it already has loaded. It used to be reloaded for this,
+            // and right after the reload it checked the default engine instead
+            // of the chosen one.
             log::info!("Emitting start recording event from tray");
-            if let Some(window) = app_clone.get_webview_window("main") {
-                let _ = window.eval("sessionStorage.setItem('autoStartRecording', 'true')"); // Set the flag to start recording automatically
-                let _ = window.eval("window.location.assign('/')");
+            if let Err(error) =
+                tauri::Emitter::emit_to(&app_clone, "main", "request-recording-toggle", ())
+            {
+                log::error!("Tray: could not ask the window to start recording: {}", error);
+                update_tray_menu_async(&app_clone).await;
             }
         }
     });
@@ -189,6 +198,7 @@ fn stop_recording_handler<R: Runtime>(app: &AppHandle<R>) {
         match stop_result {
             Ok(crate::audio::recording_commands::StopOutcome::Completed) => {
                 log::info!("Tray: Recording stopped successfully");
+                notify_stopped(&app_clone).await;
             }
             Ok(crate::audio::recording_commands::StopOutcome::AlreadyStopping) => {
                 log::info!("Tray: Recording stop is already in progress");
@@ -204,6 +214,17 @@ fn stop_recording_handler<R: Runtime>(app: &AppHandle<R>) {
             }
         }
     });
+}
+
+/// The notification the window's Stop shows, so a stop from the tray is
+/// announced the same way. It follows the notification settings.
+async fn notify_stopped<R: Runtime>(app: &AppHandle<R>) {
+    let state = app.state::<crate::notifications::commands::NotificationManagerState<R>>();
+    if let Err(error) =
+        crate::notifications::commands::show_recording_stopped_notification(app, &state).await
+    {
+        log::error!("Tray: could not show the recording stopped notification: {}", error);
+    }
 }
 
 fn check_updates_handler<R: Runtime>(app: &AppHandle<R>) {
@@ -252,10 +273,10 @@ fn show_state_in_icon<R: Runtime>(app: &AppHandle<R>, state: &RecordingState) {
     let (icon, tooltip) = match state {
         RecordingState::Stopped => (base.clone().to_owned(), "Talkkeeper"),
         RecordingState::Paused | RecordingState::Pausing => {
-            (icon_with_dot(base, [245, 158, 11]), "Talkkeeper — запись на паузе")
+            (icon_with_dot(base, [245, 158, 11]), text(Text::TooltipPaused))
         }
-        RecordingState::Stopping => (icon_with_dot(base, [239, 68, 68]), "Talkkeeper — запись завершается"),
-        _ => (icon_with_dot(base, [239, 68, 68]), "Talkkeeper — идёт запись"),
+        RecordingState::Stopping => (icon_with_dot(base, [239, 68, 68]), text(Text::TooltipStopping)),
+        _ => (icon_with_dot(base, [239, 68, 68]), text(Text::TooltipRecording)),
     };
     if let Err(error) = tray.set_icon(Some(icon)) {
         log::warn!("Tray: could not show the recording state in the icon: {}", error);
@@ -379,7 +400,7 @@ fn build_menu<R: Runtime>(
     // If recording is not allowed (during onboarding, no transcription model), show disabled message
     if !can_record {
         builder = builder.item(
-            &MenuItemBuilder::new("⏳ Загружается модель распознавания…")
+            &MenuItemBuilder::new(text(Text::TrayLoadingModel))
                 .enabled(false)
                 .build(app)?,
         );
@@ -387,49 +408,49 @@ fn build_menu<R: Runtime>(
         match state {
             RecordingState::Stopped => {
                 builder = builder
-                    .item(&MenuItemBuilder::with_id("toggle_recording", "Начать запись").build(app)?);
+                    .item(&MenuItemBuilder::with_id("toggle_recording", text(Text::TrayStartRecording)).build(app)?);
             }
             RecordingState::Starting => {
                 builder = builder.item(
-                    &MenuItemBuilder::new("🔄 Запись запускается…")
+                    &MenuItemBuilder::new(text(Text::TrayStarting))
                         .enabled(false)
                         .build(app)?,
                 );
             }
             RecordingState::Recording => {
                 builder = builder
-                    .item(&MenuItemBuilder::with_id("pause_recording", "⏸ Пауза").build(app)?)
-                    .item(&MenuItemBuilder::with_id("stop_recording", "⏹ Остановить запись").build(app)?);
+                    .item(&MenuItemBuilder::with_id("pause_recording", text(Text::TrayPause)).build(app)?)
+                    .item(&MenuItemBuilder::with_id("stop_recording", text(Text::TrayStopRecording)).build(app)?);
             }
             RecordingState::Pausing => {
                 builder = builder
                     .item(
-                        &MenuItemBuilder::new("⏸ Ставим на паузу…")
+                        &MenuItemBuilder::new(text(Text::TrayPausing))
                             .enabled(false)
                             .build(app)?,
                     )
-                    .item(&MenuItemBuilder::with_id("stop_recording", "⏹ Остановить запись").build(app)?);
+                    .item(&MenuItemBuilder::with_id("stop_recording", text(Text::TrayStopRecording)).build(app)?);
             }
             RecordingState::Paused => {
                 builder = builder
                     .item(
-                        &MenuItemBuilder::with_id("resume_recording", "▶ Продолжить запись")
+                        &MenuItemBuilder::with_id("resume_recording", text(Text::TrayResume))
                             .build(app)?,
                     )
-                    .item(&MenuItemBuilder::with_id("stop_recording", "⏹ Остановить запись").build(app)?);
+                    .item(&MenuItemBuilder::with_id("stop_recording", text(Text::TrayStopRecording)).build(app)?);
             }
             RecordingState::Resuming => {
                 builder = builder
                     .item(
-                        &MenuItemBuilder::new("▶ Продолжаем…")
+                        &MenuItemBuilder::new(text(Text::TrayResuming))
                             .enabled(false)
                             .build(app)?,
                     )
-                    .item(&MenuItemBuilder::with_id("stop_recording", "⏹ Остановить запись").build(app)?);
+                    .item(&MenuItemBuilder::with_id("stop_recording", text(Text::TrayStopRecording)).build(app)?);
             }
             RecordingState::Stopping => {
                 builder = builder.item(
-                    &MenuItemBuilder::new("⏹ Останавливаем…")
+                    &MenuItemBuilder::new(text(Text::TrayStopping))
                         .enabled(false)
                         .build(app)?,
                 );
@@ -439,8 +460,8 @@ fn build_menu<R: Runtime>(
 
     builder = builder
         .item(&PredefinedMenuItem::separator(app)?)
-        .item(&MenuItemBuilder::with_id("open_window", "Открыть окно").build(app)?)
-        .item(&MenuItemBuilder::with_id("settings", "Настройки").build(app)?);
+        .item(&MenuItemBuilder::with_id("open_window", text(Text::TrayOpenWindow)).build(app)?)
+        .item(&MenuItemBuilder::with_id("settings", text(Text::TraySettings)).build(app)?);
 
     // No "Check for Updates" entry: the app has no update source of its own
     // yet, and the inherited one would offer the original project's builds.
@@ -448,8 +469,33 @@ fn build_menu<R: Runtime>(
 
     builder
         .item(&PredefinedMenuItem::separator(app)?)
-        .item(&MenuItemBuilder::with_id("quit", "Выйти").build(app)?)
+        .item(&MenuItemBuilder::with_id("quit", text(Text::TrayQuit)).build(app)?)
         .build()
+}
+
+/// Hide the main window together with its page.
+///
+/// Hiding the window alone does not reach WebView2: the page still believed it
+/// was on screen and kept painting - level meters 25 times a second, the
+/// transcript's typing effect - for a window nobody could see, about a core
+/// during a recording. Hiding the webview tells the page it is hidden.
+pub(crate) fn hide_main_window<R: Runtime>(window: &WebviewWindow<R>) -> tauri::Result<()> {
+    window.hide()?;
+    let page: &Webview<R> = window.as_ref();
+    if let Err(e) = page.hide() {
+        log::warn!("Failed to hide the main page with its window: {}", e);
+    }
+    Ok(())
+}
+
+/// Show the main window and its page. Every path that shows `main` must come
+/// through here, or the window reappears blank.
+pub(crate) fn show_main_window<R: Runtime>(window: &WebviewWindow<R>) -> tauri::Result<()> {
+    let page: &Webview<R> = window.as_ref();
+    if let Err(e) = page.show() {
+        log::warn!("Failed to show the main page: {}", e);
+    }
+    window.show()
 }
 
 pub(crate) fn focus_main_window<R: Runtime>(app: &AppHandle<R>) {
@@ -458,7 +504,7 @@ pub(crate) fn focus_main_window<R: Runtime>(app: &AppHandle<R>) {
             log::error!("Failed to unminimize main window: {}", e);
         }
 
-        if let Err(e) = window.show() {
+        if let Err(e) = show_main_window(&window) {
             log::error!("Failed to show main window: {}", e);
         }
 

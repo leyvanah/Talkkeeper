@@ -138,6 +138,10 @@ export function MeetingExportDialog({
           </div>
         )}
 
+        {step === 'format' && (
+          <p className="text-xs text-amber-600">{t('exportUnencryptedNote')}</p>
+        )}
+
         <DialogFooter>
           {step === 'format' && (
             <Button type="button" variant="outline" disabled={exporting} onClick={() => setStep('content')}>

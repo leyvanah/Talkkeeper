@@ -7,6 +7,7 @@ import { listen } from '@tauri-apps/api/event';
 import { useOnboarding } from '@/contexts/OnboardingContext';
 import { usePlatform } from '@/hooks/usePlatform';
 import { MACOS_SYSTEM_AUDIO_VERIFIED_KEY } from '@/hooks/usePermissionCheck';
+import { logFailure, toastFailure } from '@/lib/failure';
 import { OnboardingContainer } from '../OnboardingContainer';
 import { Mic, Volume2, RefreshCw } from 'lucide-react';
 
@@ -112,13 +113,8 @@ export function AudioTestStep() {
             } catch (systemError) {
               if (!active.current || run !== meterRun.current) return;
               window.sessionStorage.setItem(MACOS_SYSTEM_AUDIO_VERIFIED_KEY, 'false');
-              const message =
-                typeof systemError === 'string'
-                  ? systemError
-                  : systemError instanceof Error
-                    ? systemError.message
-                    : String(systemError);
-              setError(`Could not test native system audio: ${message}`);
+              logFailure('onboarding-system-audio-test', systemError);
+              setError(t('audioSystemTestFailed'));
             }
           }
           if (!active.current || run !== meterRun.current) return;
@@ -142,8 +138,8 @@ export function AudioTestStep() {
         } catch (e) {
           if (!active.current || run !== meterRun.current) return;
           monitoring.current = false;
-          const msg = typeof e === 'string' ? e : e instanceof Error ? e.message : String(e);
-          setError(msg || t('audioMetersFailed'));
+          logFailure('onboarding-audio-meters', e);
+          setError(t('audioMetersFailed'));
           setStatus('Failed');
         }
       });
@@ -186,8 +182,8 @@ export function AudioTestStep() {
       await startMeters(nextMic, nextSys);
     } catch (e) {
       if (!active.current || run !== deviceLoad.current) return;
-      const msg = typeof e === 'string' ? e : e instanceof Error ? e.message : String(e);
-      setError(msg || t('audioListDevicesFailed'));
+      logFailure('onboarding-audio-devices', e);
+      setError(t('audioListDevicesFailed'));
       setStatus('Failed');
     }
   }, [startMeters]);
@@ -267,7 +263,9 @@ export function AudioTestStep() {
       await new Promise((r) => setTimeout(r, 100));
       window.location.reload();
     } catch (e) {
-      console.error('Failed to complete onboarding:', e);
+      toastFailure(t('finishFailed'), 'onboarding-complete', e, {
+        description: t('retryDetail'),
+      });
     }
   };
 

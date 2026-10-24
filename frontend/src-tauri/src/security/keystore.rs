@@ -145,8 +145,16 @@ impl Keystore {
         let text = serde_json::to_string_pretty(self)
             .map_err(|error| KeystoreError::Corrupt(error.to_string()))?;
 
+        // The bytes reach the disk before the rename: NTFS can keep a rename
+        // across a power cut and lose the contents it pointed at, and this
+        // file is rewritten on every unlock attempt.
         let temporary = path.with_extension("json.tmp");
-        std::fs::write(&temporary, text)?;
+        {
+            use std::io::Write;
+            let mut file = std::fs::File::create(&temporary)?;
+            file.write_all(text.as_bytes())?;
+            file.sync_all()?;
+        }
         std::fs::rename(&temporary, path)?;
         Ok(())
     }
@@ -452,6 +460,27 @@ mod tests {
 
         assert_eq!(
             keystore.unlock_with_password("brand new one").unwrap().as_ref(),
+            dek.as_ref()
+        );
+    }
+
+    #[test]
+    fn the_code_used_for_a_reset_keeps_working_until_replaced() {
+        // What the window warns about after a reset: the sheet that was just
+        // taken out of the drawer still opens the archive. It is retired only
+        // by issuing a new one, never silently, so the owner is not left
+        // holding a dead printout before the new code is written down.
+        let (mut keystore, code, dek) = make();
+        keystore.reset_password_with_recovery(&code, "brand new one").unwrap();
+        assert_eq!(keystore.unlock_with_recovery(&code).unwrap().as_ref(), dek.as_ref());
+
+        let replacement = keystore.regenerate_recovery("brand new one").unwrap();
+        assert!(matches!(
+            keystore.unlock_with_recovery(&code).unwrap_err(),
+            KeystoreError::WrongRecoveryCode
+        ));
+        assert_eq!(
+            keystore.unlock_with_recovery(&replacement).unwrap().as_ref(),
             dek.as_ref()
         );
     }

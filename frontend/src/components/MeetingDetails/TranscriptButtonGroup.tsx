@@ -16,6 +16,8 @@ import { useConfig } from '@/contexts/ConfigContext';
 import { invoke } from '@tauri-apps/api/core';
 import { toast } from 'sonner';
 import { Dialog, DialogContent, DialogTitle } from '@/components/ui/dialog';
+import { toastFailure } from '@/lib/failure';
+import { speakerPassText, type SpeakerPassResult } from '@/lib/rerun-outcome';
 
 
 interface TranscriptButtonGroupProps {
@@ -150,23 +152,22 @@ export function TranscriptButtonGroup({
       description: t('identifyingSpeakersDescription'),
     });
     try {
-      const res = await invoke<{ num_speakers: number; labeled: number }>('diarize_meeting', {
+      const res = await invoke<SpeakerPassResult>('diarize_meeting', {
         meetingId,
         numSpeakers: expected ?? null,
         method: method ?? null,
       });
-      toast.success(
-        res.num_speakers > 0
-          ? t('speakersFound', { count: res.num_speakers })
-          : t('noSpeakersDetected'),
-        { id: toastId, description: t('segmentsLabeled', { count: res.labeled }) }
-      );
+      // What changed on screen, not what the pass went through.
+      const text = speakerPassText(res);
+      toast.success(t(text.title.key, text.title.values), {
+        id: toastId,
+        description: text.description ? t(text.description.key, text.description.values) : undefined,
+      });
       if (onRefetchTranscripts) {
         await onRefetchTranscripts();
       }
     } catch (e) {
-      const msg = e instanceof Error ? e.message : String(e);
-      toast.error(t('speakerIdentificationFailed'), { id: toastId, description: msg });
+      toastFailure(t('speakerIdentificationFailed'), 'speaker-identify', e, { id: toastId });
     } finally {
       setIsDiarizing(false);
     }
@@ -308,6 +309,7 @@ export function TranscriptButtonGroup({
             </div>
             </>
             )}
+            <p className="text-xs text-gray-500">{t('identifySpeakersKeeps')}</p>
           </div>
           <div className="mt-4 flex justify-end gap-2">
             <Button variant="outline" size="sm" onClick={() => setShowSpeakerDialog(false)}>

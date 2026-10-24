@@ -16,6 +16,7 @@ use anyhow::{anyhow, Result};
 use std::sync::Mutex;
 
 use super::models::DiarizationModels;
+use crate::onnx_threads::Role;
 
 /// Shortest segment worth embedding. Anything briefer is dominated by onset
 /// artefacts and produces an unreliable speaker vector.
@@ -104,7 +105,7 @@ pub fn start() -> Result<()> {
     if !super::models_available() {
         return Err(anyhow!("diarization models not installed"));
     }
-    let models = DiarizationModels::load(&super::diarization_model_dir())?;
+    let models = DiarizationModels::load(&super::diarization_model_dir(), Role::LiveSpeaker)?;
     let mut guard = ONLINE
         .lock()
         .map_err(|_| anyhow!("online diarizer lock poisoned"))?;

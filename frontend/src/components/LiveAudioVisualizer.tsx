@@ -109,7 +109,8 @@ export function LiveAudioVisualizer({
           const next = levelsRef.current.slice(1);
           next.push(level);
           levelsRef.current = next;
-          setLevels(next);
+          // 25 updates a second per source: not for a window nobody sees.
+          if (!document.hidden) setLevels(next);
 
           if (source === 'system' && payload.limiter_hit) {
             const now = performance.now();

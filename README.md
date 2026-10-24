@@ -6,11 +6,13 @@
 
 <p align="center"><b>Private recording, transcription and notes for conversations that must never leave your computer.</b></p>
 
+<p align="center"><b><a href="https://leyvanah.github.io/Talkkeeper/">Website</a></b> (in Russian) · <a href="https://github.com/leyvanah/Talkkeeper/releases/latest">Download for Windows</a></p>
+
 > **Коротко по-русски.** Talkkeeper записывает разговор, расшифровывает его и
 > помогает с заметками — целиком на вашем компьютере. Записи и текст зашифрованы
 > на диске, телеметрии нет, облако подключается только если вы сами этого
 > захотите. Интерфейс по умолчанию русский; распознавание русской речи — GigaAM.
-> Сборка для Windows 10/11.
+> Сборка для Windows 10/11. Сайт: <https://leyvanah.github.io/Talkkeeper/>.
 
 Talkkeeper is developed by [leyvanah](https://github.com/leyvanah). It started
 life as a fork of an open-source meeting recorder and has since been reshaped
@@ -110,8 +112,10 @@ keystore wherever you choose. Keep that copy *apart from the recordings*:
 together they allow offline guessing of the password, which is exactly why the
 app does not keep one beside them for you. When the uninstaller is asked to
 delete the app data, it asks separately — naming what will become unreadable —
-saves a copy of the key to `Documents\Talkkeeper-key-backup`, and refuses to wipe
-anything if that copy could not be written.
+then asks where to save a copy of the key (`Documents\Talkkeeper-key-backup` by
+default; pick a folder that is not synced to OneDrive or another cloud). Each
+copy gets its own name with the date and time, so an earlier one is never
+overwritten. Nothing is wiped if the copy could not be written.
 
 ### Quick unlock (Windows Hello, optional, off by default)
 
@@ -179,6 +183,9 @@ workflow, written out for a clean Windows machine and a fresh clone.
 - Rust, stable MSVC toolchain (`rustup default stable`).
 - **LLVM 18.1.8**, exactly: `LLVM-18.1.8-win64.exe` from the
   [LLVM releases](https://github.com/llvm/llvm-project/releases/tag/llvmorg-18.1.8).
+  The installer is not code-signed; check it before running it:
+  `certutil -hashfile LLVM-18.1.8-win64.exe SHA256` must print
+  `94af030060d88cc17e9f00ef1663ebdc1126b35e16bebdfa1e807984b70abd8f`.
   LLVM 19 and later break the generated whisper.cpp bindings. The build looks
   in `C:\Program Files\LLVM\bin`; if LLVM is elsewhere, set `LIBCLANG_PATH` to
   its `bin` folder.
@@ -285,3 +292,19 @@ by Zackriya Solutions. Thanks to both projects.
 
 MIT licensed — see [`LICENSE.md`](LICENSE.md). The original copyright notices are
 retained.
+
+### Third-party components
+
+The installer also carries programs and models under their own licenses; the
+installed app keeps their notices in `licenses\` in the program folder.
+
+| Component | License |
+|---|---|
+| FFmpeg 8.0.1 (`ffmpeg.exe`, gyan.dev build) | GPL-3.0 — license, build description and source: [`licenses/ffmpeg/`](frontend/src-tauri/licenses/ffmpeg/SOURCE.md) |
+| llama.cpp, whisper.cpp, ggml | MIT |
+| ONNX Runtime | MIT |
+| pyannote segmentation-3.0 | MIT |
+| WeSpeaker ResNet34, VBx transform (speaker models) | CC BY 4.0 |
+| Visual C++ Redistributable, DirectML; CUDA runtime and cuBLAS in the CUDA build | Microsoft / NVIDIA redistributable terms |
+
+Details and attributions: [`THIRD-PARTY-NOTICES.md`](frontend/src-tauri/licenses/THIRD-PARTY-NOTICES.md).

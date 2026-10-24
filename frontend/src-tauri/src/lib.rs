@@ -36,12 +36,16 @@ macro_rules! perf_trace {
 pub mod api;
 pub mod app_identity;
 pub mod audio;
+pub mod clipboard;
 pub mod config;
 pub mod console_utils;
 pub mod crash_report;
+pub mod disk_space;
 pub mod database;
 pub mod diarization;
+pub mod export_fonts;
 pub mod notifications;
+pub mod onnx_threads;
 pub mod ollama;
 pub mod onboarding;
 pub mod openai;
@@ -53,18 +57,22 @@ pub mod live_assistant;
 pub mod logging;
 pub mod meeting_notes;
 pub mod meeting_detection;
+pub mod microphone_access;
 pub mod minibar;
 pub mod minibar_dock;
 pub mod model_integrity;
+pub mod navigation_guard;
 pub mod network_policy;
 pub mod gigaam_engine;
 pub mod parakeet_engine;
 pub mod paths;
 pub mod privacy;
+pub mod quit;
 pub mod security;
 pub mod state;
 pub mod summary;
 pub mod tray;
+pub mod ui_language;
 pub mod utils;
 pub mod whisper_engine;
 
@@ -162,7 +170,6 @@ async fn start_recording<R: Runtime>(
             if let Err(e) = notifications::commands::show_recording_started_notification(
                 &app,
                 &notification_manager_state,
-                meeting_name.clone(),
             )
             .await
             {
@@ -317,28 +324,27 @@ async fn start_recording_with_devices_and_meeting<R: Runtime>(
     system_device_name: Option<String>,
     meeting_name: Option<String>,
 ) -> Result<(), String> {
-    log_info!("🚀 CALLED start_recording_with_devices_and_meeting - Mic: {:?}, System: {:?}, Meeting: {:?}",
-             mic_device_name, system_device_name, meeting_name);
-
-    // Clone meeting_name for notification use later
-    let meeting_name_for_notification = meeting_name.clone();
+    // Whether the meeting has a name, never the name: it outlives the
+    // meeting in the clear log (logging.rs).
+    log_info!("🚀 CALLED start_recording_with_devices_and_meeting - Mic: {:?}, System: {:?}, named: {}",
+             mic_device_name, system_device_name, meeting_name.is_some());
 
     // Call the recording module functions that support meeting names
     let recording_result = match (mic_device_name.clone(), system_device_name.clone()) {
         (None, None) => {
             log_info!(
-                "No devices specified, starting with defaults and meeting: {:?}",
-                meeting_name
+                "No devices specified, starting with defaults (named: {})",
+                meeting_name.is_some()
             );
             audio::recording_commands::start_recording_with_meeting_name(app.clone(), meeting_name)
                 .await
         }
         _ => {
             log_info!(
-                "Starting with specified devices: mic={:?}, system={:?}, meeting={:?}",
+                "Starting with specified devices: mic={:?}, system={:?}, named: {}",
                 mic_device_name,
                 system_device_name,
-                meeting_name
+                meeting_name.is_some()
             );
             audio::recording_commands::start_recording_with_devices_and_meeting(
                 app.clone(),
@@ -360,7 +366,6 @@ async fn start_recording_with_devices_and_meeting<R: Runtime>(
             if let Err(e) = notifications::commands::show_recording_started_notification(
                 &app,
                 &notification_manager_state,
-                meeting_name_for_notification.clone(),
             )
             .await
             {
@@ -397,6 +402,8 @@ pub fn get_language_preference_internal() -> Option<String> {
 pub fn run() {
     log::set_max_level(log::LevelFilter::Info);
     crash_report::install_panic_hook();
+    // Before any model loads: sessions built by dependencies take this pool.
+    onnx_threads::init_environment();
 
     // Settings kept under the inherited identifier move to this app's own,
     // before the stores are read and before the window's profile is created.
@@ -440,6 +447,8 @@ pub fn run() {
                 });
             },
         )
+        // Windows stay on the app's own pages; see `navigation_guard`.
+        .plugin(navigation_guard::init())
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_store::Builder::default().build())
         .plugin(tauri_plugin_dialog::init())
@@ -458,6 +467,9 @@ pub fn run() {
             log::info!("Application setup complete");
 
             // Initialize system tray
+            // The language the window last chose, so the tray is drawn in it
+            // before the window has loaded.
+            crate::ui_language::load();
             if let Err(e) = tray::create_tray(_app.handle()) {
                 log::error!("Failed to create system tray: {}", e);
             }
@@ -487,11 +499,6 @@ pub fn run() {
                     }
                 }
             });
-
-            // Portable build: one-time, non-destructive migration of any legacy
-            // data from the OS app-data dir into the install-local root. Runs
-            // BEFORE model/DB init so migrated models + history are picked up.
-            crate::paths::migrate_legacy_data(&_app.handle());
 
             // Read the keystore before anything can ask for the key, and start
             // watching for the archive being left open unattended.
@@ -598,7 +605,11 @@ pub fn run() {
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
                 if window.label() == "main" {
                     api.prevent_close();
-                    if let Err(e) = window.hide() {
+                    let hidden = match window.app_handle().get_webview_window("main") {
+                        Some(main) => tray::hide_main_window(&main),
+                        None => window.hide(),
+                    };
+                    if let Err(e) = hidden {
                         log::error!("Failed to hide main window on close request: {}", e);
                     } else {
                         log::info!("Main window hidden to tray on close request");
@@ -607,9 +618,12 @@ pub fn run() {
             }
         })
         .invoke_handler(tauri::generate_handler![
+            logging::log_frontend_failure,
             security::commands::security_status,
             network_policy::get_local_only_mode,
             network_policy::set_local_only_mode,
+            ui_language::set_ui_language,
+            clipboard::copy_text_privately,
             security::commands::security_setup,
             security::commands::security_unlock,
             security::commands::security_unlock_with_recovery,
@@ -618,6 +632,7 @@ pub fn run() {
             library_export::commands::export_library_readable,
             library_export::commands::export_library_package,
             library_export::commands::import_library_package,
+            export_fonts::pdf_export_font,
             meeting_notes::commands::recording_note_add,
             meeting_notes::commands::recording_note_edit,
             meeting_notes::commands::recording_note_remove,
@@ -650,6 +665,8 @@ pub fn run() {
             stop_recording,
             is_recording,
             get_transcription_status,
+            quit::stop_recording_and_quit,
+            quit::recording_save_settled,
             whisper_engine::commands::whisper_init,
             whisper_engine::commands::whisper_get_available_models,
             whisper_engine::commands::whisper_load_model,
@@ -658,7 +675,6 @@ pub fn run() {
             whisper_engine::commands::force_unload_stt_models,
             whisper_engine::commands::force_unload_all_models,
             whisper_engine::commands::get_local_stack_status,
-            whisper_engine::commands::get_cuda_reconfiguration_status,
             whisper_engine::commands::whisper_has_available_models,
             whisper_engine::commands::whisper_validate_model_ready,
             whisper_engine::commands::whisper_transcribe_audio,
@@ -734,11 +750,15 @@ pub fn run() {
             database::repositories::person::api_global_search,
             database::repositories::person::api_get_person_profile,
             database::repositories::person::api_update_person_notes,
+            database::repositories::person::api_delete_person,
             database::repositories::client::api_list_clients,
             database::repositories::client::api_create_client,
             database::repositories::client::api_rename_client,
+            database::repositories::client::api_client_deletion_preview,
             database::repositories::client::api_delete_client,
             database::repositories::client::api_set_meeting_client,
+            database::repositories::post_call::api_set_post_call_pending,
+            database::repositories::post_call::api_list_post_call_pending,
             database::repositories::speaker_role::api_get_speaker_sides,
             database::repositories::speaker_role::api_assign_speaker_role,
             database::repositories::transcript_edit::api_edit_transcript_line,
@@ -754,6 +774,7 @@ pub fn run() {
             diarization::diarization_models_available,
             diarization::diarization_model_directory,
             diarization::diarization_download_size,
+            disk_space::check_model_download_space,
             diarization::download_diarization_models,
             diarization::diarize_meeting,
             diarization::diarization_has_device_tracks,
@@ -810,6 +831,8 @@ pub fn run() {
             summary::template_commands::api_is_custom_template,
             live_assistant::ask_live_assistant,
             live_assistant::ask_person,
+            database::repositories::assistant_prompt::get_person_overview_prompt,
+            database::repositories::assistant_prompt::set_person_overview_prompt,
             live_assistant::ollama_embed,
             // Built-in AI commands
             summary::summary_engine::commands::builtin_ai_list_models,
@@ -825,7 +848,7 @@ pub fn run() {
             audio::recording_preferences::set_recording_preferences,
             audio::recording_preferences::get_default_recordings_folder_path,
             audio::recording_preferences::open_recordings_folder,
-            audio::recording_preferences::discard_recording_folder,
+            audio::recording_preferences::discard_short_recording,
             audio::recording_preferences::select_recording_folder,
             audio::recording_preferences::get_current_audio_backend,
             audio::recording_preferences::set_audio_backend,
@@ -839,13 +862,8 @@ pub fn run() {
             // System audio capture commands
             // Screen Recording permission commands
             audio::permissions::trigger_system_audio_permission_command,
-            // Database import commands
+            // First-launch database commands
             database::commands::check_first_launch,
-            database::commands::select_legacy_database_path,
-            database::commands::detect_legacy_database,
-            database::commands::check_default_legacy_database,
-            database::commands::check_homebrew_database,
-            database::commands::import_and_initialize_database,
             database::commands::initialize_fresh_database,
             // Database and Models path commands
             database::commands::get_database_directory,
@@ -858,6 +876,8 @@ pub fn run() {
             // System settings commands
             #[cfg(target_os = "macos")]
             utils::open_system_settings,
+            microphone_access::microphone_access_blocked,
+            microphone_access::open_microphone_privacy_settings,
             // Retranscription commands
             audio::retranscription::start_retranscription_command,
             audio::retranscription::cancel_retranscription_command,

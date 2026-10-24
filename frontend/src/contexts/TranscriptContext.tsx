@@ -7,6 +7,8 @@ import { toast } from 'sonner';
 import { useRecordingState } from './RecordingStateContext';
 import { transcriptService } from '@/services/transcriptService';
 import { recordingService } from '@/services/recordingService';
+import { copyText } from '@/lib/private-clipboard';
+import { toastFailure } from '@/lib/failure';
 
 interface TranscriptContextType {
   transcripts: Transcript[];
@@ -264,8 +266,9 @@ export function TranscriptProvider({ children }: { children: ReactNode }) {
         });
         console.log('✅ MAIN transcript listener setup complete');
       } catch (error) {
-        console.error('❌ Failed to setup MAIN transcript listener:', error);
-        alert('Failed to setup transcript listener. Check console for details.');
+        toastFailure(t('transcriptListenerFailed'), 'transcript-listener', error, {
+          description: t('transcriptListenerFailedDetail'),
+        });
       }
     };
 
@@ -396,9 +399,9 @@ export function TranscriptProvider({ children }: { children: ReactNode }) {
     const fullTranscript = transcripts
       .map(t => `${formatTime(t.audio_start_time)} ${t.text}`)
       .join('\n');
-    navigator.clipboard.writeText(fullTranscript);
-
-    toast.success(t('transcriptCopied'));
+    copyText(fullTranscript)
+      .then(() => toast.success(t('transcriptCopied')))
+      .catch((error) => toastFailure(t('copyTranscriptFailed'), 'transcript-copy', error));
   }, [transcripts, t]);
 
   // Force flush buffer (for final transcript processing)

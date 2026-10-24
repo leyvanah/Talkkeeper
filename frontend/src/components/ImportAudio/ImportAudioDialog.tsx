@@ -97,8 +97,17 @@ export function ImportAudioDialog({
     resetSelection,
   } = useTranscriptionModels(transcriptModelConfig);
 
+  // The file being imported, by name only, for the note that the original was
+  // left where it was. Set when the import starts; the hook that reports
+  // completion is created after this callback, so it cannot be read from there.
+  const importedFileNameRef = useRef<string | null>(null);
+
   const handleImportComplete = useCallback((result: ImportResult) => {
-    toast.success(t('importComplete', { count: result.segments_count }));
+    // The archive holds an encrypted copy; the original file is not touched.
+    const original = importedFileNameRef.current;
+    toast.success(t('importComplete', { count: result.segments_count }), {
+      description: original ? t('importOriginalKept', { name: original }) : undefined,
+    });
 
     // Refresh meetings list then navigate to the imported meeting
     refetchMeetings();
@@ -107,9 +116,11 @@ export function ImportAudioDialog({
     router.push(`/meeting-details?id=${result.meeting_id}`);
   }, [router, refetchMeetings, onComplete, onOpenChange]);
 
-  const handleImportError = useCallback((error: string) => {
-    toast.error(t('importFailed'), { description: error });
-  }, []);
+  // The hook has logged the cause and the dialog shows what to do; the toast
+  // only says it failed, for when the dialog is out of sight.
+  const handleImportError = useCallback(() => {
+    toast.error(t('importFailed'));
+  }, [t]);
 
   const {
     status,
@@ -190,6 +201,7 @@ export function ImportAudioDialog({
   const handleStartImport = async () => {
     if (!fileInfo) return;
 
+    importedFileNameRef.current = fileInfo.path.split(/[\\/]/).pop() || null;
     await startImport(
       fileInfo.path,
       title || fileInfo.filename,

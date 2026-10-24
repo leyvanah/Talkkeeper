@@ -1,0 +1,66 @@
+/* Talkkeeper palette: frontend/src/app/globals.css. Font: Source Sans 3 from the local application build. */
+@font-face{font-family:'Source Sans 3';font-style:normal;font-weight:400 700;font-display:swap;src:url(/fonts/084282eba306c257-s.woff2) format("woff2");unicode-range:u+0460-052f,u+1c80-1c8a,u+20b4,u+2de0-2dff,u+a640-a69f,u+fe2e-fe2f}
+@font-face{font-family:'Source Sans 3';font-style:normal;font-weight:400 700;font-display:swap;src:url(/fonts/1e377d93cbdd6b44-s.woff2) format("woff2");unicode-range:u+0301,u+0400-045f,u+0490-0491,u+04b0-04b1,u+2116}
+@font-face{font-family:'Source Sans 3';font-style:normal;font-weight:400 700;font-display:swap;src:url(/fonts/ec1d0aa2d2fbc083-s.woff2) format("woff2");unicode-range:u+1f??}
+@font-face{font-family:'Source Sans 3';font-style:normal;font-weight:400 700;font-display:swap;src:url(/fonts/f1dd23950e6cd390-s.woff2) format("woff2");unicode-range:u+0370-0377,u+037a-037f,u+0384-038a,u+038c,u+038e-03a1,u+03a3-03ff}
+@font-face{font-family:'Source Sans 3';font-style:normal;font-weight:400 700;font-display:swap;src:url(/fonts/0c7826ffb3acea36-s.woff2) format("woff2");unicode-range:u+0102-0103,u+0110-0111,u+0128-0129,u+0168-0169,u+01a0-01a1,u+01af-01b0,u+0300-0301,u+0303-0304,u+0308-0309,u+0323,u+0329,u+1ea0-1ef9,u+20ab}
+@font-face{font-family:'Source Sans 3';font-style:normal;font-weight:400 700;font-display:swap;src:url(/fonts/b6a6f0b43d027304-s.woff2) format("woff2");unicode-range:u+0100-02ba,u+02bd-02c5,u+02c7-02cc,u+02ce-02d7,u+02dd-02ff,u+0304,u+0308,u+0329,u+1d00-1dbf,u+1e00-1e9f,u+1ef2-1eff,u+2020,u+20a0-20ab,u+20ad-20c0,u+2113,u+2c60-2c7f,u+a720-a7ff}
+@font-face{font-family:'Source Sans 3';font-style:normal;font-weight:400 700;font-display:swap;src:url(/fonts/692df4da22e71021-s.p.woff2) format("woff2");unicode-range:u+00??,u+0131,u+0152-0153,u+02bb-02bc,u+02c6,u+02da,u+02dc,u+0304,u+0308,u+0329,u+2000-206f,u+20ac,u+2122,u+2191,u+2193,u+2212,u+2215,u+feff,u+fffd}
+:root {
+--af-bg: #f6f8fb;
+  --af-panel: #ffffff;
+  --af-panel-2: #eef3f8;
+  --af-hover: #e6edf5;
+  --af-active: #dce7f3;
+
+  --af-border: #dce3ec;
+  --af-border-strong: #c2cedd;
+
+  --af-text: #172033;
+  --af-text-2: #475569;
+  --af-text-3: #64748b;
+
+  --af-accent: #2563eb;
+  --af-accent-soft: #e7efff;
+  --af-accent-contrast: #ffffff;
+
+  --af-shadow-sm: 0 1px 2px rgba(15, 23, 42, 0.08);
+  --af-shadow-md: 0 2px 6px rgba(15, 23, 42, 0.10), 0 1px 2px rgba(15, 23, 42, 0.07);
+  --af-shadow-lg: 0 12px 32px rgba(15, 23, 42, 0.16), 0 2px 8px rgba(15, 23, 42, 0.08);
+
+  --af-radius: 12px;
+  --af-radius-sm: 9px;
+color-scheme:light;
+}
+:root[data-theme="dark"] {
+--af-bg: #000000;
+  --af-panel: #0a0a0a;
+  --af-panel-2: #141414;
+  --af-hover: rgba(255, 255, 255, 0.06);
+  --af-active: rgba(255, 255, 255, 0.12);
+
+
+  --af-border: #444444;
+  --af-border-strong: #5c5c5c;
+
+  --af-text: #ffffff;
+  --af-text-2: #bdbdbd;
+  --af-text-3: #8a8a8a;
+
+  --af-accent: #ffffff;
+  --af-accent-soft: rgba(255, 255, 255, 0.12);
+  --af-accent-contrast: #000000;
+
+
+  --af-shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.30);
+  --af-shadow-md: 0 2px 6px rgba(0, 0, 0, 0.32), 0 1px 2px rgba(0, 0, 0, 0.28);
+  --af-shadow-lg: 0 12px 32px rgba(0, 0, 0, 0.42), 0 2px 8px rgba(0, 0, 0, 0.30);
+color-scheme:dark;
+}
+:root {
+--bg:var(--af-bg);--surface:var(--af-panel);--soft:var(--af-panel-2);
+--ink:var(--af-text);--muted:var(--af-text-2);--line:var(--af-border);
+--accent:var(--af-accent);--on-accent:var(--af-accent-contrast);
+font-family:'Source Sans 3','Segoe UI',Arial,sans-serif;
+color:var(--ink);background:var(--bg);font-synthesis:none;
+}

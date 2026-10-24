@@ -50,6 +50,11 @@ foreach ($name in @("DirectML.dll", "cublas64_13.dll", "cublasLt64_13.dll", "cud
 Get-ChildItem (Join-Path $tauri "templates") -Filter "*.json" | Sort-Object Name | ForEach-Object {
   Add-ProgressFile "templates\$($_.Name)" $_.FullName
 }
+foreach ($dir in @("licenses", "licenses\ffmpeg")) {
+  Get-ChildItem (Join-Path $tauri $dir) -File -ErrorAction SilentlyContinue | Sort-Object Name | ForEach-Object {
+    Add-ProgressFile "$dir\$($_.Name)" $_.FullName
+  }
+}
 Add-ProgressFile "ffmpeg.exe" (Join-Path $tauri "binaries\ffmpeg-x86_64-pc-windows-msvc.exe")
 Add-ProgressFile "llama-helper.exe" (Join-Path $tauri "binaries\llama-helper-x86_64-pc-windows-msvc.exe")
 $progressEntries = ($progressFiles | ForEach-Object {

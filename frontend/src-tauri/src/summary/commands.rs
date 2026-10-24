@@ -285,11 +285,11 @@ pub async fn api_get_summary<R: Runtime>(
             };
 
             log_info!(
-                "Summary status for {}: {}, has_data: {}, meeting_name: {:?}",
+                "Summary status for {}: {}, has_data: {}, has meeting name: {}",
                 meeting_id,
                 status,
                 response.data.is_some(),
-                response.meeting_name
+                response.meeting_name.is_some()
             );
             Ok(response)
         }
@@ -421,6 +421,9 @@ pub async fn api_process_transcript<R: Runtime>(
     let process_id_clone = process_id.clone();
     tauri::async_runtime::spawn(async move {
         let _busy = crate::security::session::busy();
+        // Loading a recognition model would otherwise stop the summary model
+        // under it; see `audio::common::prepare_for_stt`.
+        let _writing = crate::summary::summary_engine::client::summary_writing();
         SummaryService::process_transcript_background(
             app,
             pool,

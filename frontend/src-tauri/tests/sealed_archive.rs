@@ -17,6 +17,9 @@ use std::sync::Arc;
 use app_lib::api::TranscriptSegment;
 use app_lib::database::field_encryption;
 use app_lib::database::fields;
+use app_lib::database::repositories::assistant_prompt::{
+    AssistantPromptsRepository, PERSON_OVERVIEW,
+};
 use app_lib::database::repositories::client::ClientsRepository;
 use app_lib::database::repositories::meeting::MeetingsRepository;
 use app_lib::database::repositories::person::PeopleRepository;
@@ -71,8 +74,8 @@ async fn with_schema(pool: SqlitePool) -> SqlitePool {
          CREATE TABLE summary_processes (meeting_id TEXT PRIMARY KEY, result TEXT, \n             result_backup TEXT); \
          CREATE TABLE transcript_chunks (meeting_id TEXT PRIMARY KEY, meeting_name TEXT, \n             transcript_text TEXT NOT NULL DEFAULT ''); \
          CREATE TABLE people (id TEXT PRIMARY KEY, display_name TEXT NOT NULL, \
-             normalized_name TEXT NOT NULL UNIQUE, notes TEXT, created_at TEXT NOT NULL, \
-             updated_at TEXT NOT NULL); \
+             normalized_name TEXT NOT NULL, notes TEXT, created_at TEXT NOT NULL, \
+             updated_at TEXT NOT NULL, client_id TEXT, UNIQUE (client_id, normalized_name)); \
          CREATE TABLE person_speakers (person_id TEXT NOT NULL, meeting_id TEXT NOT NULL, \
              speaker_label TEXT NOT NULL, UNIQUE(meeting_id, speaker_label)); \
          CREATE TABLE meeting_speaker_roles (meeting_id TEXT NOT NULL, \
@@ -106,6 +109,10 @@ async fn with_schema(pool: SqlitePool) -> SqlitePool {
         .await
         .unwrap();
     sqlx::raw_sql(include_str!("../migrations/20251223000000_add_meeting_notes.sql"))
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::raw_sql(include_str!("../migrations/20261007010000_add_assistant_prompts.sql"))
         .execute(&pool)
         .await
         .unwrap();
@@ -237,6 +244,54 @@ async fn search_still_finds_a_sealed_word() {
         .unwrap();
     assert_eq!(by_speaker.len(), 1);
     assert_eq!(by_speaker[0].speaker.as_deref(), Some("Анна"));
+}
+
+#[tokio::test]
+async fn two_people_of_the_same_name_are_told_apart_by_their_client() {
+    // A person is (client, name). Without the client a search for "Тест А"
+    // shows two identical rows, and a note can go to the wrong profile.
+    let pool = archive().await;
+    let clients = [("Клиент 1", "Первая"), ("Клиент 2", "Вторая")];
+    for (client, title) in clients {
+        let client = ClientsRepository::create(&pool, client).await.unwrap();
+        let meeting_id = TranscriptsRepository::save_transcript(
+            &pool,
+            title,
+            &[segment("s1", "синтетическая реплика", "Тест А", 0.0)],
+            &[],
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+        ClientsRepository::assign_meeting(&pool, &meeting_id, Some(&client.id))
+            .await
+            .unwrap();
+    }
+
+    let people: Vec<_> = PeopleRepository::global_search(&pool, "тест а", None)
+        .await
+        .unwrap()
+        .into_iter()
+        .filter(|result| result.kind == "person")
+        .collect();
+    let mut rows: Vec<(&str, Option<&str>)> = people
+        .iter()
+        .map(|result| (result.title.as_str(), result.client_display_name.as_deref()))
+        .collect();
+    rows.sort();
+    assert_eq!(
+        rows,
+        vec![("Тест А", Some("Клиент 1")), ("Тест А", Some("Клиент 2"))]
+    );
+
+    // Each row opens the profile of its own client's person.
+    for result in &people {
+        let profile = PeopleRepository::get_profile(&pool, &result.id)
+            .await
+            .unwrap();
+        assert_eq!(profile.client_display_name, result.client_display_name);
+    }
 }
 
 #[tokio::test]
@@ -622,6 +677,81 @@ async fn the_crash_journal_holds_no_words() {
     assert!(!raw.contains("бюджете"));
 }
 
+#[tokio::test]
+async fn one_name_at_two_clients_is_two_sealed_people() {
+    // Linking runs on sealed speaker labels and a blind name index; with a key
+    // the two clients' "Тест А" must still come out as two people, and the
+    // name must not be readable in either row.
+    let pool = archive().await;
+    let first = ClientsRepository::create(&pool, "Клиент 1").await.unwrap();
+    let second = ClientsRepository::create(&pool, "Клиент 2").await.unwrap();
+    let mut meetings = Vec::new();
+    for title in ["Первая", "Вторая"] {
+        let id = TranscriptsRepository::save_transcript(
+            &pool,
+            title,
+            &[segment("s1", "реплика", "Тест А", 0.0)],
+            &[],
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+        meetings.push(id);
+    }
+
+    ClientsRepository::assign_meeting(&pool, &meetings[0], Some(&first.id))
+        .await
+        .unwrap();
+    ClientsRepository::assign_meeting(&pool, &meetings[1], Some(&second.id))
+        .await
+        .unwrap();
+
+    let people: Vec<(String, String)> =
+        sqlx::query_as("SELECT id, display_name FROM people ORDER BY client_id")
+            .fetch_all(&pool)
+            .await
+            .unwrap();
+    assert_eq!(people.len(), 2);
+    for (id, stored) in &people {
+        assert!(!stored.contains("Тест"), "a person's name is readable");
+        let profile = PeopleRepository::get_profile(&pool, id).await.unwrap();
+        assert_eq!(profile.display_name, "Тест А");
+        assert_eq!(profile.meeting_count, 1);
+    }
+
+    // Brought under the first client, the second meeting joins that person.
+    ClientsRepository::assign_meeting(&pool, &meetings[1], Some(&first.id))
+        .await
+        .unwrap();
+    let people: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM people")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(people, 1);
+}
+
+#[tokio::test]
+async fn the_owners_overview_request_is_sealed() {
+    let pool = archive().await;
+    AssistantPromptsRepository::set(&pool, PERSON_OVERVIEW, Some("Что повторяется у Квазарова"))
+        .await
+        .unwrap();
+
+    let stored: String = sqlx::query_scalar("SELECT prompt FROM assistant_prompts")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert!(!stored.contains("Квазаров"), "the request is readable in the database");
+    assert_eq!(
+        AssistantPromptsRepository::get(&pool, PERSON_OVERVIEW)
+            .await
+            .unwrap()
+            .as_deref(),
+        Some("Что повторяется у Квазарова")
+    );
+}
+
 /// The vocabulary and every credential column, read back as raw SQL.
 async fn every_stored_setting(pool: &SqlitePool) -> String {
     let mut dump = String::new();
@@ -793,4 +923,80 @@ async fn settings_written_before_this_convert_and_convert_back() {
     for secret in ["Анна Петрова", "Пульсарова", "openai-key-for-tests", "stt-token-for-tests"] {
         assert!(stored.contains(secret), "{secret:?} did not come back");
     }
+}
+
+/// A meeting with one line, already sealed, and a pre-encryption copy beside
+/// it with its journal — what a version up to 0.2.34 left on disk.
+async fn sealed_archive_with_an_old_copy(
+    folder: &std::path::Path,
+) -> (SqlitePool, std::path::PathBuf, [std::path::PathBuf; 2]) {
+    let pool = archive_in(folder).await;
+    sqlx::raw_sql(
+        "INSERT INTO meetings (id, title, created_at, updated_at) \
+             VALUES ('m1', 'Встреча в четверг', '2026-09-01T10:00:00Z', '2026-09-01T10:00:00Z'); \
+         INSERT INTO transcripts (id, meeting_id, transcript, timestamp, speaker) \
+             VALUES ('t1', 'm1', 'Секретная фраза', '00:00', 'Анна');",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    let backup = folder.join("meeting_minutes.before-encryption.sqlite");
+    let journal = [
+        backup.with_extension("sqlite-wal"),
+        backup.with_extension("sqlite-shm"),
+    ];
+    // Still in the clear: the sealing pass is to come, and it owns the copy.
+    std::fs::write(&backup, b"copy").unwrap();
+    assert!(!app_lib::security::commands::discard_stale_backup_at(&pool, &backup)
+        .await
+        .unwrap());
+    assert!(backup.exists(), "the copy went before the archive was sealed");
+
+    field_encryption::convert_all(&pool, field_encryption::Direction::Encrypt)
+        .await
+        .unwrap();
+    for path in &journal {
+        std::fs::write(path, b"journal").unwrap();
+    }
+    (pool, backup, journal)
+}
+
+#[tokio::test]
+async fn an_old_copy_goes_once_the_sealed_archive_is_opened() {
+    use app_lib::security::commands::discard_stale_backup_at;
+
+    open_the_archive();
+    let folder = tempfile::tempdir().unwrap();
+    let (pool, backup, journal) = sealed_archive_with_an_old_copy(folder.path()).await;
+
+    assert!(discard_stale_backup_at(&pool, &backup).await.unwrap());
+
+    assert!(!backup.exists(), "the plaintext copy outlived a check that passed");
+    for path in &journal {
+        assert!(!path.exists(), "{path:?} outlived the copy");
+    }
+    // Nothing left to do on the next unlock.
+    assert!(!discard_stale_backup_at(&pool, &backup).await.unwrap());
+}
+
+#[tokio::test]
+async fn an_old_copy_stays_when_a_sealed_value_does_not_open() {
+    use app_lib::security::commands::discard_stale_backup_at;
+
+    open_the_archive();
+    let folder = tempfile::tempdir().unwrap();
+    let (pool, backup, _) = sealed_archive_with_an_old_copy(folder.path()).await;
+    // Sealed under another column: marked as sealed, fails to open here.
+    let wrong = fields::seal(fields::TRANSCRIPT_TEXT, "Встреча в четверг").unwrap();
+    sqlx::query("UPDATE meetings SET title = ?")
+        .bind(wrong)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    let error = discard_stale_backup_at(&pool, &backup).await.unwrap_err();
+
+    assert_eq!(error.code, "fieldVerificationFailed");
+    assert!(backup.exists(), "the copy went although a value does not open");
 }

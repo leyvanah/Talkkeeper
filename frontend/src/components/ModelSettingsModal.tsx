@@ -11,10 +11,13 @@ import { useConfig } from '@/contexts/ConfigContext';
 import {
   Select,
   SelectContent,
+  SelectGroup,
   SelectItem,
+  SelectLabel,
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select';
+import { isCloudProvider, sendsOffThisComputer } from '@/lib/cloud-providers';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Switch } from '@/components/ui/switch';
@@ -30,6 +33,15 @@ import {
 } from '@/components/ui/command';
 import { cn, isOllamaNotInstalledError } from '@/lib/utils';
 import { toast } from 'sonner';
+import { logFailure, toastFailure } from '@/lib/failure';
+
+/**
+ * The text "Ollama is not installed" is recognised from. Only a JavaScript
+ * error is looked at, as before: a command rejects with a string, and its
+ * "connection refused" is the same for an Ollama that is installed but not
+ * running, which the "not installed" prompt would misdescribe.
+ */
+const ollamaReason = (err: unknown) => (err instanceof Error ? err.message : '');
 
 export interface ModelConfig {
   provider: 'ollama' | 'groq' | 'claude' | 'openai' | 'openrouter' | 'builtin-ai' | 'custom-openai';
@@ -146,7 +158,6 @@ export function ModelSettingsModal({
   const hasLoadedInitialConfig = useRef<boolean>(false);
   const [autoGenerateEnabled, setAutoGenerateEnabled] = useState<boolean>(true); // Default to true
   const [searchQuery, setSearchQuery] = useState<string>('');
-  const [isEndpointSectionCollapsed, setIsEndpointSectionCollapsed] = useState<boolean>(true); // Collapsed by default
   const [ollamaNotInstalled, setOllamaNotInstalled] = useState<boolean>(false); // Track if Ollama is not installed
 
   // Custom OpenAI state
@@ -158,6 +169,26 @@ export function ModelSettingsModal({
   const [customTopP, setCustomTopP] = useState<string>(modelConfig.topP?.toString() || '');
   const [isCustomOpenAIAdvancedOpen, setIsCustomOpenAIAdvancedOpen] = useState<boolean>(false);
   const [isTestingConnection, setIsTestingConnection] = useState<boolean>(false);
+
+  // "This computer only" (Settings → Protection). Unknown until read; cloud
+  // providers are offered only once it is known to be off.
+  const [localOnly, setLocalOnly] = useState<boolean | null>(null);
+  useEffect(() => {
+    invoke<boolean>('get_local_only_mode')
+      .then(setLocalOnly)
+      .catch((failure) => {
+        console.error('[ModelSettings] Could not read local-only mode:', failure);
+        setLocalOnly(true);
+      });
+  }, []);
+  const cloudBlocked = localOnly !== false;
+  const currentEndpoint =
+    modelConfig.provider === 'ollama'
+      ? ollamaEndpoint
+      : modelConfig.provider === 'custom-openai'
+        ? customOpenAIEndpoint
+        : null;
+  const leavesThisComputer = sendsOffThisComputer(modelConfig.provider, currentEndpoint);
 
   // Combobox state
   const [modelComboboxOpen, setModelComboboxOpen] = useState<boolean>(false);
@@ -422,10 +453,9 @@ export function ModelSettingsModal({
 
     // Validate URL if provided
     if (trimmedEndpoint && !validateOllamaEndpoint(trimmedEndpoint)) {
-      const errorMsg = t('invalidOllamaEndpoint');
-      setError(errorMsg);
+      setError(t('invalidOllamaEndpoint'));
       if (!silent) {
-        toast.error(errorMsg);
+        toast.error(t('invalidOllamaEndpoint'));
       }
       return;
     }
@@ -445,20 +475,17 @@ export function ModelSettingsModal({
       // Successfully fetched models, Ollama is installed
       setOllamaNotInstalled(false);
     } catch (err) {
-      const errorMsg = err instanceof Error ? err.message : t('loadOllamaModelsFailed');
-      setError(errorMsg);
+      setError(t('loadOllamaModelsFailed'));
 
-      // Check if error indicates Ollama is not installed
-      if (isOllamaNotInstalledError(errorMsg)) {
-        setOllamaNotInstalled(true);
-      } else {
-        setOllamaNotInstalled(false);
-      }
+      setOllamaNotInstalled(isOllamaNotInstalledError(ollamaReason(err)));
 
+      // The silent load runs whenever the window opens; without Ollama it
+      // fails every time and is not worth a line in the log.
       if (!silent) {
-        toast.error(errorMsg);
+        toastFailure(t('loadOllamaModelsFailed'), 'ollama-models-load', err);
+      } else {
+        console.error('[ollama-models-load]', err);
       }
-      console.error('Error loading models:', err);
     } finally {
       setIsLoadingOllama(false);
     }
@@ -498,10 +525,8 @@ export function ModelSettingsModal({
       const data = (await invoke('get_openrouter_models')) as OpenRouterModel[];
       setOpenRouterModels(data);
     } catch (err) {
-      console.error('Error loading OpenRouter models:', err);
-      setOpenRouterError(
-        err instanceof Error ? err.message : t('loadOpenRouterModelsFailed')
-      );
+      logFailure('openrouter-models-load', err);
+      setOpenRouterError(t('loadOpenRouterModelsFailed'));
     } finally {
       setIsLoadingOpenRouter(false);
     }
@@ -688,8 +713,7 @@ export function ModelSettingsModal({
       });
       toast.success(result.message || t('connectionSuccessful'));
     } catch (err) {
-      const errorMsg = err instanceof Error ? err.message : String(err);
-      toast.error(errorMsg);
+      toastFailure(t('connectionFailed'), 'custom-openai-test', err);
     } finally {
       setIsTestingConnection(false);
     }
@@ -730,11 +754,10 @@ export function ModelSettingsModal({
       // Note: Model is NOT auto-selected - user must explicitly choose it
       // This respects the database as the single source of truth
     } catch (err) {
-      const errorMsg = err instanceof Error ? err.message : t('downloadModelFailed');
-      console.error('Error downloading model:', err);
+      logFailure('ollama-model-download', err);
 
       // Check if Ollama is not installed and show appropriate error
-      if (isOllamaNotInstalledError(errorMsg)) {
+      if (isOllamaNotInstalledError(ollamaReason(err))) {
         toast.error(t('ollamaNotInstalledTitle'), {
           description: t('ollamaNotInstalledForDownload'),
           duration: 7000,
@@ -762,9 +785,7 @@ export function ModelSettingsModal({
       toast.success(t('modelDeleted', { model: modelName }));
       await fetchOllamaModels(true); // Refresh list
     } catch (err) {
-      const errorMsg = err instanceof Error ? err.message : t('deleteModelFailed');
-      toast.error(errorMsg);
-      console.error('Error deleting model:', err);
+      toastFailure(t('deleteModelFailed'), 'ollama-model-delete', err);
     }
   };
 
@@ -807,13 +828,16 @@ export function ModelSettingsModal({
 
   return (
     <div>
-      <div className="flex justify-between items-center mb-4">
-        <h3 className="text-lg font-semibold">{t('modelSettingsTitle')}</h3>
-      </div>
+      {/* In Settings the card around this form already has the heading. */}
+      {layout === 'dialog' && (
+        <div className="flex justify-between items-center mb-4">
+          <h3 className="text-lg font-semibold">{t('modelSettingsTitle')}</h3>
+        </div>
+      )}
 
       <div className="space-y-4">
         <div>
-          <Label>{t('summarizationModel')}</Label>
+          <Label>{t('providerAndModel')}</Label>
           <div className="flex space-x-2 mt-1">
             <Select
               value={modelConfig.provider}
@@ -878,13 +902,23 @@ export function ModelSettingsModal({
                 <SelectValue placeholder={t('selectProvider')} />
               </SelectTrigger>
               <SelectContent className="max-h-64 overflow-y-auto">
-                <SelectItem value="builtin-ai">{t('providerBuiltinAiLong')}</SelectItem>
-                <SelectItem value="claude">Claude</SelectItem>
-                <SelectItem value="custom-openai">{t('providerCustomOpenAI')}</SelectItem>
-                <SelectItem value="groq">Groq</SelectItem>
-                <SelectItem value="ollama">Ollama</SelectItem>
-                <SelectItem value="openai">OpenAI</SelectItem>
-                <SelectItem value="openrouter">OpenRouter</SelectItem>
+                <SelectGroup>
+                  <SelectLabel>{t('providerGroupLocal')}</SelectLabel>
+                  <SelectItem value="builtin-ai">{t('providerBuiltinAiLong')}</SelectItem>
+                  <SelectItem value="ollama">Ollama</SelectItem>
+                  <SelectItem value="custom-openai">{t('providerCustomOpenAI')}</SelectItem>
+                </SelectGroup>
+                <SelectGroup>
+                  <SelectLabel>
+                    {cloudBlocked ? t('providerGroupCloudBlocked') : t('providerGroupCloud')}
+                  </SelectLabel>
+                  {/* Still shown while blocked, so the owner sees what exists
+                      and why it cannot be picked. */}
+                  <SelectItem value="claude" disabled={cloudBlocked}>Claude</SelectItem>
+                  <SelectItem value="groq" disabled={cloudBlocked}>Groq</SelectItem>
+                  <SelectItem value="openai" disabled={cloudBlocked}>OpenAI</SelectItem>
+                  <SelectItem value="openrouter" disabled={cloudBlocked}>OpenRouter</SelectItem>
+                </SelectGroup>
               </SelectContent>
             </Select>
 
@@ -946,6 +980,34 @@ export function ModelSettingsModal({
               </Popover>
             )}
           </div>
+          {/* Where the meeting text goes with this choice, said plainly. */}
+          {leavesThisComputer && localOnly !== null && (
+            <p className="mt-2 text-xs text-amber-600" role="note">
+              {isCloudProvider(modelConfig.provider)
+                ? localOnly
+                  ? t('cloudProviderBlocked')
+                  : t('cloudProviderNotice')
+                : localOnly
+                  ? t('remoteEndpointBlocked')
+                  : t('remoteEndpointNotice')}
+            </p>
+          )}
+          {/* A failed load leaves the model list empty; say so and let the
+              owner try again (choosing the provider again does not reload). */}
+          {modelConfig.provider === 'openrouter' && openRouterError && !isLoadingOpenRouter && (
+            <div className="mt-2 flex items-center gap-2 text-xs text-red-600" role="alert">
+              <span>{openRouterError}</span>
+              <Button
+                type="button"
+                variant="link"
+                size="sm"
+                className="h-auto p-0 text-xs"
+                onClick={() => loadOpenRouterModels()}
+              >
+                {t('modelRetry')}
+              </Button>
+            </div>
+          )}
         </div>
 
         {/* Custom OpenAI Configuration Section */}
@@ -993,17 +1055,19 @@ export function ModelSettingsModal({
 
             {/* Advanced Options (Collapsible) */}
             <div>
-              <div
-                className="flex items-center justify-between cursor-pointer py-2"
+              <button
+                type="button"
+                aria-expanded={isCustomOpenAIAdvancedOpen}
+                className="flex items-center gap-1 py-2 text-sm font-medium leading-none"
                 onClick={() => setIsCustomOpenAIAdvancedOpen(!isCustomOpenAIAdvancedOpen)}
               >
-                <Label className="cursor-pointer">{t('advancedOptions')}</Label>
+                {t('advancedOptions')}
                 {isCustomOpenAIAdvancedOpen ? (
                   <ChevronUp className="h-4 w-4 text-muted-foreground" />
                 ) : (
                   <ChevronDown className="h-4 w-4 text-muted-foreground" />
                 )}
-              </div>
+              </button>
 
               {isCustomOpenAIAdvancedOpen && (
                 <div className="space-y-3 pl-2 border-l-2 border-muted mt-2">
@@ -1120,78 +1184,66 @@ export function ModelSettingsModal({
 
         {modelConfig.provider === 'ollama' && (
           <div>
-            <div
-              className="flex items-center justify-between cursor-pointer py-2"
-              onClick={() => setIsEndpointSectionCollapsed(!isEndpointSectionCollapsed)}
-            >
-              <Label className="cursor-pointer">{t('customEndpointOptional')}</Label>
-              {isEndpointSectionCollapsed ? (
-                <ChevronDown className="h-4 w-4 text-muted-foreground" />
-              ) : (
-                <ChevronUp className="h-4 w-4 text-muted-foreground" />
-              )}
-            </div>
-
-            {!isEndpointSectionCollapsed && (
-              <>
-                <p className="text-sm text-muted-foreground mt-1 mb-2">
-                  Leave empty or enter a custom endpoint (e.g., http://x.yy.zz:11434)
-                </p>
-                <div className="flex gap-2 mt-1">
-                  <div className="relative flex-1">
-                    <Input
-                      type="url"
-                      value={ollamaEndpoint}
-                      onChange={(e) => {
-                        setOllamaEndpoint(e.target.value);
-                        // Clear models and errors when endpoint changes to avoid showing stale data
-                        if (e.target.value.trim() !== lastFetchedEndpoint.trim()) {
-                          setModels([]);
-                          setError(''); // Clear error state
-                        }
-                      }}
-                      placeholder="http://localhost:11434"
-                      className={cn(
-                        "pr-10",
-                        endpointValidationState === 'invalid' && "border-red-500"
-                      )}
-                    />
-                    {endpointValidationState === 'valid' && (
-                      <CheckCircle2 className="absolute right-3 top-1/2 -translate-y-1/2 h-5 w-5 text-green-500" />
-                    )}
-                    {endpointValidationState === 'invalid' && (
-                      <XCircle className="absolute right-3 top-1/2 -translate-y-1/2 h-5 w-5 text-red-500" />
-                    )}
-                  </div>
-                  <Button
-                    type="button"
-                    size={'sm'}
-                    onClick={() => fetchOllamaModels()}
-                    disabled={isLoadingOllama}
-                    variant="outline"
-                    className="whitespace-nowrap"
-                  >
-                    {isLoadingOllama ? (
-                      <>
-                        <RefreshCw className="mr-2 h-4 w-4 animate-spin" />
-                        {t('fetching')}
-                      </>
-                    ) : (
-                      <>
-                        <RefreshCw className="mr-2 h-4 w-4" />
-                        {t('fetchModels')}
-                      </>
-                    )}
-                  </Button>
-                </div>
-                {ollamaEndpointChanged && !error && (
-                  <Alert className="mt-3 border-yellow-500 bg-yellow-50">
-                    <AlertDescription className="text-yellow-800">
-                      {t('endpointChangedWarning')}
-                    </AlertDescription>
-                  </Alert>
+            {/* Always visible: the address decides whether "This computer
+                only" lets the request through. */}
+            <Label htmlFor="ollama-endpoint">{t('ollamaAddress')}</Label>
+            <p className="text-sm text-muted-foreground mt-1 mb-2">
+              {t('ollamaAddressHint')}
+            </p>
+            <div className="flex gap-2 mt-1">
+              <div className="relative flex-1">
+                <Input
+                  id="ollama-endpoint"
+                  type="url"
+                  value={ollamaEndpoint}
+                  onChange={(e) => {
+                    setOllamaEndpoint(e.target.value);
+                    // Clear models and errors when endpoint changes to avoid showing stale data
+                    if (e.target.value.trim() !== lastFetchedEndpoint.trim()) {
+                      setModels([]);
+                      setError(''); // Clear error state
+                    }
+                  }}
+                  placeholder="http://localhost:11434"
+                  className={cn(
+                    "pr-10",
+                    endpointValidationState === 'invalid' && "border-red-500"
+                  )}
+                />
+                {endpointValidationState === 'valid' && (
+                  <CheckCircle2 className="absolute right-3 top-1/2 -translate-y-1/2 h-5 w-5 text-green-500" />
                 )}
-              </>
+                {endpointValidationState === 'invalid' && (
+                  <XCircle className="absolute right-3 top-1/2 -translate-y-1/2 h-5 w-5 text-red-500" />
+                )}
+              </div>
+              <Button
+                type="button"
+                size={'sm'}
+                onClick={() => fetchOllamaModels()}
+                disabled={isLoadingOllama}
+                variant="outline"
+                className="whitespace-nowrap"
+              >
+                {isLoadingOllama ? (
+                  <>
+                    <RefreshCw className="mr-2 h-4 w-4 animate-spin" />
+                    {t('fetching')}
+                  </>
+                ) : (
+                  <>
+                    <RefreshCw className="mr-2 h-4 w-4" />
+                    {t('fetchModels')}
+                  </>
+                )}
+              </Button>
+            </div>
+            {ollamaEndpointChanged && !error && (
+              <Alert className="mt-3 border-yellow-500 bg-yellow-50">
+                <AlertDescription className="text-yellow-800">
+                  {t('endpointChangedWarning')}
+                </AlertDescription>
+              </Alert>
             )}
           </div>
         )}

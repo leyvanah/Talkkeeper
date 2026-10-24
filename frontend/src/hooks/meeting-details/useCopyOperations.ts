@@ -5,6 +5,10 @@ import { BlockNoteSummaryViewRef } from '@/components/AISummary/BlockNoteSummary
 import { toast } from 'sonner';
 import { invoke as invokeTauri } from '@tauri-apps/api/core';
 import { exportSummaryAs, ExportFormat } from '@/lib/exportSummary';
+import { speakerLabel } from '@/lib/speaker-label';
+import { useSpeakerWords } from '@/hooks/useSpeakerWords';
+import { toastFailure } from '@/lib/failure';
+import { copyText } from '@/lib/private-clipboard';
 
 export type MeetingExportContent = 'transcript' | 'summary' | 'both';
 export type MeetingExportFormat = ExportFormat | 'clipboard';
@@ -68,6 +72,21 @@ export function useCopyOperations({
 }: UseCopyOperationsProps) {
   const t = useTranslations('meetingDetails');
   const locale = useLocale();
+  const speakerWords = useSpeakerWords();
+
+  // Who said a line, as text that leaves the app: the owner by name (no
+  // "(You)", which means nothing to a later reader), the capture labels in the
+  // interface's words, given names as given.
+  const exportedSpeaker = useCallback(
+    (speaker: string | undefined): string => {
+      if (!speaker?.trim()) return '';
+      const userName = typeof window !== 'undefined'
+        ? localStorage.getItem('meetily_user_name')?.trim() || ''
+        : '';
+      return speakerLabel(speaker, userName, speakerWords, 'export');
+    },
+    [speakerWords],
+  );
 
   // Helper function to fetch ALL transcripts for copying (not just paginated data)
   const fetchAllTranscripts = useCallback(async (meetingId: string): Promise<Transcript[]> => {
@@ -98,8 +117,7 @@ export function useCopyOperations({
       console.log(`✅ Fetched ${allData.transcripts.length} transcripts from database for copying`);
       return allData.transcripts;
     } catch (error) {
-      console.error('❌ Error fetching all transcripts:', error);
-      toast.error(t('fetchTranscriptsFailed'));
+      toastFailure(t('fetchTranscriptsFailed'), 'transcripts-fetch', error);
       return [];
     }
   }, [t]);
@@ -133,13 +151,21 @@ export function useCopyOperations({
 
     const header = `# ${t('docTranscriptTitle')}: ${meeting.id} - ${meetingTitle ?? meeting.title}\n\n`;
     const date = `## ${t('docDateLabel')}: ${new Date(meeting.created_at).toLocaleDateString(locale)}\n\n`;
+    // With who said each line, like the export to the clipboard.
     const fullTranscript = allTranscripts
-      .map(t => `${formatTime(t.audio_start_time, t.timestamp)} ${t.text}  `)
+      .map((line) => {
+        const speaker = exportedSpeaker(line.speaker);
+        return `${formatTime(line.audio_start_time, line.timestamp)}${speaker ? ` ${speaker}:` : ''} ${line.text}  `;
+      })
       .join('\n');
 
-    await navigator.clipboard.writeText(header + date + fullTranscript);
-    toast.success(t('transcriptCopied'));
-  }, [meeting, meetingTitle, fetchAllTranscripts]);
+    try {
+      await copyText(header + date + fullTranscript);
+      toast.success(t('transcriptCopied'));
+    } catch (error) {
+      toastFailure(t('copyTranscriptFailed'), 'transcript-copy', error);
+    }
+  }, [meeting, meetingTitle, fetchAllTranscripts, exportedSpeaker, t, locale]);
 
   // Copy summary to clipboard
   const handleCopySummary = useCallback(async () => {
@@ -209,13 +235,12 @@ export function useCopyOperations({
       const metadata = `**${t('docMeetingIdLabel')}:** ${meeting.id}\n**${t('docDateLabel')}:** ${stamp(new Date(meeting.created_at))}\n**${t('docCopiedOnLabel')}:** ${stamp(new Date())}\n\n---\n\n`;
 
       const fullMarkdown = header + metadata + summaryMarkdown;
-      await navigator.clipboard.writeText(fullMarkdown);
+      await copyText(fullMarkdown);
 
       console.log('✅ Successfully copied to clipboard!');
       toast.success(t('summaryCopied'));
     } catch (error) {
-      console.error('❌ Failed to copy summary:', error);
-      toast.error(t('copySummaryFailed'));
+      toastFailure(t('copySummaryFailed'), 'summary-copy', error);
     }
   }, [aiSummary, meetingTitle, meeting, blockNoteSummaryRef, locale, t]);
 
@@ -268,7 +293,8 @@ export function useCopyOperations({
 
     const body = allTranscripts
       .map((transcript) => {
-        const speaker = transcript.speaker ? ` **${transcript.speaker}:**` : '';
+        const name = exportedSpeaker(transcript.speaker);
+        const speaker = name ? ` **${name}:**` : '';
         return `${formatTime(transcript.audio_start_time, transcript.timestamp)}${speaker} ${transcript.text}`;
       })
       .join('\n\n');
@@ -277,7 +303,7 @@ export function useCopyOperations({
     });
 
     return `# ${t('docTranscriptTitle')}: ${meetingTitle}\n\n**${t('docMeetingIdLabel')}:** ${meeting.id}\n**${t('docDateLabel')}:** ${date}\n\n---\n\n${body}`;
-  }, [fetchAllTranscripts, meeting.id, meeting.created_at, meetingTitle, locale, t]);
+  }, [fetchAllTranscripts, meeting.id, meeting.created_at, meetingTitle, locale, t, exportedSpeaker]);
 
   // Export summary to a file (Markdown, PDF, or DOCX)
   const handleExportSummary = useCallback(async (format: ExportFormat) => {
@@ -292,8 +318,7 @@ export function useCopyOperations({
       if (!saved) return;
       toast.success(t('summaryExportedAs', { format: format.toUpperCase() }));
     } catch (error) {
-      console.error('❌ Failed to export summary:', error);
-      toast.error(t('exportSummaryFailed'));
+      toastFailure(t('exportSummaryFailed'), 'summary-export', error);
     }
   }, [getSummaryMarkdown, meetingTitle, meeting, t]);
 
@@ -322,7 +347,7 @@ export function useCopyOperations({
       const baseName = `${String(meetingTitle || meeting?.title || 'meeting')}-${content}`;
 
       if (format === 'clipboard') {
-        await navigator.clipboard.writeText(markdown);
+        await copyText(markdown);
         toast.success(t('exportCopiedToClipboard', {
           what:
             content === 'both'
@@ -339,8 +364,7 @@ export function useCopyOperations({
 
       return true;
     } catch (error) {
-      console.error('Failed to export meeting:', error);
-      toast.error(t('exportMeetingFailed'));
+      toastFailure(t('exportMeetingFailed'), 'meeting-export', error);
       return false;
     }
   }, [getTranscriptMarkdown, getSummaryMarkdown, meetingTitle, meeting, t]);
