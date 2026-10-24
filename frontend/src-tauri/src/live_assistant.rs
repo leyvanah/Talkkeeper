@@ -13,7 +13,7 @@ use crate::database::repositories::person::{
     build_person_context, truncate_chars, PeopleRepository,
 };
 use crate::database::repositories::setting::SettingsRepository;
-use crate::summary::llm_client::{generate_summary, LLMProvider};
+use crate::summary::llm_client::{generate_reply, LLMProvider, Reply};
 use sqlx::SqlitePool;
 use std::path::PathBuf;
 use tauri::{AppHandle, Runtime, State};
@@ -105,9 +105,8 @@ async fn generate_assistant_answer(
     default_max_tokens: u32,
     default_temperature: f32,
     hide: crate::privacy::Shield<'_>,
-) -> Result<String, String> {
-    generate_summary(
-        &reqwest::Client::new(),
+) -> Result<Reply, String> {
+    generate_reply(
         &model.provider,
         &model.model_name,
         &model.api_key,
@@ -171,7 +170,7 @@ skimmable; use Markdown (bullets, short paragraphs, code blocks when relevant).{
     let answer =
         generate_assistant_answer(&model, &system_prompt, &user_prompt, 1024, 0.4, hidden.as_ref())
             .await?;
-    let answer = crate::privacy::restore(hidden.as_ref(), &answer);
+    let answer = crate::privacy::restore(hidden.as_ref(), &answer.text);
 
     info!(
         "Live assistant answered via {} ({} chars)",
@@ -179,6 +178,18 @@ skimmable; use Markdown (bullets, short paragraphs, code blocks when relevant).{
         answer.len()
     );
     Ok(answer)
+}
+
+/// Room for an overview that cites every point; the shorter limit of a quick
+/// question used to cut it mid-sentence.
+const PERSON_ANSWER_MAX_TOKENS: u32 = 2048;
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PersonAnswer {
+    answer: String,
+    /// The model stopped on the length limit, so the page can say so.
+    cut_off: bool,
 }
 
 /// Ask about a durable person profile using only explicitly attributed SQLite
@@ -189,7 +200,7 @@ pub async fn ask_person<R: Runtime>(
     state: State<'_, crate::state::AppState>,
     person_id: String,
     question: String,
-) -> Result<String, String> {
+) -> Result<PersonAnswer, String> {
     if question.trim().is_empty() {
         return Err("Question is empty".to_string());
     }
@@ -224,17 +235,27 @@ information. Keep the answer concise and use Markdown.";
         question
     );
     let hidden = crate::privacy::vocabulary::shield_for(pool, None).await;
-    let answer =
-        generate_assistant_answer(&model, &system_prompt, &user_prompt, 512, 0.2, hidden.as_ref())
-            .await?;
-    let answer = crate::privacy::restore(hidden.as_ref(), &answer);
+    let reply = generate_assistant_answer(
+        &model,
+        &system_prompt,
+        &user_prompt,
+        PERSON_ANSWER_MAX_TOKENS,
+        0.2,
+        hidden.as_ref(),
+    )
+    .await?;
+    let answer = crate::privacy::restore(hidden.as_ref(), &reply.text);
     info!(
-        "Person assistant answered for {} via {} ({} chars)",
+        "Person assistant answered for {} via {} ({} chars{})",
         person_id,
         model.provider_name,
-        answer.len()
+        answer.len(),
+        if reply.cut_off { ", cut off at the length limit" } else { "" }
     );
-    Ok(answer)
+    Ok(PersonAnswer {
+        answer,
+        cut_off: reply.cut_off,
+    })
 }
 
 #[derive(serde::Deserialize)]
@@ -262,7 +283,7 @@ pub async fn ollama_embed(
         .filter(|m| !m.trim().is_empty())
         .unwrap_or_else(|| "nomic-embed-text".to_string());
 
-    let client = reqwest::Client::new();
+    let client = crate::network_policy::client(&endpoint);
     let mut out = Vec::with_capacity(texts.len());
     for t in texts {
         if t.trim().is_empty() {

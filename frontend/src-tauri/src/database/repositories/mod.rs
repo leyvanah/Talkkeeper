@@ -2,6 +2,7 @@ pub mod assistant_prompt;
 pub mod client;
 pub mod meeting;
 pub mod person;
+pub mod post_call;
 pub mod setting;
 pub mod speaker_role;
 pub mod summary;

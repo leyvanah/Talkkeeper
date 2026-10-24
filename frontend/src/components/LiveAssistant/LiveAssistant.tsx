@@ -4,6 +4,7 @@ import { useState, useRef, useCallback, useEffect } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
+import { modelMarkdownComponents } from '@/lib/model-markdown';
 import { useTranscripts } from '@/contexts/TranscriptContext';
 import { retrieveContext } from '@/lib/rag';
 import { useTranslations } from 'next-intl';
@@ -410,7 +411,7 @@ export function LiveAssistant() {
               ) : (
                 <>
                   <div className="prose prose-sm max-w-none prose-p:my-1 prose-ul:my-1">
-                    <ReactMarkdown remarkPlugins={[remarkGfm]}>{qa.answer}</ReactMarkdown>
+                    <ReactMarkdown remarkPlugins={[remarkGfm]} components={modelMarkdownComponents}>{qa.answer}</ReactMarkdown>
                   </div>
                   {qa.humanized && (
                     <div className="mt-2 rounded-md border border-green-200 bg-green-50 px-2 py-1 text-sm text-green-900">

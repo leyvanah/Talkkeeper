@@ -4,9 +4,8 @@ import { useEffect, useState } from "react"
 import { Switch } from "./ui/switch"
 import { Button } from "./ui/button"
 import { ButtonGroup } from "./ui/button-group"
-import { FolderCog, FolderOpen } from "lucide-react"
+import { FolderOpen } from "lucide-react"
 import { invoke } from "@tauri-apps/api/core"
-import { toast } from "sonner"
 import { useConfig, NotificationSettings } from "@/contexts/ConfigContext"
 import { applyAppTheme, getSavedAppTheme, type AppTheme } from "@/lib/app-theme"
 import { useAppLocale } from "@/contexts/LocaleContext"
@@ -21,9 +20,7 @@ export function PreferenceSettings() {
     isLoadingPreferences,
     loadPreferences,
     updateNotificationSettings,
-    updateRecordingsLocation,
   } = useConfig();
-  const [isChoosingRecordingsFolder, setIsChoosingRecordingsFolder] = useState(false);
 
   const [notificationsEnabled, setNotificationsEnabled] = useState<boolean | null>(null);
   const [isInitialLoad, setIsInitialLoad] = useState(true);
@@ -43,7 +40,7 @@ export function PreferenceSettings() {
     }
   };
 
-  // Theme (default dark): light, dark navy, or AMOLED true black.
+  // Theme (default dark): light, dark navy, or true black for OLED screens.
   const [theme, setTheme] = useState<AppTheme>('dark');
   useEffect(() => {
     setTheme(getSavedAppTheme());
@@ -111,47 +108,11 @@ export function PreferenceSettings() {
     handleUpdateNotificationSettings();
   }, [notificationsEnabled, notificationSettings, isInitialLoad, previousNotificationsEnabled, updateNotificationSettings])
 
-  const handleOpenFolder = async (folderType: 'database' | 'models' | 'recordings') => {
+  const handleOpenFolder = async (folderType: 'database' | 'recordings') => {
     try {
-      switch (folderType) {
-        case 'database':
-          await invoke('open_database_folder');
-          break;
-        case 'models':
-          await invoke('open_models_folder');
-          break;
-        case 'recordings':
-          await invoke('open_recordings_folder');
-          break;
-      }
+      await invoke(folderType === 'database' ? 'open_database_folder' : 'open_recordings_folder');
     } catch (error) {
       console.error(`Failed to open ${folderType} folder:`, error);
-    }
-  };
-
-  const handleChangeRecordingsFolder = async () => {
-    if (isChoosingRecordingsFolder) return;
-
-    setIsChoosingRecordingsFolder(true);
-    try {
-      const selectedFolder = await invoke<string | null>('select_recording_folder');
-      if (!selectedFolder) return;
-
-      const preferences = await invoke<Record<string, unknown> & { save_folder: string }>(
-        'get_recording_preferences',
-      );
-      await invoke('set_recording_preferences', {
-        preferences: { ...preferences, save_folder: selectedFolder },
-      });
-      updateRecordingsLocation(selectedFolder);
-      toast.success(t('recordingsFolderUpdated'));
-    } catch (error) {
-      console.error('Failed to change recordings folder:', error);
-      toast.error(t('recordingsFolderUpdateFailed'), {
-        description: String(error),
-      });
-    } finally {
-      setIsChoosingRecordingsFolder(false);
     }
   };
 
@@ -273,66 +234,42 @@ export function PreferenceSettings() {
         </p>
 
         <div className="space-y-4">
-          {/* Database Location */}
-          {/* <div className="p-4 border rounded-lg bg-gray-50">
-            <div className="font-medium mb-2">Database</div>
-            <div className="text-sm text-gray-600 mb-3 break-all font-mono text-xs">
-              {storageLocations?.database || 'Loading...'}
-            </div>
-            <button
-              onClick={() => handleOpenFolder('database')}
-              className="flex items-center gap-2 px-3 py-2 text-sm border border-gray-300 rounded-md hover:bg-gray-100 transition-colors"
-            >
-              <FolderOpen className="w-4 h-4" />
-              Open Folder
-            </button>
-          </div> */}
-
-          {/* Models Location */}
-          {/* <div className="p-4 border rounded-lg bg-gray-50">
-            <div className="font-medium mb-2">Whisper Models</div>
-            <div className="text-sm text-gray-600 mb-3 break-all font-mono text-xs">
-              {storageLocations?.models || 'Loading...'}
-            </div>
-            <button
-              onClick={() => handleOpenFolder('models')}
-              className="flex items-center gap-2 px-3 py-2 text-sm border border-gray-300 rounded-md hover:bg-gray-100 transition-colors"
-            >
-              <FolderOpen className="w-4 h-4" />
-              Open Folder
-            </button>
-          </div> */}
-
-          {/* Recordings Location */}
+          {/* Recordings Location. The folder is changed in one place only:
+              Settings → Recording. */}
           <div className="p-4 border rounded-lg bg-gray-50">
             <div className="font-medium mb-2">{t('storageRecordings')}</div>
             <div className="text-sm text-gray-600 mb-3 break-all font-mono text-xs">
               {storageLocations?.recordings || t('storageLoading')}
             </div>
-            <div className="flex flex-wrap gap-2">
-              <button
-                onClick={handleChangeRecordingsFolder}
-                disabled={isChoosingRecordingsFolder}
-                className="flex items-center gap-2 px-3 py-2 text-sm border border-gray-300 rounded-md hover:bg-gray-100 transition-colors disabled:cursor-not-allowed disabled:opacity-60"
-              >
-                <FolderCog className="w-4 h-4" />
-                {isChoosingRecordingsFolder ? t('storageChoosing') : t('storageChangeFolder')}
-              </button>
-              <button
-                onClick={() => handleOpenFolder('recordings')}
-                className="flex items-center gap-2 px-3 py-2 text-sm border border-gray-300 rounded-md hover:bg-gray-100 transition-colors"
-              >
-                <FolderOpen className="w-4 h-4" />
-                {t('storageOpenFolder')}
-              </button>
+            <p className="text-xs text-gray-500 mb-3">{t('storageRecordingsHint')}</p>
+            <button
+              onClick={() => handleOpenFolder('recordings')}
+              className="flex items-center gap-2 px-3 py-2 text-sm border border-gray-300 rounded-md hover:bg-gray-100 transition-colors"
+            >
+              <FolderOpen className="w-4 h-4" />
+              {t('storageOpenFolder')}
+            </button>
+          </div>
+
+          {/* App data: database, keystore, models and settings. */}
+          <div className="p-4 border rounded-lg bg-gray-50">
+            <div className="font-medium mb-2">{t('storageAppData')}</div>
+            <div className="text-sm text-gray-600 mb-3 break-all font-mono text-xs">
+              {storageLocations?.database || t('storageLoading')}
             </div>
+            <p className="text-xs text-gray-500 mb-3">{t('storageAppDataHint')}</p>
+            <button
+              onClick={() => handleOpenFolder('database')}
+              className="flex items-center gap-2 px-3 py-2 text-sm border border-gray-300 rounded-md hover:bg-gray-100 transition-colors"
+            >
+              <FolderOpen className="w-4 h-4" />
+              {t('storageOpenFolder')}
+            </button>
           </div>
         </div>
 
         <div className="mt-4 p-3 bg-blue-50 rounded-md">
-          <p className="text-xs text-blue-800">
-            {t.rich('storagePortableNote', { b: (chunks) => <strong>{chunks}</strong> })}
-          </p>
+          <p className="text-xs text-blue-800">{t('storageProtectionNote')}</p>
         </div>
       </div>
     </div>

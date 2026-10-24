@@ -7,17 +7,19 @@
  * explicit person/speaker mappings; the AI corpus is assembled in Rust.
  */
 
-import { FormEvent, Suspense, useEffect, useState } from 'react';
+import { FormEvent, Suspense, useEffect, useRef, useState, useSyncExternalStore } from 'react';
 import { useLocale, useTranslations } from 'next-intl';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { invoke } from '@tauri-apps/api/core';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
+import { modelMarkdownComponents } from '@/lib/model-markdown';
 import {
   ArrowLeft,
   ArrowUpRight,
   Bot,
   CalendarDays,
+  Cloud,
   Clock3,
   FileText,
   Loader2,
@@ -25,22 +27,95 @@ import {
   MessageSquareText,
   RefreshCw,
   Save,
+  Scissors,
   Search,
   Send,
   Sparkles,
+  Trash2,
   UserRound,
 } from 'lucide-react';
+import { toast } from 'sonner';
 import type { PersonProfile } from '@/types';
+import { ConfirmAction, type ConfirmRequest } from '@/components/ui/confirm-action';
+import { isCloudProvider, sendsOffThisComputer } from '@/lib/cloud-providers';
+import {
+  allNotesDrafts,
+  answerDestination,
+  beginPersonRequest,
+  forgetPerson,
+  keepNotesDraft,
+  notesDraft,
+  notesSaved,
+  personAiState,
+  profileSignature,
+  providerName,
+  queueNotesSave,
+  reconcilePersonAi,
+  settlePersonRequest,
+  subscribePersonAi,
+  type AnswerDestination,
+  type PersonQuestion,
+} from '@/lib/person-page-memory';
+import { logFailure, toastFailure } from '@/lib/failure';
+import { failureText } from '@/lib/failure-text';
 
 // The overview prompt is localized too, so the model answers in the UI language.
 type Translate = (key: string, values?: Record<string, string | number>) => string;
 
-type AIMessage = {
-  id: number;
-  question: string;
-  answer: string;
-  status: 'pending' | 'complete' | 'error';
-};
+/** What `ask_person` returns. */
+type PersonAnswer = { answer: string; cutOff: boolean };
+
+type NotesState = 'upToDate' | 'pending' | 'saving' | 'saved' | 'failed';
+
+type AssistantModel = { provider: string; model: string; destination: AnswerDestination };
+
+/** Pause after the last keystroke before notes are saved. */
+const NOTES_SAVE_DELAY_MS = 800;
+
+/** Notes are written in the order they were typed; see `queueNotesSave`. */
+function saveNotes(personId: string, text: string): Promise<void> {
+  return queueNotesSave(personId, text, (notes) => invoke('api_update_person_notes', { personId, notes }));
+}
+
+/** "Claude · claude-sonnet", "Built-in model · gemma3:4b". */
+function modelLabel(assistant: AssistantModel, t: Translate): string {
+  const provider = assistant.provider === 'builtin-ai'
+    ? t('builtInModel')
+    : assistant.provider === 'custom-openai'
+      ? t('ownServer')
+      : providerName(assistant.provider);
+  return `${provider} · ${assistant.model}`;
+}
+
+/** Where the records go, said on the line under each send button. */
+function destinationText(assistant: AssistantModel | null, t: Translate): string | null {
+  if (!assistant) return null;
+  switch (assistant.destination) {
+    case 'none':
+      return t('noModelChosen');
+    case 'here':
+      return t('answersHere', { model: modelLabel(assistant, t) });
+    case 'cloud':
+      return t('answersInCloud', { model: modelLabel(assistant, t) });
+    case 'remote':
+      return t('answersOnOtherMachine', { model: modelLabel(assistant, t) });
+    case 'blocked':
+      return t('answersBlocked', { model: modelLabel(assistant, t) });
+    case 'unknown':
+      return t('answersUnknown');
+  }
+}
+
+/** The records may leave this computer: the buttons say "Send". */
+function sendsAway(assistant: AssistantModel | null): boolean {
+  const destination = assistant?.destination;
+  return destination === 'cloud' || destination === 'remote' || destination === 'unknown';
+}
+
+/** The destination line is a warning, not a caption. */
+function warns(assistant: AssistantModel | null): boolean {
+  return sendsAway(assistant) || assistant?.destination === 'blocked';
+}
 
 function initials(name: string): string {
   const parts = name.trim().split(/\s+/).filter(Boolean);
@@ -66,6 +141,16 @@ function formatDuration(seconds: number, t: Translate): string {
   const minutes = roundedMinutes % 60;
   if (hours === 0) return t('durationMinutes', { minutes });
   return minutes > 0 ? t('durationHoursMinutes', { hours, minutes }) : t('durationHours', { hours });
+}
+
+/** Under an answer the model stopped writing at its length limit. */
+function CutOffNote() {
+  const t = useTranslations('person');
+  return (
+    <p className="mt-3 flex items-center gap-1.5 text-xs text-amber-500">
+      <Scissors className="h-3.5 w-3.5 shrink-0" /> {t('answerCutOff')}
+    </p>
+  );
 }
 
 function ProfileLoading() {
@@ -123,6 +208,7 @@ function ProfileProblem({ title, detail, retry }: { title: string; detail: strin
 
 function PersonProfileContent() {
   const t = useTranslations('person');
+  const tc = useTranslations('common');
   const locale = useLocale();
   const router = useRouter();
   const searchParams = useSearchParams();
@@ -132,21 +218,31 @@ function PersonProfileContent() {
   const [loadError, setLoadError] = useState<string | null>(null);
   const [reloadKey, setReloadKey] = useState(0);
   const [notes, setNotes] = useState('');
-  const [savingNotes, setSavingNotes] = useState(false);
-  const [notesError, setNotesError] = useState<string | null>(null);
-  const [notesSaved, setNotesSaved] = useState(false);
-  const [overview, setOverview] = useState<string | null>(null);
-  const [overviewLoading, setOverviewLoading] = useState(false);
-  const [overviewError, setOverviewError] = useState<string | null>(null);
+  const [notesState, setNotesState] = useState<NotesState>('upToDate');
   const [question, setQuestion] = useState('');
-  const [history, setHistory] = useState<AIMessage[]>([]);
-  const [asking, setAsking] = useState(false);
+  const [assistant, setAssistant] = useState<AssistantModel | null>(null);
+  // A save that finishes after switching to another person must not mark theirs.
+  const shownPerson = useRef(personId);
+  shownPerson.current = personId;
+  // Overview and answers outlive the page, until the app closes.
+  const aiKey = personId ?? '';
+  const ai = useSyncExternalStore(
+    subscribePersonAi,
+    () => personAiState(aiKey),
+    () => personAiState(aiKey),
+  );
+  const overview = ai.overview;
+  const overviewLoading = ai.overviewPending;
+  const overviewError = ai.overviewError;
+  const history = ai.history;
+  const asking = history.some((message) => message.status === 'pending');
   // The owner's own overview request, kept in the archive; null = the default.
   const [customPrompt, setCustomPrompt] = useState<string | null>(null);
   const [promptOpen, setPromptOpen] = useState(false);
   const [promptDraft, setPromptDraft] = useState('');
   const [promptSaving, setPromptSaving] = useState(false);
   const [promptError, setPromptError] = useState<string | null>(null);
+  const [confirm, setConfirm] = useState<ConfirmRequest | null>(null);
 
   useEffect(() => {
     invoke<string | null>('get_person_overview_prompt')
@@ -165,19 +261,53 @@ function PersonProfileContent() {
       setCustomPrompt(value);
       setPromptOpen(false);
     } catch (error) {
-      console.error('Failed to save the overview request:', error);
-      setPromptError(t('overviewPromptSaveFailed', { error: error instanceof Error ? error.message : String(error) }));
+      logFailure('person-overview-prompt-save', error);
+      setPromptError(t('overviewPromptSaveFailed'));
     } finally {
       setPromptSaving(false);
     }
   };
 
+  // Which model answers, and where the records go to it.
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      const [config, localOnly] = await Promise.all([
+        invoke<{ provider: string; model: string; ollamaEndpoint?: string | null } | null>('api_get_model_config'),
+        invoke<boolean>('get_local_only_mode'),
+      ]);
+      let model = config?.model ?? '';
+      let endpoint = config?.provider === 'ollama' ? config.ollamaEndpoint : null;
+      if (config?.provider === 'custom-openai') {
+        const custom = await invoke<{ endpoint?: string; model?: string } | null>('api_get_custom_openai_config');
+        endpoint = custom?.endpoint ?? null;
+        model = model || custom?.model || '';
+      }
+      if (cancelled) return;
+      const provider = config?.provider ?? '';
+      setAssistant({
+        provider,
+        model,
+        destination: answerDestination({
+          hasModel: Boolean(provider && model),
+          leavesThisComputer: sendsOffThisComputer(provider, endpoint),
+          isCloud: isCloudProvider(provider),
+          localOnly,
+        }),
+      });
+    })().catch((error) => {
+      console.error('Failed to read the AI model settings:', error);
+      // Not knowing where the records go is said as plainly as the cloud.
+      if (!cancelled) setAssistant({ provider: '', model: '', destination: 'unknown' });
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
   useEffect(() => {
     setProfile(null);
     setLoadError(null);
-    setOverview(null);
-    setOverviewError(null);
-    setHistory([]);
     setQuestion('');
 
     if (!personId) {
@@ -190,13 +320,26 @@ function PersonProfileContent() {
     invoke<PersonProfile>('api_get_person_profile', { personId })
       .then((nextProfile) => {
         if (cancelled) return;
+        reconcilePersonAi(personId, profileSignature(nextProfile));
         setProfile(nextProfile);
-        setNotes(nextProfile.notes ?? '');
+        // A draft that did not reach the archive comes back and is saved again.
+        const draft = notesDraft(personId);
+        const saved = nextProfile.notes ?? '';
+        if (draft !== undefined && draft !== saved) {
+          setNotes(draft);
+          setNotesState('pending');
+        } else {
+          notesSaved(personId, saved);
+          setNotes(saved);
+          setNotesState('upToDate');
+        }
       })
       .catch((error) => {
         if (cancelled) return;
-        console.error('Failed to load person profile:', error);
-        setLoadError(error instanceof Error ? error.message : String(error));
+        logFailure('person-profile-load', error);
+        // Only a missing row means the person is gone; a closed archive or a
+        // database that did not open must not say so.
+        setLoadError(failureText(error) === 'Person not found' ? t('loadFailedDetail') : t('loadFailedRetryDetail'));
       })
       .finally(() => {
         if (!cancelled) setLoading(false);
@@ -207,39 +350,76 @@ function PersonProfileContent() {
     };
   }, [personId, reloadKey]);
 
-  const saveNotes = async () => {
-    if (!personId || !profile || savingNotes) return;
-    setSavingNotes(true);
-    setNotesError(null);
-    setNotesSaved(false);
+  // Notes save themselves a moment after typing stops.
+  useEffect(() => {
+    if (!personId || !profile || notesState !== 'pending') return;
+    const text = notes;
+    const timer = window.setTimeout(async () => {
+      setNotesState('saving');
+      try {
+        await saveNotes(personId, text);
+        if (shownPerson.current !== personId) return;
+        // Typing during the save makes the newer text wait for its own.
+        setNotesState((state) => state === 'saving' ? 'saved' : state);
+      } catch (error) {
+        logFailure('person-notes-save', error);
+        if (shownPerson.current !== personId) return;
+        setNotesState((state) => state === 'saving' ? 'failed' : state);
+      }
+    }, NOTES_SAVE_DELAY_MS);
+    return () => window.clearTimeout(timer);
+  }, [personId, profile, notes, notesState]);
+
+  // Leaving before the pause is over still saves what was typed. If that
+  // fails, the draft waits in memory and is saved on the next visit.
+  useEffect(() => () => {
+    if (!personId) return;
+    const draft = notesDraft(personId);
+    if (draft === undefined) return;
+    saveNotes(personId, draft)
+      .catch((error) => logFailure('person-notes-save', error));
+  }, [personId]);
+
+  // Best effort when the window itself goes away: the save is started, but
+  // nothing waits for it.
+  useEffect(() => {
+    const flushAll = () => {
+      for (const [id, draft] of allNotesDrafts()) {
+        saveNotes(id, draft).catch(() => {});
+      }
+    };
+    window.addEventListener('beforeunload', flushAll);
+    return () => window.removeEventListener('beforeunload', flushAll);
+  }, []);
+
+  // The meetings stay, and so do the names on their lines: only the profile
+  // and the notes about the person go.
+  const deletePerson = async (id: string) => {
     try {
-      await invoke('api_update_person_notes', { personId, notes });
-      setProfile((current) => current ? { ...current, notes } : current);
-      setNotesSaved(true);
-      window.setTimeout(() => setNotesSaved(false), 1800);
+      await invoke('api_delete_person', { personId: id });
     } catch (error) {
-      console.error('Failed to save person notes:', error);
-      setNotesError(error instanceof Error ? error.message : String(error));
-    } finally {
-      setSavingNotes(false);
+      toastFailure(t('personDeleteFailed'), 'person-delete', error);
+      return;
     }
+    // Before leaving: the page saves a pending draft when it unmounts.
+    forgetPerson(id);
+    toast.success(t('personDeletedSuccess'));
+    router.back();
   };
 
   const generateOverview = async () => {
     if (!personId || overviewLoading) return;
-    setOverviewLoading(true);
-    setOverviewError(null);
+    const request = beginPersonRequest(personId, () => ({ overviewPending: true, overviewError: null }));
+    const done = () => ({ overviewPending: false });
     try {
-      const answer = await invoke<string>('ask_person', {
+      const reply = await invoke<PersonAnswer>('ask_person', {
         personId,
         question: customPrompt ?? t('overviewPrompt'),
       });
-      setOverview(answer);
+      settlePersonRequest(request, () => ({ ...done(), overview: reply.answer, overviewCutOff: reply.cutOff }), done);
     } catch (error) {
-      console.error('Failed to generate person overview:', error);
-      setOverviewError(error instanceof Error ? error.message : String(error));
-    } finally {
-      setOverviewLoading(false);
+      logFailure('person-overview', error);
+      settlePersonRequest(request, () => ({ ...done(), overviewError: t('overviewFailed') }), done);
     }
   };
 
@@ -248,23 +428,25 @@ function PersonProfileContent() {
     const trimmed = question.trim();
     if (!personId || !trimmed || asking) return;
 
-    const id = Date.now();
-    setHistory((current) => [...current, { id, question: trimmed, answer: '', status: 'pending' }]);
+    const messageId = Date.now();
+    const request = beginPersonRequest(personId, (state) => ({
+      history: [...state.history, { id: messageId, question: trimmed, answer: '', status: 'pending' }],
+    }));
+    const settle = (change: Partial<PersonQuestion>) => settlePersonRequest(
+      request,
+      (state) => ({
+        history: state.history.map((message) => message.id === messageId ? { ...message, ...change } : message),
+      }),
+      // About data that has changed since: the question goes, unanswered.
+      (state) => ({ history: state.history.filter((message) => message.id !== messageId) }),
+    );
     setQuestion('');
-    setAsking(true);
     try {
-      const answer = await invoke<string>('ask_person', { personId, question: trimmed });
-      setHistory((current) => current.map((message) => (
-        message.id === id ? { ...message, answer, status: 'complete' } : message
-      )));
+      const reply = await invoke<PersonAnswer>('ask_person', { personId, question: trimmed });
+      settle({ answer: reply.answer, cutOff: reply.cutOff, status: 'complete' });
     } catch (error) {
-      console.error('Failed to ask about person:', error);
-      const message = error instanceof Error ? error.message : String(error);
-      setHistory((current) => current.map((item) => (
-        item.id === id ? { ...item, answer: message, status: 'error' } : item
-      )));
-    } finally {
-      setAsking(false);
+      logFailure('person-ask', error);
+      settle({ answer: t('askFailed'), status: 'error' });
     }
   };
 
@@ -282,7 +464,11 @@ function PersonProfileContent() {
     );
   }
 
-  const notesDirty = notes !== (profile.notes ?? '');
+  const destination = destinationText(assistant, t);
+  const away = sendsAway(assistant);
+  // Nothing to send to, or "This computer only" would refuse it anyway. Until
+  // the settings are read it is not known where the records would go.
+  const canSend = assistant !== null && assistant.destination !== 'none' && assistant.destination !== 'blocked';
   const seenRange = [profile.firstSeenAt, profile.lastSeenAt]
     .filter((value): value is string => Boolean(value))
     .map((value) => formatDate(value, locale, t))
@@ -310,12 +496,29 @@ function PersonProfileContent() {
                 <span className="h-px w-6 bg-[var(--af-accent)]" /> {t('personProfile')}
               </div>
               <h1 className="truncate text-3xl font-semibold text-[var(--af-text)] sm:text-4xl">{profile.displayName}</h1>
+              {profile.clientDisplayName && (
+                <p className="mt-1 truncate text-base text-[var(--af-text)]">
+                  {t('clientLine', { client: profile.clientDisplayName })}
+                </p>
+              )}
               <p className="mt-2 flex flex-wrap items-center gap-x-2 gap-y-1 text-sm text-[var(--af-text-2)]">
                 <span>{t('sharedMeetingsCount', { count: profile.meetingCount })}</span>
                 <span className="text-[var(--af-text-3)]">/</span>
                 <span>{seenRange}</span>
               </p>
             </div>
+            <button
+              onClick={() => setConfirm({
+                title: t('deletePersonTitle', { name: profile.displayName }),
+                description: t('deletePersonDescription'),
+                confirmLabel: tc('delete'),
+                busyLabel: tc('deleting'),
+                run: () => deletePerson(profile.id),
+              })}
+              className="inline-flex shrink-0 items-center gap-2 self-start rounded-lg px-3 py-1.5 text-sm text-[var(--af-text-2)] hover:bg-red-500/10 hover:text-red-500 sm:ml-auto sm:self-center"
+            >
+              <Trash2 className="h-4 w-4" /> {t('deletePerson')}
+            </button>
           </div>
         </header>
 
@@ -348,8 +551,14 @@ function PersonProfileContent() {
                   <p className="mt-1 text-xs text-[var(--af-text-3)]">{t('aiOverviewSubtitle')}</p>
                 </div>
                 {(overview || overviewError) && !overviewLoading && (
-                  <button onClick={generateOverview} className="inline-flex shrink-0 items-center gap-1.5 rounded-lg border border-[var(--af-border-strong)] px-3 py-1.5 text-xs font-medium text-[var(--af-text-2)] hover:bg-[var(--af-hover)] hover:text-[var(--af-text)]">
-                    <RefreshCw className="h-3.5 w-3.5" /> {t('regenerate')}
+                  <button
+                    onClick={generateOverview}
+                    disabled={!canSend}
+                    title={destination ?? undefined}
+                    className="inline-flex shrink-0 items-center gap-1.5 rounded-lg border border-[var(--af-border-strong)] px-3 py-1.5 text-xs font-medium text-[var(--af-text-2)] hover:bg-[var(--af-hover)] hover:text-[var(--af-text)] disabled:cursor-not-allowed disabled:opacity-40"
+                  >
+                    {away ? <Cloud className="h-3.5 w-3.5 text-amber-500" /> : <RefreshCw className="h-3.5 w-3.5" />}
+                    {away ? t('regenerateAway') : t('regenerate')}
                   </button>
                 )}
               </div>
@@ -362,9 +571,10 @@ function PersonProfileContent() {
                 ) : overview ? (
                   <>
                     <div className="prose prose-sm max-w-none leading-relaxed text-[var(--af-text-2)] dark:prose-invert prose-headings:text-[var(--af-text)] prose-strong:text-[var(--af-text)] prose-p:my-2 prose-ul:my-2">
-                      <ReactMarkdown remarkPlugins={[remarkGfm]}>{overview}</ReactMarkdown>
+                      <ReactMarkdown remarkPlugins={[remarkGfm]} components={modelMarkdownComponents}>{overview}</ReactMarkdown>
                     </div>
-                    {overviewError && <p className="mt-4 rounded-lg bg-red-500/10 px-3 py-2 text-xs text-red-400">{t('regenerationFailed', { error: overviewError })}</p>}
+                    {ai.overviewCutOff && <CutOffNote />}
+                    {overviewError && <p className="mt-4 rounded-lg bg-red-500/10 px-3 py-2 text-xs text-red-400">{t('overviewRegenerateFailed')}</p>}
                   </>
                 ) : (
                   <div className="rounded-xl border border-dashed border-[var(--af-border-strong)] px-5 py-8 text-center">
@@ -374,10 +584,20 @@ function PersonProfileContent() {
                       {t('buildProfileDescription')}
                     </p>
                     {overviewError && <p className="mx-auto mt-3 max-w-md text-xs text-red-400">{overviewError}</p>}
-                    <button onClick={generateOverview} className="mt-5 inline-flex items-center gap-2 rounded-lg bg-[var(--af-accent)] px-4 py-2 text-sm font-medium text-[var(--af-accent-contrast)] hover:brightness-110">
-                      <Sparkles className="h-4 w-4" /> {t('generateOverview')}
+                    <button
+                      onClick={generateOverview}
+                      disabled={!canSend}
+                      className="mt-5 inline-flex items-center gap-2 rounded-lg bg-[var(--af-accent)] px-4 py-2 text-sm font-medium text-[var(--af-accent-contrast)] hover:brightness-110 disabled:cursor-not-allowed disabled:opacity-40"
+                    >
+                      {away ? <Cloud className="h-4 w-4" /> : <Sparkles className="h-4 w-4" />}
+                      {away ? t('generateOverviewAway') : t('generateOverview')}
                     </button>
                   </div>
+                )}
+                {destination && (
+                  <p role="note" className={`mt-3 text-center text-xs ${warns(assistant) ? 'text-amber-500' : 'text-[var(--af-text-3)]'}`}>
+                    {destination}
+                  </p>
                 )}
               </div>
               <div className="border-t border-[var(--af-border)] px-5 py-3 sm:px-6">
@@ -494,26 +714,35 @@ function PersonProfileContent() {
                 value={notes}
                 onChange={(event) => {
                   setNotes(event.target.value);
-                  setNotesError(null);
-                  setNotesSaved(false);
+                  keepNotesDraft(personId, event.target.value);
+                  setNotesState('pending');
                 }}
                 rows={6}
                 placeholder={t('notesPlaceholder')}
+                aria-describedby="person-notes-status"
                 className="mt-4 w-full resize-y rounded-xl border border-[var(--af-border-strong)] bg-[var(--af-panel-2)] px-3.5 py-3 text-sm leading-relaxed text-[var(--af-text)] placeholder:text-[var(--af-text-3)] focus:outline-none"
               />
-              {notesError && <p className="mt-2 text-xs text-red-400">{notesError}</p>}
-              <div className="mt-3 flex items-center justify-between gap-3">
-                <span className={`text-xs ${notesSaved ? 'text-emerald-400' : 'text-[var(--af-text-3)]'}`}>
-                  {notesSaved ? t('notesSaved') : notesDirty ? t('notesUnsaved') : t('notesUpToDate')}
-                </span>
-                <button
-                  onClick={saveNotes}
-                  disabled={!notesDirty || savingNotes}
-                  className="inline-flex items-center gap-2 rounded-lg bg-[var(--af-accent)] px-3 py-2 text-xs font-semibold text-[var(--af-accent-contrast)] hover:brightness-110 disabled:cursor-not-allowed disabled:opacity-40"
-                >
-                  {savingNotes ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Save className="h-3.5 w-3.5" />}
-                  {t('saveNotes')}
-                </button>
+              <div id="person-notes-status" aria-live="polite" className="mt-2 flex items-center gap-2 text-xs">
+                {notesState === 'failed' ? (
+                  <>
+                    <span className="text-red-400">{t('notesSaveFailed')}</span>
+                    <button
+                      type="button"
+                      onClick={() => setNotesState('pending')}
+                      className="font-medium text-[var(--af-text-2)] underline underline-offset-2 hover:text-[var(--af-text)]"
+                    >
+                      {t('retry')}
+                    </button>
+                  </>
+                ) : notesState === 'pending' || notesState === 'saving' ? (
+                  <span className="inline-flex items-center gap-1.5 text-[var(--af-text-3)]">
+                    <Loader2 className="h-3 w-3 animate-spin" /> {t('notesSaving')}
+                  </span>
+                ) : notesState === 'saved' ? (
+                  <span className="text-emerald-400">{t('notesSaved')}</span>
+                ) : (
+                  <span className="text-[var(--af-text-3)]">{t('notesUpToDate')}</span>
+                )}
               </div>
             </section>
 
@@ -521,7 +750,7 @@ function PersonProfileContent() {
               <div className="border-b border-[var(--af-border)] p-5">
                 <div className="flex items-center gap-2">
                   <MessageSquareText className="h-4 w-4 text-cyan-400" />
-                  <h2 className="font-semibold text-[var(--af-text)]">{t('askAbout', { name: profile.displayName.split(/\s+/)[0] })}</h2>
+                  <h2 className="font-semibold text-[var(--af-text)]">{t('askAi')}</h2>
                 </div>
                 <p className="mt-1 text-xs leading-relaxed text-[var(--af-text-3)]">{t('askAboutDescription')}</p>
               </div>
@@ -537,10 +766,11 @@ function PersonProfileContent() {
                         {message.status === 'pending' ? (
                           <span className="inline-flex items-center gap-2 text-[var(--af-text-3)]"><Loader2 className="h-3.5 w-3.5 animate-spin" /> {t('checkingRecords')}</span>
                         ) : message.status === 'error' ? (
-                          <>{t('couldNotAnswer', { error: message.answer })}</>
+                          <>{message.answer}</>
                         ) : (
                           <div className="prose prose-xs max-w-none text-[var(--af-text-2)] dark:prose-invert prose-strong:text-[var(--af-text)] prose-p:my-1 prose-ul:my-1">
-                            <ReactMarkdown remarkPlugins={[remarkGfm]}>{message.answer}</ReactMarkdown>
+                            <ReactMarkdown remarkPlugins={[remarkGfm]} components={modelMarkdownComponents}>{message.answer}</ReactMarkdown>
+                            {message.cutOff && <CutOffNote />}
                           </div>
                         )}
                       </div>
@@ -568,7 +798,7 @@ function PersonProfileContent() {
                     <span className="text-[10px] text-[var(--af-text-3)]">{t('enterHint')}</span>
                     <button
                       type="submit"
-                      disabled={asking || !question.trim()}
+                      disabled={asking || !question.trim() || !canSend}
                       className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-[var(--af-accent)] text-[var(--af-accent-contrast)] hover:brightness-110 disabled:opacity-40"
                       aria-label={t('askAi')}
                     >
@@ -578,13 +808,17 @@ function PersonProfileContent() {
                 </div>
               </form>
 
-              <div className="border-t border-[var(--af-border)] bg-[var(--af-panel-2)]/50 px-4 py-3 text-[10px] leading-relaxed text-[var(--af-text-3)]">
-                {t('cloudNotice')}
-              </div>
+              {destination && (
+                <div role="note" className={`flex items-start gap-2 border-t border-[var(--af-border)] bg-[var(--af-panel-2)]/50 px-4 py-3 text-xs leading-relaxed ${warns(assistant) ? 'text-amber-500' : 'text-[var(--af-text-3)]'}`}>
+                  {away && <Cloud className="mt-0.5 h-3.5 w-3.5 shrink-0" />}
+                  <span>{destination}</span>
+                </div>
+              )}
             </section>
           </aside>
         </div>
       </div>
+      <ConfirmAction request={confirm} onClose={() => setConfirm(null)} />
     </div>
   );
 }

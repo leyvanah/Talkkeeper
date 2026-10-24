@@ -3,7 +3,6 @@ import { useTranslations } from 'next-intl';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { AlertCircle, BookOpen, Check, CheckCircle2, ChevronDown, Clock3, Languages, Loader2, Radio, Zap } from 'lucide-react';
-import { toast } from 'sonner';
 import { Textarea } from './ui/textarea';
 import { Button } from './ui/button';
 import { Label } from './ui/label';
@@ -13,6 +12,9 @@ import { ExternalSttSettings } from './ExternalSttSettings';
 import { GigaamModelManager, GIGAAM_MODEL_NAME, type GigaamModelStatus } from './GigaamModelManager';
 import type { RawModelInfo } from '@/hooks/useTranscriptionModels';
 import { isVisibleParakeetModel } from '@/lib/parakeet';
+import { logFailure, toastFailure } from '@/lib/failure';
+import { recommendedLiveModel, recommendedPostCallModel } from '@/lib/recording-options';
+import { useAppLocale } from '@/contexts/LocaleContext';
 
 export interface TranscriptModelProps {
     provider: 'localWhisper' | 'parakeet' | 'gigaam' | 'externalStt' | 'deepgram' | 'elevenLabs' | 'groq' | 'openai';
@@ -48,6 +50,10 @@ const DEFAULT_POST_CALL_CONFIG: PostCallTranscriptConfig = {
 
 export function TranscriptSettings({ transcriptModelConfig, setTranscriptModelConfig, onModelSelect }: TranscriptSettingsProps) {
     const t = useTranslations('settings');
+    const { locale } = useAppLocale();
+    // One recommendation per list, by the interface language.
+    const recommendedLive = recommendedLiveModel(locale);
+    const recommendedPostCall = recommendedPostCallModel(locale);
     const [uiProvider, setUiProvider] = useState<TranscriptModelProps['provider']>(transcriptModelConfig.provider);
     const [whisperManagerOpen, setWhisperManagerOpen] = useState(false);
     const [installedModels, setInstalledModels] = useState<InstalledModel[]>([]);
@@ -154,9 +160,7 @@ export function TranscriptSettings({ transcriptModelConfig, setTranscriptModelCo
             onModelSelect?.();
             return true;
         } catch (error) {
-            toast.error(t('liveModelSaveFailed'), {
-                description: typeof error === 'string' ? error : String(error),
-            });
+            toastFailure(t('liveModelSaveFailed'), 'live-model-save', error);
             return false;
         } finally {
             liveSaveInFlightRef.current = false;
@@ -186,7 +190,8 @@ export function TranscriptSettings({ transcriptModelConfig, setTranscriptModelCo
         } catch (error) {
             if (postCallRevisionRef.current === revision) {
                 setPostCallConfig(previousConfig);
-                setPostCallError(typeof error === 'string' ? error : String(error));
+                logFailure('post-call-model-save', error);
+                setPostCallError(t('postCallSaveFailed'));
             }
             return false;
         } finally {
@@ -237,7 +242,8 @@ export function TranscriptSettings({ transcriptModelConfig, setTranscriptModelCo
             setVocabularySaved(true);
             window.setTimeout(() => setVocabularySaved(false), 2000);
         } catch (error) {
-            setVocabularyError(typeof error === 'string' ? error : String(error));
+            logFailure('vocabulary-save', error);
+            setVocabularyError(t('vocabularySaveFailed'));
         } finally {
             setIsSavingVocabulary(false);
         }
@@ -309,9 +315,11 @@ export function TranscriptSettings({ transcriptModelConfig, setTranscriptModelCo
                             <div>
                                 <div className="flex flex-wrap items-center gap-2">
                                     <h4 className="font-semibold">Parakeet</h4>
-                                    <span className="rounded-full bg-emerald-500/10 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-emerald-500">
-                                        {t('badgeRecommendedLive')}
-                                    </span>
+                                    {recommendedLive === 'parakeet' ? (
+                                        <span className="rounded-full bg-emerald-500/10 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-emerald-500">
+                                            {t('badgeRecommendedLive')}
+                                        </span>
+                                    ) : null}
                                 </div>
                                 <p className="mt-1 text-sm text-[var(--af-text-2)]">
                                     {t('parakeetLiveDescription')}
@@ -364,9 +372,6 @@ export function TranscriptSettings({ transcriptModelConfig, setTranscriptModelCo
                             <div>
                                 <div className="flex flex-wrap items-center gap-2">
                                     <h4 className="font-semibold">Whisper</h4>
-                                    <span className="rounded-full bg-violet-500/10 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-violet-400">
-                                        {t('badgeBetterPostCall')}
-                                    </span>
                                 </div>
                                 <p className="mt-1 text-sm text-[var(--af-text-2)]">
                                     {t('whisperLiveDescription')}
@@ -401,6 +406,7 @@ export function TranscriptSettings({ transcriptModelConfig, setTranscriptModelCo
                     isSelected={uiProvider === 'gigaam'}
                     disabled={isSavingLive}
                     onSelect={(modelName) => saveLiveConfig('gigaam', modelName)}
+                    recommended={recommendedLive === 'gigaam'}
                 />
 
                 <ExternalSttSettings
@@ -446,9 +452,11 @@ export function TranscriptSettings({ transcriptModelConfig, setTranscriptModelCo
                             <div>
                                 <div className="flex flex-wrap items-center gap-2">
                                     <h4 className="font-semibold">Whisper</h4>
-                                    <span className="rounded-full bg-violet-500/10 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-violet-400">
-                                        {t('badgeRecommendedPostCall')}
-                                    </span>
+                                    {recommendedPostCall === 'whisper' ? (
+                                        <span className="rounded-full bg-emerald-500/10 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-emerald-500">
+                                            {t('badgeRecommendedPostCall')}
+                                        </span>
+                                    ) : null}
                                     <span className="rounded-full bg-blue-500/10 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-blue-400">
                                         {t('badgeVocabularyHints')}
                                     </span>
@@ -555,9 +563,15 @@ export function TranscriptSettings({ transcriptModelConfig, setTranscriptModelCo
                             <div>
                                 <div className="flex flex-wrap items-center gap-2">
                                     <h4 className="font-semibold">GigaAM v3</h4>
-                                    <span className="rounded-full bg-sky-500/10 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-sky-400">
-                                        {t('gigaamBadge')}
-                                    </span>
+                                    {recommendedPostCall === 'gigaam' ? (
+                                        <span className="rounded-full bg-emerald-500/10 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-emerald-500">
+                                            {t('badgeRecommendedPostCall')}
+                                        </span>
+                                    ) : (
+                                        <span className="rounded-full bg-sky-500/10 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-sky-400">
+                                            {t('gigaamBadge')}
+                                        </span>
+                                    )}
                                 </div>
                                 <p className="mt-1 text-sm text-[var(--af-text-2)]">
                                     {t('gigaamPostCallDescription')}

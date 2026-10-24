@@ -211,8 +211,11 @@ pub fn start_transcription_task<R: Runtime>(
                                     }
                                     "You".to_string()
                                 }
+                                // One person on the other end is "Guest" live,
+                                // after the offline pass and after "By device"
+                                // alike; numbers are for when there are several.
                                 crate::audio::recording_state::DeviceType::System if one_to_one => {
-                                    "Speaker 1".to_string()
+                                    "Guest".to_string()
                                 }
                                 crate::audio::recording_state::DeviceType::System => {
                                     match crate::diarization::online::assign_speaker(
@@ -249,13 +252,15 @@ pub fn start_transcription_task<R: Runtime>(
                                         None => "N/A".to_string(),
                                     };
 
-                                    info!("🔍 Worker {} transcription result: text='{}', confidence={}, partial={}",
-                                          worker_id, transcript, confidence_str, is_partial);
+                                    // The log sits in the clear beside the archive: say how
+                                    // much was recognised, never what (logging.rs).
+                                    info!("🔍 Worker {} transcription result: {} chars, confidence={}, partial={}",
+                                          worker_id, transcript.chars().count(), confidence_str, is_partial);
 
                                     if should_emit_transcript(&transcript, confidence_opt) {
                                         // PERFORMANCE: Only log transcription results, not every processing step
-                                        info!("✅ Worker {} transcribed: {} (confidence: {}, partial: {})",
-                                              worker_id, transcript, confidence_str, is_partial);
+                                        info!("✅ Worker {} transcribed {} chars (confidence: {}, partial: {})",
+                                              worker_id, transcript.chars().count(), confidence_str, is_partial);
 
                                         // Emit speech-detected event for frontend UX (only on first detection per session)
                                         // This is lightweight and provides better user feedback
@@ -299,8 +304,8 @@ pub fn start_transcription_task<R: Runtime>(
                                             )
                                         {
                                             info!(
-                                                "🔇 Worker {} dropped a microphone segment that repeats the system channel: '{}'",
-                                                worker_id, transcript
+                                                "🔇 Worker {} dropped a microphone segment that repeats the system channel ({} chars)",
+                                                worker_id, transcript.chars().count()
                                             );
                                             chunks_completed_clone.fetch_add(1, Ordering::SeqCst);
                                             continue;
@@ -574,8 +579,8 @@ async fn transcribe_chunk_with_provider<R: Runtime>(
                     }
 
                     info!(
-                        "Whisper transcription complete for chunk {}: '{}' (confidence: {:.2}, partial: {})",
-                        chunk.chunk_id, cleaned_text, confidence, is_partial
+                        "Whisper transcription complete for chunk {}: {} chars (confidence: {:.2}, partial: {})",
+                        chunk.chunk_id, cleaned_text.chars().count(), confidence, is_partial
                     );
 
                     Ok((cleaned_text, Some(confidence), is_partial))
@@ -609,8 +614,8 @@ async fn transcribe_chunk_with_provider<R: Runtime>(
                     }
 
                     info!(
-                        "Parakeet transcription complete for chunk {}: '{}'",
-                        chunk.chunk_id, cleaned_text
+                        "Parakeet transcription complete for chunk {}: {} chars",
+                        chunk.chunk_id, cleaned_text.chars().count()
                     );
 
                     // Parakeet doesn't provide confidence or partial results
@@ -653,10 +658,10 @@ async fn transcribe_chunk_with_provider<R: Runtime>(
                     };
 
                     info!(
-                        "{} transcription complete for chunk {}: '{}' ({}, partial: {})",
+                        "{} transcription complete for chunk {}: {} chars ({}, partial: {})",
                         provider.provider_name(),
                         chunk.chunk_id,
-                        cleaned_text,
+                        cleaned_text.chars().count(),
                         confidence_str,
                         result.is_partial
                     );

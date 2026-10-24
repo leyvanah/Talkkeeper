@@ -1,6 +1,5 @@
 use serde::{Deserialize, Serialize};
 use tauri::command;
-use reqwest::blocking::Client;
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct OpenRouterModel {
@@ -41,7 +40,7 @@ struct OpenRouterResponse {
 #[command]
 pub fn get_openrouter_models() -> Result<Vec<OpenRouterModel>, String> {
     crate::network_policy::check("https://openrouter.ai/api/v1/models")?;
-    let client = Client::new();
+    let client = crate::network_policy::blocking_client("https://openrouter.ai/api/v1/models")?;
     let response = client
         .get("https://openrouter.ai/api/v1/models")
         .send()

@@ -6,11 +6,13 @@
 
 <p align="center"><b>Private recording, transcription and notes for conversations that must never leave your computer.</b></p>
 
+<p align="center"><b><a href="https://leyvanah.github.io/Talkkeeper/">Website</a></b> (in Russian) · <a href="https://github.com/leyvanah/Talkkeeper/releases/latest">Download for Windows</a></p>
+
 > **Коротко по-русски.** Talkkeeper записывает разговор, расшифровывает его и
 > помогает с заметками — целиком на вашем компьютере. Записи и текст зашифрованы
 > на диске, телеметрии нет, облако подключается только если вы сами этого
 > захотите. Интерфейс по умолчанию русский; распознавание русской речи — GigaAM.
-> Сборка для Windows 10/11.
+> Сборка для Windows 10/11. Сайт: <https://leyvanah.github.io/Talkkeeper/>.
 
 Talkkeeper is developed by [leyvanah](https://github.com/leyvanah). It started
 life as a fork of an open-source meeting recorder and has since been reshaped
@@ -60,8 +62,7 @@ the machine, and the software should behave accordingly.**
 **Notes and summaries**
 - Summaries with local models (a bundled llama.cpp helper using Vulkan on the GPU,
   or the CPU), Ollama, or any OpenAI-compatible endpoint you choose.
-- Custom templates, exports to DOCX, Markdown, text and JSON (PDF returns once
-  it can print Cyrillic).
+- Custom templates, exports to PDF, DOCX, Markdown, text and JSON.
 
 **Library and interface**
 - A library organised by client, with recordings filed under each.
@@ -111,8 +112,10 @@ keystore wherever you choose. Keep that copy *apart from the recordings*:
 together they allow offline guessing of the password, which is exactly why the
 app does not keep one beside them for you. When the uninstaller is asked to
 delete the app data, it asks separately — naming what will become unreadable —
-saves a copy of the key to `Documents\Talkkeeper-key-backup`, and refuses to wipe
-anything if that copy could not be written.
+then asks where to save a copy of the key (`Documents\Talkkeeper-key-backup` by
+default; pick a folder that is not synced to OneDrive or another cloud). Each
+copy gets its own name with the date and time, so an earlier one is never
+overwritten. Nothing is wiped if the copy could not be written.
 
 ### Quick unlock (Windows Hello, optional, off by default)
 

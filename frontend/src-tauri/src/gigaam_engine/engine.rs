@@ -271,11 +271,50 @@ impl GigaamEngine {
         }
         self.cancel_download.store(false, Ordering::Relaxed);
 
-        let result = self.download_files(progress_callback).await;
+        // Only what is left has to fit: the parts already here are resumed.
+        let (downloaded, _, _) = self.downloaded_bytes().await;
+        let result = match crate::disk_space::ensure_room(
+            &self.model_dir,
+            total_download_bytes().saturating_sub(downloaded),
+        ) {
+            Err(error) => Err(error),
+            Ok(()) => {
+                let result = self.download_files(progress_callback).await;
+                // Unfinished files stay for a resume after a network failure;
+                // after the disk filled up they only hold the space a retry
+                // needs.
+                if result
+                    .as_ref()
+                    .is_err_and(|error| crate::disk_space::is_no_space(error))
+                {
+                    self.remove_unfinished_files().await;
+                }
+                result
+            }
+        };
 
         self.downloading.store(false, Ordering::SeqCst);
         self.progress.store(0, Ordering::Relaxed);
         result
+    }
+
+    /// Removes the model files that stopped short of their full size.
+    async fn remove_unfinished_files(&self) {
+        for (name, expected) in MODEL_FILES {
+            let path = self.model_dir.join(name);
+            if let Ok(metadata) = fs::metadata(&path).await {
+                if metadata.len() < expected {
+                    match fs::remove_file(&path).await {
+                        Ok(()) => log::info!("Removed unfinished download {}", path.display()),
+                        Err(error) => log::warn!(
+                            "Could not remove unfinished download {}: {}",
+                            path.display(),
+                            error
+                        ),
+                    }
+                }
+            }
+        }
     }
 
     async fn download_files(
@@ -286,7 +325,7 @@ impl GigaamEngine {
             fs::create_dir_all(&self.model_dir).await?;
         }
 
-        let client = reqwest::Client::builder()
+        let client = crate::network_policy::client_builder(BASE_URL)
             .tcp_nodelay(true)
             .pool_max_idle_per_host(1)
             .timeout(Duration::from_secs(3600))
@@ -396,10 +435,14 @@ impl GigaamEngine {
                     Ok(Some(Ok(chunk))) => chunk,
                 };
 
-                writer
-                    .write_all(&chunk)
-                    .await
-                    .map_err(|e| anyhow!("Failed to write {}: {}", name, e))?;
+                writer.write_all(&chunk).await.map_err(|e| {
+                    crate::disk_space::write_error(
+                        e,
+                        &self.model_dir,
+                        total_bytes.saturating_sub(downloaded_total),
+                        format!("Failed to write {}", name),
+                    )
+                })?;
                 downloaded_total += chunk.len() as u64;
 
                 if last_report.elapsed() >= Duration::from_millis(500) {
@@ -414,10 +457,14 @@ impl GigaamEngine {
                 }
             }
 
-            writer
-                .flush()
-                .await
-                .map_err(|e| anyhow!("Failed to flush {}: {}", name, e))?;
+            writer.flush().await.map_err(|e| {
+                crate::disk_space::write_error(
+                    e,
+                    &self.model_dir,
+                    total_bytes.saturating_sub(downloaded_total),
+                    format!("Failed to flush {}", name),
+                )
+            })?;
 
             let final_size = fs::metadata(&path).await.map(|m| m.len()).unwrap_or(0);
             if final_size != expected {
