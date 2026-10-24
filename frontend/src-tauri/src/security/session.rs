@@ -9,7 +9,7 @@
 //! recording.** Wiping the key mid-session would end the session. Idle locking
 //! resumes as soon as the recording stops.
 
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
@@ -90,6 +90,36 @@ impl Drop for BusyGuard {
 /// Whether a job holding a [`BusyGuard`] is running.
 pub fn background_work_running() -> bool {
     BUSY.load(Ordering::SeqCst) > 0
+}
+
+/// Set while a password is being set or removed.
+static CHANGING_PROTECTION: AtomicBool = AtomicBool::new(false);
+
+/// Held while a password is being set or removed. A recording or an import
+/// takes the key (or its absence) when it opens its files, so one that started
+/// in the middle would land on the wrong side of the change: sealed with a key
+/// that is about to be deleted, or in the clear under a fresh password.
+#[must_use = "protection counts as changing only while the guard is alive"]
+pub struct ProtectionChange(());
+
+/// Marks protection as changing until the guard is dropped; `None` when a
+/// change is already running.
+pub fn begin_protection_change() -> Option<ProtectionChange> {
+    CHANGING_PROTECTION
+        .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+        .ok()
+        .map(|_| ProtectionChange(()))
+}
+
+impl Drop for ProtectionChange {
+    fn drop(&mut self) {
+        CHANGING_PROTECTION.store(false, Ordering::SeqCst);
+    }
+}
+
+/// Whether a password is being set or removed right now.
+pub fn protection_changing() -> bool {
+    CHANGING_PROTECTION.load(Ordering::SeqCst)
 }
 
 /// How often the idle check runs. Fine-grained enough that a one-minute timeout
@@ -265,6 +295,17 @@ mod tests {
         drop(inner);
         drop(outer);
         assert_eq!(BUSY.load(Ordering::SeqCst), before);
+    }
+
+    #[test]
+    fn only_one_protection_change_runs_at_a_time() {
+        // No other test takes this flag, so its absolute value can be checked.
+        let change = begin_protection_change().expect("no change was running");
+        assert!(protection_changing());
+        assert!(begin_protection_change().is_none());
+        drop(change);
+        assert!(!protection_changing());
+        assert!(begin_protection_change().is_some());
     }
 
     #[test]

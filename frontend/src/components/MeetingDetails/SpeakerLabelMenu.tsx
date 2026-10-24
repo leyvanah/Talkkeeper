@@ -96,7 +96,7 @@ export function SpeakerLabelMenu({
           {options.map((option) => (
             <DropdownMenuRadioItem key={option} value={option}>
               {option === choice.fresh && !choice.existing.includes(option)
-                ? tm('transcriptNewSpeaker', { speaker: option })
+                ? tm('transcriptNewSpeaker', { speaker: displayOf(option) })
                 : displayOf(option)}
             </DropdownMenuRadioItem>
           ))}

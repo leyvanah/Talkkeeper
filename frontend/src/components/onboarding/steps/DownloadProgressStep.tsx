@@ -8,13 +8,13 @@ import { OnboardingContainer } from '../OnboardingContainer';
 import { useOnboarding } from '@/contexts/OnboardingContext';
 import { toast } from 'sonner';
 import { motion, AnimatePresence } from 'framer-motion';
-import { getSummaryModelSizeLabel, getSummaryModelSizeMb } from '@/lib/onboarding-summary-model';
+import { getSummaryModelSizeLabel, getSummaryModelSizeMb, STT_DOWNLOAD_MB } from '@/lib/onboarding-summary-model';
 import { GIGAAM_MODEL_NAME } from '@/components/GigaamModelManager';
+import { logFailure } from '@/lib/failure';
+import { failureText } from '@/lib/failure-text';
+import { useDiskSpaceText } from '@/hooks/useDiskSpaceText';
 
 const PARAKEET_MODEL = 'parakeet-tdt-0.6b-v3-int8';
-
-// Download sizes shown before the first progress event arrives
-const STT_SIZE_MB = { parakeet: 670, gigaam: 215 } as const;
 
 type DownloadStatus = 'waiting' | 'downloading' | 'completed' | 'error';
 
@@ -29,6 +29,7 @@ interface DownloadState {
 
 export function DownloadProgressStep() {
   const t = useTranslations('onboarding');
+  const diskSpaceText = useDiskSpaceText();
   const {
     goNext,
     selectedSummaryModel,
@@ -49,7 +50,7 @@ export function DownloadProgressStep() {
     status: sttDownloaded ? 'completed' : 'waiting',
     progress: sttDownloaded ? 100 : 0,
     downloadedMb: 0,
-    totalMb: STT_SIZE_MB[sttEngine],
+    totalMb: STT_DOWNLOAD_MB[sttEngine],
     speedMbps: 0,
   });
 
@@ -98,16 +99,14 @@ export function DownloadProgressStep() {
       }
       // Progress events will update state
     } catch (error) {
-      console.error('[DownloadProgressStep] Retry failed:', error);
-      const message = String(error);
       setSttState((prev) => ({
         ...prev,
         status: 'error',
-        error: message,
+        error: failureText(error),
       }));
 
       toast.error(t('dlRetryFailed'), {
-        description: message,
+        description: diskSpaceText(error) ?? t('dlFailedHint'),
       });
     } finally {
       // Allow retry again after 2 seconds
@@ -151,11 +150,11 @@ export function DownloadProgressStep() {
       setSummaryState((prev) => ({
         ...prev,
         status: 'error',
-        error: error instanceof Error ? error.message : t('dlRetryFailedShort'),
+        error: failureText(error),
       }));
 
       toast.error(t('dlSummaryRetryFailed'), {
-        description: t('dlCheckConnection'),
+        description: diskSpaceText(error) ?? t('dlFailedHint'),
       });
     } finally {
       // Allow retry again after 2 seconds
@@ -164,6 +163,18 @@ export function DownloadProgressStep() {
       }, 2000);
     }
   };
+
+  // A download's error text comes from several places (the start, a retry, the
+  // progress events); whichever set it, it goes to the log once, and the screen
+  // says what to do instead of showing it.
+  useEffect(() => {
+    if (sttState.status === 'error' && sttState.error) logFailure('onboarding-stt-download', sttState.error);
+  }, [sttState.status, sttState.error]);
+  useEffect(() => {
+    if (summaryState.status === 'error' && summaryState.error) {
+      logFailure('onboarding-summary-download', summaryState.error);
+    }
+  }, [summaryState.status, summaryState.error]);
 
   // Detect platform on mount
   useEffect(() => {
@@ -194,7 +205,7 @@ export function DownloadProgressStep() {
     }).catch((error) => {
       console.error('Failed to start speech recognition download:', error);
       if (!sttDownloaded) {
-        setSttState((prev) => ({ ...prev, status: 'error', error: String(error) }));
+        setSttState((prev) => ({ ...prev, status: 'error', error: failureText(error) }));
       }
     });
   }, []);
@@ -384,7 +395,7 @@ export function DownloadProgressStep() {
         });
       } catch (error) {
         console.error('Failed to start summary model download:', error);
-        setSummaryState((prev) => ({ ...prev, status: 'error', error: String(error) }));
+        setSummaryState((prev) => ({ ...prev, status: 'error', error: failureText(error) }));
       }
     }
   };
@@ -511,7 +522,7 @@ export function DownloadProgressStep() {
       {state.status === 'error' && state.error && (
         <div className="mt-2 p-3 bg-red-50 border border-red-200 rounded-md">
           <p className="text-sm text-red-600 font-medium">{t('dlDownloadError')}</p>
-          <p className="text-xs text-red-500 mt-1">{state.error}</p>
+          <p className="text-xs text-red-500 mt-1">{diskSpaceText(state.error) ?? t('dlFailedHint')}</p>
           {(step === 1 || step === 2) && (
             <button
               onClick={step === 1 ? handleRetryDownload : handleRetrySummaryDownload}
@@ -545,7 +556,7 @@ export function DownloadProgressStep() {
             sttEngine === 'gigaam' ? GIGAAM_MODEL_NAME : PARAKEET_MODEL,
             <Mic className="w-5 h-5 text-gray-600" />,
             sttState,
-            `~${STT_SIZE_MB[sttEngine]} MB`
+            `~${STT_DOWNLOAD_MB[sttEngine]} MB`
           )}
 
           {renderDownloadCard(

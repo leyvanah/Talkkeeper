@@ -29,6 +29,9 @@ import {
   CommandSeparator,
 } from '@/components/ui/command';
 import type { GlobalSearchResult } from '@/types';
+import { useSpeakerWords } from '@/hooks/useSpeakerWords';
+import { speakerKeyForTerm, speakerLabel } from '@/lib/speaker-label';
+import { logFailure } from '@/lib/failure';
 
 function formatAudioTime(seconds: number): string {
   const total = Math.max(0, Math.floor(seconds));
@@ -75,6 +78,12 @@ export default function GlobalSearchDialog() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const requestIdRef = useRef(0);
+  const speakerWords = useSpeakerWords();
+  const [userName, setUserName] = useState('');
+
+  useEffect(() => {
+    if (open) setUserName(localStorage.getItem('meetily_user_name')?.trim() || '');
+  }, [open]);
 
   useEffect(() => {
     const openSearch = () => setOpen(true);
@@ -112,23 +121,36 @@ export default function GlobalSearchDialog() {
     setError(null);
     const timer = window.setTimeout(async () => {
       try {
-        const nextResults = await invoke<GlobalSearchResult[]>('api_global_search', {
-          query: trimmed,
-          limit: 40,
-        });
+        // "Вы" or "Гость" is how a speaker is shown, not how it is stored:
+        // the lines of that speaker are looked up by the stored key as well.
+        const speakerKey = speakerKeyForTerm(trimmed, speakerWords);
+        const [typed, bySpeaker] = await Promise.all([
+          invoke<GlobalSearchResult[]>('api_global_search', { query: trimmed, limit: 40 }),
+          speakerKey
+            ? invoke<GlobalSearchResult[]>('api_global_search', { query: speakerKey, limit: 40 })
+            : Promise.resolve([] as GlobalSearchResult[]),
+        ]);
+        const seen = new Set(typed.map((result) => `${result.kind}-${result.id}`));
+        const spokenBy = bySpeaker.filter(
+          (result) =>
+            result.kind === 'transcript' &&
+            result.speaker?.trim().toLowerCase() === speakerKey?.toLowerCase() &&
+            !seen.has(`${result.kind}-${result.id}`),
+        );
+        const nextResults = [...spokenBy, ...typed];
         if (requestId === requestIdRef.current) setResults(nextResults);
       } catch (searchError) {
         if (requestId !== requestIdRef.current) return;
-        console.error('Global search failed:', searchError);
+        logFailure('global-search', searchError);
         setResults([]);
-        setError(searchError instanceof Error ? searchError.message : String(searchError));
+        setError(t('searchFailedDetail'));
       } finally {
         if (requestId === requestIdRef.current) setLoading(false);
       }
     }, 275);
 
     return () => window.clearTimeout(timer);
-  }, [open, query]);
+  }, [open, query, speakerWords]);
 
   const people = useMemo(() => results.filter((result) => result.kind === 'person'), [results]);
   const records = useMemo(() => results.filter((result) => result.kind !== 'person'), [results]);
@@ -158,7 +180,9 @@ export default function GlobalSearchDialog() {
 
   const renderRecord = (result: GlobalSearchResult) => {
     const metadata = [
-      result.kind === 'transcript' ? result.speaker : undefined,
+      result.kind === 'transcript' && result.speaker
+        ? speakerLabel(result.speaker, userName, speakerWords)
+        : undefined,
       result.kind === 'transcript' && result.audioStartTime != null
         ? formatAudioTime(result.audioStartTime)
         : undefined,
@@ -262,14 +286,19 @@ export default function GlobalSearchDialog() {
                       {result.title.trim().charAt(0).toUpperCase() || '?'}
                     </span>
                     <span className="min-w-0 flex-1">
-                      <span className="block truncate text-sm font-medium text-[var(--af-text)]">{result.title}</span>
+                      {/* Two clients can each have a "Тест А": the client tells the rows apart. */}
+                      <span className="block truncate text-sm font-medium text-[var(--af-text)]">
+                        {result.clientDisplayName
+                          ? t('searchPersonWithClient', { name: result.title, client: result.clientDisplayName })
+                          : result.title}
+                      </span>
                       <span className="mt-0.5 block truncate text-xs text-[var(--af-text-2)]">
                         {result.snippet || t('searchPersonSnippet')}
                       </span>
                     </span>
                     {result.meetingCount != null && (
                       <span className="shrink-0 text-xs tabular-nums text-[var(--af-text-3)]">
-                        {result.meetingCount} meeting{result.meetingCount === 1 ? '' : 's'}
+                        {t('searchPersonMeetings', { count: result.meetingCount })}
                       </span>
                     )}
                   </CommandItem>

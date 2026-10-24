@@ -1,10 +1,13 @@
 'use client';
 
-import React, { useEffect, useRef } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { useTranslations } from 'next-intl';
 import { listen } from '@tauri-apps/api/event';
+import { invoke } from '@tauri-apps/api/core';
 import { useRecordingStop } from '@/hooks/useRecordingStop';
+import { QuitWhileRecordingDialog } from '@/components/QuitWhileRecordingDialog';
 import { toast } from 'sonner';
+import { toastFailure } from '@/lib/failure';
 
 /**
  * RecordingPostProcessingProvider
@@ -56,8 +59,7 @@ export function RecordingPostProcessingProvider({ children }: { children: React.
 
           const { call_api, folder_path, meeting_name, audio_save_error } = event.payload;
           if (audio_save_error) {
-            toast.error(t('audioSaveFailed'), {
-              description: audio_save_error,
+            toastFailure(t('audioSaveFailed'), 'recording-audio-save', audio_save_error, {
               duration: 10000,
             });
           }
@@ -71,7 +73,13 @@ export function RecordingPostProcessingProvider({ children }: { children: React.
           } else {
             sessionStorage.removeItem('last_recording_meeting_name');
           }
-          void handleRecordingStopRef.current(call_api);
+          // Quit from the tray waits for this save before exiting (quit.rs),
+          // so it is told when the save is over, however it went.
+          void handleRecordingStopRef.current(call_api).finally(() => {
+            invoke('recording_save_settled').catch((error) => {
+              console.warn('[RecordingPostProcessing] Could not report the save settled:', error);
+            });
+          });
         });
 
         // StrictMode can clean up an effect before the asynchronous registration
@@ -104,7 +112,7 @@ export function RecordingPostProcessingProvider({ children }: { children: React.
     let disposed = false;
 
     void listen<string>('recording-error', (event) => {
-      toast.error(event.payload || 'Recording stopped because audio capture failed.', {
+      toastFailure(t('recordingCaptureFailed'), 'recording-capture', event.payload, {
         duration: 10000,
       });
     }).then((unlisten) => {
@@ -152,5 +160,34 @@ export function RecordingPostProcessingProvider({ children }: { children: React.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  return <>{children}</>;
+  // Quit was chosen in the tray during a recording: ask before stopping it.
+  const [quitAsked, setQuitAsked] = useState(false);
+  useEffect(() => {
+    let unlistenFn: (() => void) | undefined;
+    let disposed = false;
+
+    void listen('quit-requested-during-recording', () => setQuitAsked(true))
+      .then((unlisten) => {
+        if (disposed) {
+          unlisten();
+        } else {
+          unlistenFn = unlisten;
+        }
+      })
+      .catch((error) => {
+        console.error('[RecordingPostProcessing] Failed to listen for quit requests:', error);
+      });
+
+    return () => {
+      disposed = true;
+      unlistenFn?.();
+    };
+  }, []);
+
+  return (
+    <>
+      {children}
+      <QuitWhileRecordingDialog open={quitAsked} onClose={() => setQuitAsked(false)} />
+    </>
+  );
 }

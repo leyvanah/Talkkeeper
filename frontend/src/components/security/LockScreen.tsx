@@ -9,11 +9,15 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { useTranslations } from 'next-intl'
+import { invoke } from '@tauri-apps/api/core'
 import { Lock, KeyRound, ArrowLeft, Eye, EyeOff, ScanFace } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { asSecurityError, useSecurity } from '@/contexts/SecurityContext'
 import { RecoveryCodeInput } from './RecoveryCodeInput'
+import { NewPasswordFields } from './NewPasswordFields'
+import { MIN_PASSWORD_LENGTH, checkNewPassword } from '@/lib/password-rules'
+import { keystoreFilePath } from '@/lib/keystore-location'
 
 /** Which of the two ways in the owner is currently using. */
 type Mode = 'password' | 'recovery'
@@ -27,9 +31,18 @@ export function LockScreen() {
   const [reveal, setReveal] = useState(false)
   const [recoveryCode, setRecoveryCode] = useState('')
   const [newPassword, setNewPassword] = useState('')
+  const [newPasswordRepeat, setNewPasswordRepeat] = useState('')
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [waitSeconds, setWaitSeconds] = useState(status?.waitSeconds ?? 0)
+  // Set when the last failure was a damaged key file: the owner then needs the
+  // file's full path to put the saved copy back by hand.
+  const [keystoreDamaged, setKeystoreDamaged] = useState(status?.keystoreDamaged ?? false)
+  const [keystoreFile, setKeystoreFile] = useState<string | null>(null)
+  // The key file could not be read at all when the app started. No password
+  // can open the archive then, so the screen only says how to put it right.
+  const fileUnreadable = status?.keystoreDamaged ?? false
+  const shownError = error ?? (fileUnreadable ? t('errorKeystoreCorrupt') : null)
 
   const passwordField = useRef<HTMLInputElement>(null)
 
@@ -43,6 +56,23 @@ export function LockScreen() {
     setWaitSeconds(status?.waitSeconds ?? 0)
   }, [status?.waitSeconds])
 
+  // The path is asked for once and shown on screen only — it carries the name of
+  // the home folder, so it never goes to the console or the log.
+  useEffect(() => {
+    if (!keystoreDamaged || keystoreFile !== null) return
+    let cancelled = false
+    invoke<string>('get_database_directory')
+      .then((folder) => {
+        if (!cancelled) setKeystoreFile(keystoreFilePath(folder))
+      })
+      .catch(() => {
+        if (!cancelled) setKeystoreFile(keystoreFilePath(null))
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [keystoreDamaged, keystoreFile])
+
   useEffect(() => {
     if (waitSeconds <= 0) return
     const timer = window.setInterval(() => {
@@ -55,6 +85,7 @@ export function LockScreen() {
   const describe = useCallback(
     (error: unknown): string => {
       const failure = asSecurityError(error)
+      setKeystoreDamaged(failure.code === 'keystoreCorrupt')
       switch (failure.code) {
         case 'wrongPassword':
           return t('errorWrongPassword')
@@ -70,11 +101,13 @@ export function LockScreen() {
           setWaitSeconds(failure.waitSeconds ?? 0)
           return t('errorTooManyAttempts', { seconds: failure.waitSeconds ?? 0 })
         case 'passwordTooShort':
-          return t('errorPasswordTooShort', { minimum: failure.minimum ?? 8 })
+          return t('errorPasswordTooShort', { minimum: failure.minimum ?? MIN_PASSWORD_LENGTH })
         case 'noRecoveryCode':
           return t('errorNoRecoveryCode')
         case 'keystoreCorrupt':
           return t('errorKeystoreCorrupt')
+        case 'keystoreSaveFailed':
+          return t('errorKeystoreSaveFailed')
         case 'quickDeclined':
           return t('errorQuickDeclined')
         case 'quickUnavailable':
@@ -107,9 +140,11 @@ export function LockScreen() {
     }
   }
 
+  const newPasswordCheck = checkNewPassword(newPassword, newPasswordRepeat)
+
   const submitRecovery = async (event: React.FormEvent) => {
     event.preventDefault()
-    if (busy || waitSeconds > 0) return
+    if (busy || waitSeconds > 0 || !recoveryCode || !newPasswordCheck.ok) return
 
     setBusy(true)
     setError(null)
@@ -119,6 +154,7 @@ export function LockScreen() {
       await resetPassword(recoveryCode, newPassword)
       setRecoveryCode('')
       setNewPassword('')
+      setNewPasswordRepeat('')
     } catch (failure) {
       setError(describe(failure))
     } finally {
@@ -126,7 +162,7 @@ export function LockScreen() {
     }
   }
 
-  const blocked = waitSeconds > 0
+  const blocked = waitSeconds > 0 || fileUnreadable
 
   return (
     <div className="flex h-screen items-center justify-center bg-[var(--af-bg)] px-6">
@@ -159,7 +195,7 @@ export function LockScreen() {
                 autoComplete="current-password"
                 disabled={busy || blocked}
                 aria-label={t('passwordPlaceholder')}
-                className="pr-10"
+                className="pr-10 [&::-ms-reveal]:hidden"
               />
               <button
                 type="button"
@@ -178,7 +214,7 @@ export function LockScreen() {
 
             {/* Offered only where the owner turned it on. The password field
                 stays above it: this is the shortcut, not the way in. */}
-            {status?.quickEnabled && (
+            {status?.quickEnabled && !fileUnreadable && (
               <Button
                 type="button"
                 variant="outline"
@@ -203,45 +239,56 @@ export function LockScreen() {
           </form>
         ) : (
           <form onSubmit={submitRecovery} className="space-y-4">
+            {/* Mounted by the switch to this mode, so the owner can start
+                typing the code off the sheet straight away. */}
             <RecoveryCodeInput
               value={recoveryCode}
               onChange={setRecoveryCode}
               disabled={busy || blocked}
+              autoFocus
             />
-            <Input
-              type="password"
-              value={newPassword}
-              onChange={(event) => setNewPassword(event.target.value)}
-              placeholder={t('newPasswordPlaceholder')}
-              autoComplete="new-password"
+            <NewPasswordFields
+              password={newPassword}
+              repeat={newPasswordRepeat}
+              onPasswordChange={setNewPassword}
+              onRepeatChange={setNewPasswordRepeat}
               disabled={busy || blocked}
-              aria-label={t('newPasswordPlaceholder')}
             />
             <Button
               type="submit"
               className="w-full"
-              disabled={busy || blocked || !recoveryCode || !newPassword}
+              disabled={busy || blocked || !recoveryCode || !newPasswordCheck.ok}
             >
               {busy ? t('unlocking') : t('recoveryUnlockAction')}
             </Button>
           </form>
         )}
 
-        {blocked && (
+        {waitSeconds > 0 && (
           <p className="mt-4 text-center text-sm text-amber-500">
             {t('waitBeforeNextAttempt', { seconds: waitSeconds })}
           </p>
         )}
 
-        {error && !blocked && (
-          <p role="alert" className="mt-4 text-center text-sm text-red-500">
-            {error}
-          </p>
+        {shownError && waitSeconds <= 0 && (
+          <div role="alert" className="mt-4 text-center text-sm">
+            <p className="text-red-500">{shownError}</p>
+            {keystoreDamaged && (
+              <>
+                {keystoreFile && (
+                  <p className="mt-2 select-all break-all font-mono text-xs text-[var(--af-text)]">
+                    {keystoreFile}
+                  </p>
+                )}
+                <p className="mt-2 text-[var(--af-text-2)]">{t('keystoreCorruptRestore')}</p>
+              </>
+            )}
+          </div>
         )}
 
         <div className="mt-6 text-center">
           {mode === 'password' ? (
-            status?.hasRecovery ? (
+            fileUnreadable ? null : status?.hasRecovery ? (
               <button
                 type="button"
                 onClick={() => {
