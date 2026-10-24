@@ -622,6 +622,53 @@ async fn the_copy_from_before_encryption_goes_once_every_value_opens() {
 }
 
 #[tokio::test]
+async fn a_value_sealed_during_the_removal_is_opened_by_the_second_pass() {
+    use app_lib::security::commands::convert_database_at;
+
+    // Removing the password opens the database, then the recordings, which
+    // can take minutes. A summary or a note saved in between is sealed with
+    // the key; the second database pass, right before the key file goes, is
+    // what opens it. Without it that value could never be read again.
+    let folder = tempfile::tempdir().unwrap();
+    let pool = archive_in(folder.path()).await;
+    let backup = folder.path().join("meeting_minutes.before-encryption.sqlite");
+    sqlx::raw_sql(
+        "INSERT INTO meetings (id, title, created_at, updated_at) \
+             VALUES ('m1', 'Встреча в четверг', '2026-09-01T10:00:00Z', '2026-09-01T10:00:00Z');",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    convert_database_at(&pool, field_encryption::Direction::Encrypt, &backup)
+        .await
+        .unwrap();
+
+    // The first pass, as `security_disable` runs it.
+    convert_database_at(&pool, field_encryption::Direction::Decrypt, &backup)
+        .await
+        .unwrap();
+    assert_eq!(field_encryption::count(&pool).await.unwrap().sealed, 0);
+
+    // Saved while the recordings were being decrypted.
+    sqlx::query(
+        "INSERT INTO meetings (id, title, created_at, updated_at) \
+             VALUES ('m2', ?, '2026-09-02T10:00:00Z', '2026-09-02T10:00:00Z')",
+    )
+    .bind(fields::seal(fields::MEETING_TITLE, "Итоги пятницы").unwrap())
+    .execute(&pool)
+    .await
+    .unwrap();
+    assert_eq!(field_encryption::count(&pool).await.unwrap().sealed, 1);
+
+    // The second pass.
+    convert_database_at(&pool, field_encryption::Direction::Decrypt, &backup)
+        .await
+        .unwrap();
+    assert_eq!(field_encryption::count(&pool).await.unwrap().sealed, 0);
+    assert!(every_stored_value(&pool).await.contains("Итоги пятницы"));
+}
+
+#[tokio::test]
 async fn a_value_that_does_not_open_keeps_the_copy() {
     use app_lib::security::commands::convert_database_at;
 

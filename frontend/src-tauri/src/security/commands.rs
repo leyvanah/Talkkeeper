@@ -279,6 +279,7 @@ pub async fn security_recording_encryption<R: Runtime>(
 pub async fn security_encrypt_recordings<R: Runtime>(
     app: AppHandle<R>,
 ) -> Result<RecordingEncryption, SecurityError> {
+    let _busy = start_conversion()?;
     let report = convert_archive(&app, Direction::Encrypt)
         .await
         .ok_or_else(|| SecurityError::new("locked", "the archive is locked"))?;
@@ -372,6 +373,7 @@ pub async fn security_encrypt_fields(
     if !super::session::archive_is_open() {
         return Err(SecurityError::new("locked", "the archive is locked"));
     }
+    let _busy = start_conversion()?;
     convert_database(state.db_manager.pool(), DatabaseDirection::Encrypt).await?;
     security_field_encryption(state).await
 }
@@ -767,6 +769,40 @@ impl From<super::quick::QuickError> for SecurityError {
     }
 }
 
+/// Counts a conversion the owner asked for ("encrypt the recordings", "encrypt
+/// the text") as a running job, and refuses it while a password is being set
+/// or removed: run during a removal, it would seal what it touches with the
+/// key about to be deleted. Counted before the check, so a change either sees
+/// this conversion and refuses, or this conversion sees the change.
+fn start_conversion() -> Result<super::session::BusyGuard, SecurityError> {
+    let busy = super::session::busy();
+    if super::session::protection_changing() {
+        return Err(SecurityError::new(
+            "changeInProgress",
+            "the protection is being changed",
+        ));
+    }
+    Ok(busy)
+}
+
+/// What stops a password being set or removed right now, if anything. A
+/// recording comes first: it is the one that cannot be started over.
+fn protection_change_refusal(recording: bool, jobs_running: bool) -> Option<SecurityError> {
+    if recording {
+        return Some(SecurityError::new(
+            "changeWhileRecording",
+            "the protection cannot be changed while recording",
+        ));
+    }
+    if jobs_running {
+        return Some(SecurityError::new(
+            "changeWhileJob",
+            "the protection cannot be changed while a summary, transcription or import is running",
+        ));
+    }
+    None
+}
+
 /// Marks protection as changing, after making sure nothing is writing to the
 /// archive. A recording or a job that started before the change would write
 /// with the key it found when it opened its files — one about to be deleted, or
@@ -779,19 +815,11 @@ async fn start_protection_change() -> Result<super::session::ProtectionChange, S
     // A recording that is starting right now gets there first, so the check
     // below sees it rather than letting it open its files mid-change.
     crate::audio::recording_commands::wait_for_recording_lifecycle().await;
-    if crate::audio::recording_commands::is_recording().await {
-        return Err(SecurityError::new(
-            "changeWhileRecording",
-            "the protection cannot be changed while recording",
-        ));
+    let recording = crate::audio::recording_commands::is_recording().await;
+    match protection_change_refusal(recording, super::session::background_work_running()) {
+        Some(refusal) => Err(refusal),
+        None => Ok(change),
     }
-    if super::session::background_work_running() {
-        return Err(SecurityError::new(
-            "changeWhileJob",
-            "the protection cannot be changed while a summary, transcription or import is running",
-        ));
-    }
-    Ok(change)
 }
 
 /// Protects the archive for the first time and leaves it unlocked.
@@ -1161,6 +1189,56 @@ mod tests {
         let wrong: SecurityError = KeystoreError::WrongRecoveryCode.into();
         assert_eq!(typo.code, "recoveryTypo");
         assert_eq!(wrong.code, "wrongRecoveryCode");
+    }
+
+    #[test]
+    fn a_protection_change_names_what_stands_in_its_way() {
+        let code = |recording, jobs| protection_change_refusal(recording, jobs).map(|e| e.code);
+        assert_eq!(code(false, false), None);
+        assert_eq!(code(true, false).as_deref(), Some("changeWhileRecording"));
+        assert_eq!(code(false, true).as_deref(), Some("changeWhileJob"));
+        // The recording is the one to name: it cannot be started over.
+        assert_eq!(code(true, true).as_deref(), Some("changeWhileRecording"));
+    }
+
+    #[tokio::test]
+    async fn a_password_is_not_set_or_removed_under_a_running_job() {
+        let _flag = super::super::session::protection_flag_for_test();
+        let job = super::super::session::busy();
+
+        let refused = start_protection_change().await.err().map(|e| e.code);
+        assert_eq!(refused.as_deref(), Some("changeWhileJob"));
+        // A refusal does not leave the flag behind to block recordings.
+        assert!(!super::super::session::protection_changing());
+        drop(job);
+    }
+
+    #[tokio::test]
+    async fn only_one_password_change_runs_at_a_time() {
+        let _flag = super::super::session::protection_flag_for_test();
+        let running = super::super::session::begin_protection_change().unwrap();
+
+        let refused = start_protection_change().await.err().map(|e| e.code);
+        assert_eq!(refused.as_deref(), Some("changeInProgress"));
+        // The running change still holds the flag.
+        assert!(super::super::session::protection_changing());
+        drop(running);
+    }
+
+    #[test]
+    fn encrypting_on_request_waits_for_a_password_change_to_finish() {
+        let _flag = super::super::session::protection_flag_for_test();
+
+        let change = super::super::session::begin_protection_change().unwrap();
+        let refused = start_conversion().err().map(|e| e.code);
+        assert_eq!(refused.as_deref(), Some("changeInProgress"));
+        drop(change);
+
+        // With no change running, the conversion counts as a job, so a change
+        // that starts now waits for it.
+        let conversion = start_conversion().expect("no change is running");
+        assert!(super::super::session::background_work_running());
+        drop(conversion);
     }
 
     #[test]
