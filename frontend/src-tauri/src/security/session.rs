@@ -122,6 +122,15 @@ pub fn protection_changing() -> bool {
     CHANGING_PROTECTION.load(Ordering::SeqCst)
 }
 
+/// Held by every test that takes the protection-change flag. The flag is
+/// process-wide and tests run in parallel; with this held, a test sees only
+/// its own changes.
+#[cfg(test)]
+pub(crate) fn protection_flag_for_test() -> std::sync::MutexGuard<'static, ()> {
+    static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
 /// How often the idle check runs. Fine-grained enough that a one-minute timeout
 /// means roughly a minute, cheap enough to ignore.
 pub const IDLE_TICK: Duration = Duration::from_secs(15);
@@ -299,7 +308,9 @@ mod tests {
 
     #[test]
     fn only_one_protection_change_runs_at_a_time() {
-        // No other test takes this flag, so its absolute value can be checked.
+        // Every test that takes this flag holds the lock, so its absolute value
+        // can be checked.
+        let _flag = protection_flag_for_test();
         let change = begin_protection_change().expect("no change was running");
         assert!(protection_changing());
         assert!(begin_protection_change().is_none());
