@@ -1,7 +1,7 @@
 'use client';
 
 import { motion } from 'framer-motion';
-import { useRecordingState } from '@/contexts/RecordingStateContext';
+import { useRecordingClock } from '@/contexts/RecordingStateContext';
 import { useEffect, useState } from 'react';
 import { useTranslations } from 'next-intl';
 
@@ -13,7 +13,7 @@ export const RecordingStatusBar: React.FC<RecordingStatusBarProps> = ({ isPaused
   const t = useTranslations('recording');
   // Get recording duration from backend-synced context (in seconds)
   // Backend polls every 500ms, providing smooth updates
-  const { activeDuration, isRecording } = useRecordingState();
+  const { activeDuration } = useRecordingClock();
 
   // Display state synced from backend
   const [displaySeconds, setDisplaySeconds] = useState(0);

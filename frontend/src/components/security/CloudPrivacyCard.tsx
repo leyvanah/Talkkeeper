@@ -7,6 +7,9 @@
  * anything written here for the owner. The card says which names the archive
  * already knows, so that the list is not a guess, and takes the words the
  * archive cannot know — places, nicknames, employers.
+ *
+ * Without a password it is shown but cannot be changed: the list of hidden
+ * words is meant to be stored encrypted, and there is no key to do it with.
  */
 
 import { useCallback, useEffect, useState } from 'react'
@@ -32,7 +35,7 @@ function ownName(): string {
   }
 }
 
-export function CloudPrivacyCard() {
+export function CloudPrivacyCard({ available }: { available: boolean }) {
   const t = useTranslations('security')
   const [overview, setOverview] = useState<PrivacyOverview | null>(null)
   const [terms, setTerms] = useState('')
@@ -86,16 +89,22 @@ export function CloudPrivacyCard() {
         <div className="min-w-0">
           <h4 className="mb-1 text-sm font-medium text-gray-900">{t('cloudPrivacyTitle')}</h4>
           <p className="text-xs text-gray-500">{t('cloudPrivacyDescription')}</p>
+          {!available && (
+            <p id="cloud-privacy-unavailable" className="mt-2 text-xs text-gray-500">
+              {t('cloudPrivacyNeedsProtection')}
+            </p>
+          )}
         </div>
         <Switch
           checked={overview.anonymizeCloud}
-          disabled={saving}
+          disabled={saving || !available}
           onCheckedChange={(checked) => void persist({ anonymizeCloud: checked })}
           aria-label={t('cloudPrivacyTitle')}
+          aria-describedby={available ? undefined : 'cloud-privacy-unavailable'}
         />
       </div>
 
-      {overview.anonymizeCloud && (
+      {available && overview.anonymizeCloud && (
         <div className="mt-4 space-y-3">
           <div>
             <p className="text-xs font-medium text-gray-700">{t('cloudPrivacyKnown')}</p>

@@ -26,6 +26,7 @@ import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useStat
 import { Minus, Pencil, Plus } from 'lucide-react';
 import { useTranslations } from 'next-intl';
 import { TranscriptSegmentData } from '@/types';
+import { useSpeakerWords } from '@/hooks/useSpeakerWords';
 import {
   cleanStopWords,
   displaySpeaker,
@@ -221,6 +222,7 @@ const Bubble = memo(function Bubble({
   const { line, column } = placed;
   const host = column !== 'client';
   const seek = onSeekTo ? () => onSeekTo(line.start) : undefined;
+  const speakerWords = useSpeakerWords();
 
   return (
     <div
@@ -235,8 +237,8 @@ const Bubble = memo(function Bubble({
         {line.speaker && (
           <SpeakerLabelMenu
             speaker={line.speaker}
-            label={displaySpeaker(line.speaker, userName)}
-            displayOf={(option) => displaySpeaker(option, userName)}
+            label={displaySpeaker(line.speaker, userName, speakerWords)}
+            displayOf={(option) => displaySpeaker(option, userName, speakerWords)}
             className={`truncate font-semibold ${speakerColor(line.speaker)}`}
             onRename={onRenameSpeaker}
             choice={

@@ -1,7 +1,9 @@
 import { useState, useEffect, useRef } from 'react';
 import { TranscriptSegmentData } from '@/types';
 
-const INTERVAL_MS = 15; // Character reveal interval
+// Every tick re-renders the transcript view. 50 ms still reads as typing and
+// costs a third of the 15 ms it used to; nothing is animated in a hidden window.
+const INTERVAL_MS = 50; // Character reveal interval
 const DURATION_MS = 800; // Total streaming duration
 const INITIAL_CHARS = 5; // Show first N characters immediately
 
@@ -59,8 +61,9 @@ export function useTranscriptStreaming(
         visibleText: initialText,
       });
 
-      // If text is short enough, no need to stream
-      if (fullText.length <= INITIAL_CHARS) {
+      // If text is short enough, or nobody can see it, no need to stream
+      if (fullText.length <= INITIAL_CHARS || document.hidden) {
+        setStreamingSegment({ id: latestSegment.id, fullText, visibleText: fullText });
         return;
       }
 

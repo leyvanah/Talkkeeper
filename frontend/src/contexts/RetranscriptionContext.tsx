@@ -39,6 +39,8 @@ export interface RetranscriptionProgress {
 interface RetranscriptionResult {
   meeting_id: string;
   segments_count: number;
+  /** Lines a person corrected or wrote, left as they were. */
+  kept_count?: number;
   duration_seconds: number;
 }
 

@@ -322,28 +322,72 @@ mod loudness_normalizer_tests {
             })
             .collect();
 
-        let mut filter = HighPassFilter::new(sample_rate, 80.0);
-        let mut normalizer = LoudnessNormalizer::new(1, sample_rate).expect("normalizer");
         let block = sample_rate as usize / 100; // 10 ms, as the device delivers
+        let blocks: Vec<&[f32]> = samples.chunks(block).collect();
+        let per_second = blocks.len() / seconds;
+        let window = 5 * per_second;
 
-        // Timed a second at a time, because the cost must not grow with the
-        // length of the recording either: a chain that keeps up for the first
-        // minute and falls behind by the thirtieth loses the end of a session.
-        let mut processed = 0usize;
-        let mut per_second = Vec::with_capacity(seconds);
-        for second in samples.chunks(sample_rate as usize) {
+        type Chain = (HighPassFilter, LoudnessNormalizer);
+        let chain = || -> Chain {
+            (
+                HighPassFilter::new(sample_rate, 80.0),
+                LoudnessNormalizer::new(1, sample_rate).expect("normalizer"),
+            )
+        };
+        fn timed(chain: &mut Chain, chunk: &[f32]) -> (usize, f64) {
             let started = std::time::Instant::now();
-            for chunk in second.chunks(block) {
-                let filtered = filter.process(chunk);
-                processed += normalizer.normalize_loudness(&filtered, 1.0).len();
-            }
-            per_second.push(started.elapsed().as_secs_f64());
+            let filtered = chain.0.process(chunk);
+            let produced = chain.1.normalize_loudness(&filtered, 1.0).len();
+            (produced, started.elapsed().as_secs_f64())
         }
 
-        let elapsed: f64 = per_second.iter().sum();
+        // A block costs tens of microseconds, so one timing of it says more
+        // about the scheduler than about the chain: a preemption or an
+        // interrupt landing in it outweighs the work many times over, and the
+        // suite runs tests in parallel - several of them spawning FFmpeg -
+        // often next to a build. So the same audio goes through several chains
+        // side by side, block by block, and each block counts at its fastest.
+        // Noise only ever adds time and does not hit the same block of every
+        // chain at once; work the chain really does, however rarely, is there
+        // in all of them.
+        const RUNS: usize = 5;
+        let mut recording: Vec<Chain> = (0..RUNS).map(|_| chain()).collect();
+        // The cost must not grow with the length of the recording either: a
+        // chain that keeps up for the first minute and falls behind by the
+        // thirtieth loses the end of a session. Comparing the last seconds with
+        // the first ones timed a moment earlier lets a busier machine at one
+        // end pass for a slower chain, so while the recording goes through
+        // its last five seconds, fresh chains go through the first five,
+        // interleaved block for block - both ends timed under the same load.
+        let mut fresh: Vec<Chain> = (0..RUNS).map(|_| chain()).collect();
+
+        let mut processed = 0usize;
+        let mut costs = Vec::with_capacity(blocks.len());
+        let mut fresh_costs = Vec::with_capacity(window);
+        for (index, chunk) in blocks.iter().enumerate() {
+            let mut fastest = f64::INFINITY;
+            for (run, chain) in recording.iter_mut().enumerate() {
+                let (produced, cost) = timed(chain, chunk);
+                if run == 0 {
+                    processed += produced;
+                }
+                fastest = fastest.min(cost);
+            }
+            costs.push(fastest);
+
+            if let Some(early) = index.checked_sub(blocks.len() - window) {
+                let fastest = fresh
+                    .iter_mut()
+                    .map(|chain| timed(chain, blocks[early]).1)
+                    .fold(f64::INFINITY, f64::min);
+                fresh_costs.push(fastest);
+            }
+        }
+
+        let elapsed: f64 = costs.iter().sum();
         let realtime_factor = seconds as f64 / elapsed;
-        let first = per_second[0];
-        let last = per_second[per_second.len() - 1];
+        let first: f64 = costs[..per_second].iter().sum();
+        let last: f64 = costs[costs.len() - per_second..].iter().sum();
 
         assert_eq!(processed, samples.len(), "the chain changed the sample count");
         println!(
@@ -361,23 +405,18 @@ mod loudness_normalizer_tests {
              callback will fall behind the device and lose audio",
             realtime_factor
         );
-        // Drift is judged on medians rather than on the first and last second
-        // alone. Each sample is a couple of milliseconds, the suite runs tests
-        // in parallel — several of them spawning FFmpeg — and one scheduling
-        // hiccup in a two-millisecond sample says nothing about whether the
-        // chain slows down. Five seconds at each end still catch a chain whose
-        // cost grows with the recording, which is the defect this guards.
-        let median = |window: &[f64]| {
-            let mut sorted = window.to_vec();
-            sorted.sort_by(f64::total_cmp);
-            sorted[sorted.len() / 2]
-        };
-        let early = median(&per_second[..5]);
-        let late = median(&per_second[per_second.len() - 5..]);
+        let early: f64 = fresh_costs.iter().sum();
+        let late: f64 = costs[costs.len() - window..].iter().sum();
+        println!(
+            "five seconds of audio: {:.2} ms at the start, {:.2} ms after {}s",
+            early * 1000.0,
+            late * 1000.0,
+            seconds - 5
+        );
         assert!(
             late < early * 2.0,
             "the microphone chain slows down as the recording goes on: \
-             {:.1} ms in the first seconds, {:.1} ms in the last \
+             {:.1} ms for the first five seconds, {:.1} ms for the last \
              (first second {:.1} ms, last {:.1} ms)",
             early * 1000.0,
             late * 1000.0,

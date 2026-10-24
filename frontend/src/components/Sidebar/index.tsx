@@ -25,13 +25,13 @@
  */
 
 import React, { useState, useMemo, useEffect } from 'react';
-import { ChevronDown, ChevronRight, FileText, AudioLines, ArrowRight, Settings, Trash2, Mic, Square, Plus, Search, Pencil, NotebookPen, Upload, User, Users, FolderInput, Inbox } from 'lucide-react';
+import { ChevronDown, ChevronRight, FileText, AudioLines, ArrowRight, Settings, Trash2, Mic, Plus, Search, Pencil, NotebookPen, Upload, User, Users, FolderInput, Inbox } from 'lucide-react';
 import { useTranslations } from 'next-intl';
 import { useRouter, usePathname } from 'next/navigation';
 import { useSidebar, UNASSIGNED_FOLDER_ID, clientFolderId } from './SidebarProvider';
 import { ClientPickerDialog } from '@/components/ClientPickerDialog';
 import type { CurrentMeeting, SidebarItem } from '@/components/Sidebar/SidebarProvider';
-import { ConfirmationModal } from '../ConfirmationModel/confirmation-modal';
+import { ConfirmAction, type ConfirmRequest } from '@/components/ui/confirm-action';
 import { ModelConfig } from '@/components/ModelSettingsModal';
 import { TranscriptModelProps } from '@/components/TranscriptSettings';
 import { invoke } from '@tauri-apps/api/core';
@@ -62,6 +62,7 @@ import {
   sidebarFromDrag,
 } from '@/lib/panel-layout';
 import { ComplianceNotification } from '../ComplianceNotification';
+import { toastFailure } from '@/lib/failure';
 
 /** Which folders were left open, so the tree looks the same after a restart. */
 const EXPANDED_FOLDERS_KEY = 'meetily_expanded_folders';
@@ -79,7 +80,8 @@ function readExpandedFolders(): Set<string> | null {
 
 function formatDurationShort(secs?: number): string {
   if (secs == null || !Number.isFinite(secs) || secs <= 0) return '';
-  const total = Math.round(secs);
+  // Whole seconds dropped, not rounded: the player counts them the same way.
+  const total = Math.floor(secs);
   const h = Math.floor(total / 3600);
   const m = Math.floor((total % 3600) / 60);
   const s = total % 60;
@@ -198,13 +200,13 @@ const Sidebar: React.FC = () => {
   // }, [settingsSaveSuccess]);
 
 
-  const [deleteModalState, setDeleteModalState] = useState<{ isOpen: boolean; itemId: string | null }>({ isOpen: false, itemId: null });
+  // The one question asked before deleting a meeting, the selection or a client.
+  const [confirm, setConfirm] = useState<ConfirmRequest | null>(null);
 
   // Multi-select for the meeting list: shift-click selects a range, ctrl/cmd
   // click toggles one, and the selection can be deleted in bulk.
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [lastSelectedId, setLastSelectedId] = useState<string | null>(null);
-  const [bulkDeleteOpen, setBulkDeleteOpen] = useState(false);
 
   // The unassigned folder shows the newest few with a "View all" toggle.
   const RECENT_LIMIT = 8;
@@ -212,7 +214,6 @@ const Sidebar: React.FC = () => {
 
   // Client folders: create, rename, delete, and filing a recording under one.
   const [clientDialog, setClientDialog] = useState<{ mode: 'create' | 'rename'; clientId: string | null; name: string } | null>(null);
-  const [clientDeleteState, setClientDeleteState] = useState<{ id: string; name: string; meetingCount: number } | null>(null);
   const [assignDialogMeetingId, setAssignDialogMeetingId] = useState<string | null>(null);
 
   const normalizedNewName = clientDialog?.name.trim().replace(/\s+/g, ' ').toLowerCase() ?? '';
@@ -385,18 +386,8 @@ const Sidebar: React.FC = () => {
         router.push('/');
       }
     } catch (error) {
-      console.error('Failed to delete meeting:', error);
-      toast.error(t('deleteMeetingFailed'), {
-        description: error instanceof Error ? error.message : String(error)
-      });
+      toastFailure(t('deleteMeetingFailed'), 'meeting-delete', error);
     }
-  };
-
-  const handleDeleteConfirm = () => {
-    if (deleteModalState.itemId) {
-      handleDelete(deleteModalState.itemId);
-    }
-    setDeleteModalState({ isOpen: false, itemId: null });
   };
 
   // Flat, ordered list of meeting ids as currently displayed — needed so a
@@ -475,7 +466,6 @@ const Sidebar: React.FC = () => {
     // The ones that failed stay selected, so it is plain which they are.
     setSelectedIds(new Set(failed));
     setLastSelectedId(null);
-    setBulkDeleteOpen(false);
   };
 
   // Handle modal editing of meeting names
@@ -523,10 +513,7 @@ const Sidebar: React.FC = () => {
       setEditModalState({ isOpen: false, meetingId: null, currentTitle: '' });
       setEditingTitle('');
     } catch (error) {
-      console.error('Failed to update meeting title:', error);
-      toast.error(t('titleUpdateFailed'), {
-        description: error instanceof Error ? error.message : String(error)
-      });
+      toastFailure(t('titleUpdateFailed'), 'meeting-title-update', error);
     }
   };
 
@@ -578,30 +565,49 @@ const Sidebar: React.FC = () => {
       }
       setClientDialog(null);
     } catch (error) {
-      console.error('Failed to save client:', error);
-      toast.error(t('clientSaveFailed'), {
-        description: error instanceof Error ? error.message : String(error),
-      });
+      toastFailure(t('clientSaveFailed'), 'client-save', error);
     }
   };
 
-  const handleClientDelete = async () => {
-    if (!clientDeleteState) return;
+  const handleClientDelete = async (client: { id: string; meetingCount: number }) => {
     try {
-      await invoke('api_delete_client', { clientId: clientDeleteState.id });
+      await invoke('api_delete_client', { clientId: client.id });
       await Promise.all([refetchClients(), refetchMeetings()]);
       toast.success(t('clientDeletedSuccess'), {
-        description: clientDeleteState.meetingCount > 0
-          ? t('clientDeletedMeetingsKept', { count: clientDeleteState.meetingCount })
+        description: client.meetingCount > 0
+          ? t('clientDeletedMeetingsKept', { count: client.meetingCount })
           : undefined,
       });
     } catch (error) {
-      console.error('Failed to delete client:', error);
-      toast.error(t('clientDeleteFailed'), {
-        description: error instanceof Error ? error.message : String(error),
-      });
+      toastFailure(t('clientDeleteFailed'), 'client-delete', error);
     }
-    setClientDeleteState(null);
+  };
+
+  // The confirmation says how many people go with the client. The tree does
+  // not know that, and a stale count in a delete dialog would be a wrong
+  // promise, so it is asked for at the moment of the click.
+  const confirmClientDelete = async (clientId: string, name: string) => {
+    let counts: { meetingCount: number; peopleCount: number };
+    try {
+      counts = await invoke('api_client_deletion_preview', { clientId });
+    } catch (error) {
+      toastFailure(t('clientDeleteFailed'), 'client-delete-preview', error);
+      return;
+    }
+    const client = { id: clientId, meetingCount: counts.meetingCount };
+    // Deleting a client never deletes recordings — say so, and say who goes.
+    setConfirm({
+      title: t('deleteClientTitle', { name }),
+      description: counts.meetingCount > 0
+        ? t('deleteClientWithMeetingsDescription', {
+          count: counts.meetingCount,
+          people: counts.peopleCount,
+        })
+        : t('deleteClientDescription', { people: counts.peopleCount }),
+      confirmLabel: tc('delete'),
+      busyLabel: tc('deleting'),
+      run: () => handleClientDelete(client),
+    });
   };
 
 
@@ -649,18 +655,18 @@ const Sidebar: React.FC = () => {
               <TooltipTrigger asChild>
                 <button
                   onClick={handleRecordingToggle}
-                  disabled={isRecording}
-                  className={`p-2 ${isRecording ? 'bg-red-500 cursor-not-allowed' : 'bg-red-500 hover:bg-red-600'} rounded-full transition-colors duration-150 shadow-sm`}
+                  aria-label={isRecording ? t('recordingInProgressTooltip') : t('newRecording')}
+                  className="p-2 bg-red-500 hover:bg-red-600 rounded-full transition-colors duration-150 shadow-sm"
                 >
                   {isRecording ? (
-                    <Square className="w-5 h-5 text-white" />
+                    <span aria-hidden="true" className="flex w-5 h-5 items-center justify-center"><span className="h-2.5 w-2.5 rounded-full bg-white animate-pulse" /></span>
                   ) : (
                     <Mic className="w-5 h-5 text-white" />
                   )}
                 </button>
               </TooltipTrigger>
               <TooltipContent side="right">
-                <p>{isRecording ? t('recordingInProgressTooltip') : t('startRecording')}</p>
+                <p>{isRecording ? t('recordingInProgressTooltip') : t('newRecording')}</p>
               </TooltipContent>
             </Tooltip>
 
@@ -791,11 +797,7 @@ const Sidebar: React.FC = () => {
                   <button
                     onClick={(e) => {
                       e.stopPropagation();
-                      setClientDeleteState({
-                        id: item.clientId!,
-                        name: item.title,
-                        meetingCount: item.meetingCount ?? 0,
-                      });
+                      void confirmClientDelete(item.clientId!, item.title);
                     }}
                     className="rounded-md p-1 text-[var(--af-text-3)] hover:bg-red-500/10 hover:text-red-500"
                     aria-label={t('deleteClientAria')}
@@ -862,7 +864,13 @@ const Sidebar: React.FC = () => {
                       <button
                         onClick={(e) => {
                           e.stopPropagation();
-                          setDeleteModalState({ isOpen: true, itemId: item.id });
+                          setConfirm({
+                            title: t('deleteMeetingTitle'),
+                            description: t('deleteMeetingDescription', { title: item.title }),
+                            confirmLabel: tc('delete'),
+                            busyLabel: tc('deleting'),
+                            run: () => handleDelete(item.id),
+                          });
                         }}
                         className="rounded-md p-1 text-[var(--af-text-3)] hover:bg-red-500/10 hover:text-red-500"
                         aria-label={t('deleteMeetingAria')}
@@ -956,12 +964,12 @@ const Sidebar: React.FC = () => {
 
               <button
                 onClick={handleRecordingToggle}
-                disabled={isRecording}
-                className={`w-full flex items-center justify-center gap-2 rounded-lg px-3 py-2.5 text-sm font-semibold text-[var(--af-accent-contrast)] transition-[filter] bg-[var(--af-accent)] ${isRecording ? 'opacity-70 cursor-not-allowed' : 'hover:brightness-110'}`}
+                title={isRecording ? t('recordingInProgressTooltip') : undefined}
+                className="w-full flex items-center justify-center gap-2 rounded-lg px-3 py-2.5 text-sm font-semibold text-[var(--af-accent-contrast)] transition-[filter] bg-[var(--af-accent)] hover:brightness-110"
               >
                 {isRecording ? (
                   <>
-                    <Square className="w-4 h-4" />
+                    <span aria-hidden="true" className="flex w-4 h-4 items-center justify-center"><span className="h-2.5 w-2.5 rounded-full bg-white animate-pulse" /></span>
                     <span>{t('recordingInProgress')}</span>
                   </>
                 ) : (
@@ -1003,7 +1011,13 @@ const Sidebar: React.FC = () => {
                 <div className="flex items-center gap-2">
                   <button onClick={clearSelection} className="text-gray-500 hover:text-gray-700">{tc('clear')}</button>
                   <button
-                    onClick={() => setBulkDeleteOpen(true)}
+                    onClick={() => setConfirm({
+                      title: t('deleteMeetingsTitle', { count: selectedIds.size }),
+                      description: t('deleteMeetingsDescription'),
+                      confirmLabel: tc('delete'),
+                      busyLabel: tc('deleting'),
+                      run: handleBulkDelete,
+                    })}
                     className="inline-flex items-center gap-1 rounded-md bg-red-500 px-2 py-1 font-medium text-white hover:bg-red-600"
                   >
                     <Trash2 className="w-3.5 h-3.5" /> {tc('delete')}
@@ -1044,34 +1058,7 @@ const Sidebar: React.FC = () => {
         )}
       </div>
 
-      {/* Confirmation Modal for Delete */}
-      <ConfirmationModal
-        isOpen={deleteModalState.isOpen}
-        text={t('confirmDeleteMeeting')}
-        onConfirm={handleDeleteConfirm}
-        onCancel={() => setDeleteModalState({ isOpen: false, itemId: null })}
-      />
-
-      {/* Confirmation Modal for Bulk Delete */}
-      <ConfirmationModal
-        isOpen={bulkDeleteOpen}
-        text={t('confirmBulkDelete', { count: selectedIds.size })}
-        onConfirm={handleBulkDelete}
-        onCancel={() => setBulkDeleteOpen(false)}
-      />
-
-      {/* Deleting a client never deletes recordings — say so on the button. */}
-      <ConfirmationModal
-        isOpen={clientDeleteState !== null}
-        text={clientDeleteState && clientDeleteState.meetingCount > 0
-          ? t('confirmDeleteClientWithMeetings', {
-            name: clientDeleteState.name,
-            count: clientDeleteState.meetingCount,
-          })
-          : t('confirmDeleteClient', { name: clientDeleteState?.name ?? '' })}
-        onConfirm={handleClientDelete}
-        onCancel={() => setClientDeleteState(null)}
-      />
+      <ConfirmAction request={confirm} onClose={() => setConfirm(null)} />
 
       {/* New client / rename client */}
       <Dialog open={clientDialog !== null} onOpenChange={(open) => { if (!open) setClientDialog(null); }}>
