@@ -101,7 +101,7 @@ export function TranscriptPanel({
   const { transcripts, transcriptContainerRef, copyTranscript } = useTranscripts();
   const { transcriptModelConfig } = useConfig();
   const { isRecording, isPaused } = useRecordingState();
-  const { requestPermissions, isChecking, hasSystemAudio, hasMicrophone } = usePermissionCheck();
+  const { requestPermissions, isChecking, hasSystemAudio, hasMicrophone, microphoneProblem } = usePermissionCheck();
   const isLinux = useIsLinux();
   const soundOnly = useSoundOnlyRecording(isRecording);
 
@@ -178,6 +178,7 @@ export function TranscriptPanel({
         <div className="flex justify-center px-4 pt-4">
           <PermissionWarning
             hasMicrophone={hasMicrophone}
+            microphoneProblem={microphoneProblem}
             hasSystemAudio={hasSystemAudio}
             onRecheck={requestPermissions}
             isRechecking={isChecking}

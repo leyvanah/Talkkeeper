@@ -674,11 +674,12 @@ impl TranscriptEditsRepository {
     /// Before re-recognition writes its lines: drop the machine's lines and
     /// keep the person's, giving each kept line the capture label of its track
     /// so the transcript reads consistently until it is diarized again.
+    /// Returns how many of the person's lines were kept.
     pub(crate) async fn clear_machine_lines(
         tx: &mut Transaction<'_, Sqlite>,
         meeting_id: &str,
         tracks_known: bool,
-    ) -> Result<(), SqlxError> {
+    ) -> Result<usize, SqlxError> {
         // The transcript is being rewritten: what the history remembers of it
         // no longer fits.
         transcript_history::forget(meeting_id);
@@ -686,8 +687,14 @@ impl TranscriptEditsRepository {
             .bind(meeting_id)
             .execute(&mut **tx)
             .await?;
+        let kept_count: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM transcripts WHERE meeting_id = ?")
+                .bind(meeting_id)
+                .fetch_one(&mut **tx)
+                .await?;
+        let kept_count = kept_count as usize;
         if !tracks_known {
-            return Ok(());
+            return Ok(kept_count);
         }
         // A line whose speaker a person chose keeps it.
         let kept = sqlx::query(
@@ -709,7 +716,7 @@ impl TranscriptEditsRepository {
                 .execute(&mut **tx)
                 .await?;
         }
-        Ok(())
+        Ok(kept_count)
     }
 }
 
@@ -1191,9 +1198,11 @@ mod tests {
             .await
             .unwrap();
         let spans = TranscriptEditsRepository::protected_spans(&mut tx, "m1").await.unwrap();
-        TranscriptEditsRepository::clear_machine_lines(&mut tx, "m1", true).await.unwrap();
+        let kept = TranscriptEditsRepository::clear_machine_lines(&mut tx, "m1", true).await.unwrap();
         tx.commit().await.unwrap();
 
+        // Told to the owner as the lines left as they were.
+        assert_eq!(kept, 1, "only the edited line is kept; the removed one stays gone");
         assert_eq!(
             spans,
             vec![span(1.0, 2.5, Track::System), span(1.5, 1.8, Track::Mic)],

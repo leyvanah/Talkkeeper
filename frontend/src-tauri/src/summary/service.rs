@@ -612,7 +612,6 @@ impl SummaryService {
             None,
         );
 
-        let client = reqwest::Client::new();
         // What identifies the people in this recording is replaced before it
         // can reach a model off this machine, and put back in the answer.
         // Names nobody listed are looked for first, by the model on this machine.
@@ -631,7 +630,6 @@ impl SummaryService {
         let hidden =
             crate::privacy::vocabulary::shield_with_names(&pool, Some(&meeting_id), found_names).await;
         let result = generate_meeting_summary(
-            &client,
             &provider,
             &model_name,
             &final_api_key,
@@ -711,7 +709,7 @@ impl SummaryService {
                             .map(|name| name.trim().to_string())
                             .filter(|name| !name.is_empty())
                         {
-                            info!("Extracted meeting name from summary: '{}'", name);
+                            info!("Extracted meeting name from summary ({} chars)", name.chars().count());
                             match MeetingsRepository::update_generated_meeting_title(
                                 &pool,
                                 &meeting_id,

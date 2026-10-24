@@ -97,6 +97,17 @@ async fn engine_for_live_text<R: Runtime>(
     }
 }
 
+/// Whether this recording keeps its audio. A recording without live text has
+/// only its sound to make the text from afterwards, so it keeps it even when
+/// the owner turned saving off: live text can drop out at the start (the
+/// engine is busy) where the settings could not see it coming.
+fn keeps_audio(auto_save: bool, live: bool) -> bool {
+    if !auto_save && !live {
+        info!("Saving audio is off, but this recording has no live text: keeping its audio");
+    }
+    auto_save || !live
+}
+
 /// A recording without live text still hands its audio to a channel; it is
 /// emptied here and nothing is recognised.
 fn start_sound_only_task(
@@ -160,6 +171,24 @@ pub(super) fn with_recording_manager<T>(work: impl FnOnce(&mut RecordingManager)
 /// stopping a recording, so a stop never finds a stream half swapped.
 pub(super) async fn recording_lifecycle() -> tokio::sync::MutexGuard<'static, ()> {
     RECORDING_LIFECYCLE_LOCK.lock().await
+}
+
+/// Waits until a recording that is starting or stopping right now has got
+/// there. Setting or removing the password marks itself first and then calls
+/// this, so a start that passed [`refuse_while_protection_changes`] a moment
+/// earlier is seen by `is_recording` instead of slipping past the check.
+pub async fn wait_for_recording_lifecycle() {
+    drop(RECORDING_LIFECYCLE_LOCK.lock().await);
+}
+
+/// A recording takes the key (or its absence) when its files open. One that
+/// starts while a password is being set or removed would end up sealed with a
+/// key about to be deleted, or in the clear under a new password.
+fn refuse_while_protection_changes() -> Result<(), String> {
+    if crate::security::session::protection_changing() {
+        return Err("Archive protection is being changed".to_string());
+    }
+    Ok(())
 }
 
 // Global recording manager and transcription task to keep them alive during recording
@@ -261,11 +290,12 @@ pub async fn start_recording_with_meeting_name<R: Runtime>(
     meeting_name: Option<String>,
 ) -> Result<(), String> {
     info!(
-        "Starting recording with default devices, meeting: {:?}",
-        meeting_name
+        "Starting recording with default devices (named: {})",
+        meeting_name.is_some()
     );
 
     let _recording_lifecycle = RECORDING_LIFECYCLE_LOCK.lock().await;
+    refuse_while_protection_changes()?;
 
     // Check if already recording
     let current_recording_state = IS_RECORDING.load(Ordering::SeqCst);
@@ -273,6 +303,9 @@ pub async fn start_recording_with_meeting_name<R: Runtime>(
     if current_recording_state {
         return Err("Recording already in progress".to_string());
     }
+    // From here a discard of a too-short take must not reach the recording
+    // before this one.
+    super::recording_preferences::recording_starting();
 
     let engine_lifecycle_guard = engine_for_live_text(&app).await;
     let live = engine_lifecycle_guard.is_some();
@@ -325,6 +358,7 @@ pub async fn start_recording_with_meeting_name<R: Runtime>(
                 )
             }
         };
+    let auto_save = keeps_audio(auto_save, live);
     manager.set_recordings_folder(recordings_folder);
 
     // ============================================================================
@@ -598,11 +632,12 @@ pub async fn start_recording_with_devices_and_meeting<R: Runtime>(
     meeting_name: Option<String>,
 ) -> Result<(), String> {
     info!(
-        "Starting recording with specific devices: mic={:?}, system={:?}, meeting={:?}",
-        mic_device_name, system_device_name, meeting_name
+        "Starting recording with specific devices: mic={:?}, system={:?}, named: {}",
+        mic_device_name, system_device_name, meeting_name.is_some()
     );
 
     let _recording_lifecycle = RECORDING_LIFECYCLE_LOCK.lock().await;
+    refuse_while_protection_changes()?;
 
     // Check if already recording
     let current_recording_state = IS_RECORDING.load(Ordering::SeqCst);
@@ -610,6 +645,9 @@ pub async fn start_recording_with_devices_and_meeting<R: Runtime>(
     if current_recording_state {
         return Err("Recording already in progress".to_string());
     }
+    // From here a discard of a too-short take must not reach the recording
+    // before this one.
+    super::recording_preferences::recording_starting();
 
     let engine_lifecycle_guard = engine_for_live_text(&app).await;
     let live = engine_lifecycle_guard.is_some();
@@ -711,7 +749,7 @@ pub async fn start_recording_with_devices_and_meeting<R: Runtime>(
             super::recording_preferences::RecordingPreferences::default()
         }
     };
-    let auto_save = preferences.auto_save;
+    let auto_save = keeps_audio(preferences.auto_save, live);
     manager.set_recordings_folder(preferences.save_folder);
 
     // Always ensure a meeting name is set so incremental saver initializes
@@ -1180,6 +1218,12 @@ async fn stop_recording_inner<R: Runtime>(
         _ => (None, None),
     };
 
+    // Remembered before the window hears of the stop: a discard of a
+    // too-short take deletes this folder and no other.
+    super::recording_preferences::recording_stopped(
+        folder_path_str.as_ref().map(std::path::PathBuf::from),
+    );
+
     info!("📤 Preparing recording metadata for frontend save");
     info!("   folder_path: {:?}", folder_path_str);
     // The name is not logged: it is the meeting's title, which B4 seals in the
@@ -1253,6 +1297,21 @@ mod compact_mode_tests {
         assert!(!compact_mode_allowed(false, false));
         assert!(!compact_mode_allowed(true, true));
         assert!(!compact_mode_allowed(false, true));
+    }
+}
+
+#[cfg(test)]
+mod keeps_audio_tests {
+    use super::keeps_audio;
+
+    #[test]
+    fn a_recording_without_live_text_keeps_its_audio() {
+        assert!(keeps_audio(true, true));
+        assert!(keeps_audio(true, false));
+        assert!(!keeps_audio(false, true));
+        // Saving off, and live text dropped at the start: the sound is all
+        // the meeting will have.
+        assert!(keeps_audio(false, false));
     }
 }
 

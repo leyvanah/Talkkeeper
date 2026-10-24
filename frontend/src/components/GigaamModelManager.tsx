@@ -5,6 +5,9 @@ import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 import { AlertCircle, CheckCircle2, Download, Loader2, Trash2, Languages } from 'lucide-react';
 import { Button } from './ui/button';
 import { Progress } from './ui/progress';
+import { logFailure } from '@/lib/failure';
+import { useDiskSpaceText } from '@/hooks/useDiskSpaceText';
+import { useConfirmModelDelete } from '@/hooks/useConfirmModelDelete';
 
 export const GIGAAM_MODEL_NAME = 'gigaam-v3-e2e-rnnt-int8';
 
@@ -33,10 +36,14 @@ interface GigaamModelManagerProps {
     isSelected: boolean;
     disabled?: boolean;
     onSelect: (modelName: string) => void | Promise<unknown>;
+    /** The one model this list recommends; the card then says so instead of its own label. */
+    recommended?: boolean;
 }
 
-export function GigaamModelManager({ isSelected, disabled, onSelect }: GigaamModelManagerProps) {
+export function GigaamModelManager({ isSelected, disabled, onSelect, recommended }: GigaamModelManagerProps) {
     const t = useTranslations('settings');
+    const diskSpaceText = useDiskSpaceText();
+    const confirmDelete = useConfirmModelDelete();
     const [status, setStatus] = useState<GigaamModelStatus | null>(null);
     const [percent, setPercent] = useState(0);
     const [speed, setSpeed] = useState<number | null>(null);
@@ -73,7 +80,8 @@ export function GigaamModelManager({ isSelected, disabled, onSelect }: GigaamMod
             listen<{ error?: string }>('gigaam-model-download-failed', (event) => {
                 setIsDownloading(false);
                 setSpeed(null);
-                setError(event.payload?.error || t('gigaamDownloadFailed'));
+                logFailure('gigaam-model-download', event.payload?.error);
+                setError(diskSpaceText(event.payload?.error) ?? t('gigaamDownloadFailed'));
                 void refreshStatus();
             }),
             listen('gigaam-model-download-cancelled', () => {
@@ -88,7 +96,7 @@ export function GigaamModelManager({ isSelected, disabled, onSelect }: GigaamMod
                 void pending.then((unlisten) => unlisten());
             });
         };
-    }, [refreshStatus, t]);
+    }, [diskSpaceText, refreshStatus, t]);
 
     const startDownload = async () => {
         setError(null);
@@ -116,7 +124,8 @@ export function GigaamModelManager({ isSelected, disabled, onSelect }: GigaamMod
             await invoke('gigaam_delete_model');
             await refreshStatus();
         } catch (deleteError) {
-            setError(typeof deleteError === 'string' ? deleteError : String(deleteError));
+            logFailure('gigaam-model-delete', deleteError);
+            setError(t('gigaamDeleteFailed'));
         }
     };
 
@@ -124,6 +133,9 @@ export function GigaamModelManager({ isSelected, disabled, onSelect }: GigaamMod
     const canSelect = installed && !disabled && !isSelected && !isDownloading;
 
     return (
+        <>
+        {/* Outside the card: a click or Enter in the dialog must not select the model. */}
+        {confirmDelete.dialog}
         <div
             className={`space-y-4 rounded-xl border p-4 transition-colors ${canSelect ? 'cursor-pointer hover:border-[var(--af-accent)]' : ''} ${isSelected
                 ? 'border-[var(--af-accent)] bg-[var(--af-accent-soft)] ring-1 ring-blue-500/20'
@@ -147,9 +159,15 @@ export function GigaamModelManager({ isSelected, disabled, onSelect }: GigaamMod
                     <div>
                         <div className="flex flex-wrap items-center gap-2">
                             <h4 className="font-semibold">GigaAM v3</h4>
-                            <span className="rounded-full bg-sky-500/10 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-sky-400">
-                                {t('gigaamBadge')}
-                            </span>
+                            {recommended ? (
+                                <span className="rounded-full bg-emerald-500/10 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-emerald-500">
+                                    {t('badgeRecommendedLive')}
+                                </span>
+                            ) : (
+                                <span className="rounded-full bg-sky-500/10 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-sky-400">
+                                    {t('gigaamBadge')}
+                                </span>
+                            )}
                         </div>
                         <p className="mt-1 text-sm text-[var(--af-text-2)]">
                             {t('gigaamDescription')}
@@ -203,7 +221,7 @@ export function GigaamModelManager({ isSelected, disabled, onSelect }: GigaamMod
                             type="button"
                             variant="outline"
                             size="sm"
-                            onClick={() => void deleteModel()}
+                            onClick={() => confirmDelete.ask('GigaAM v3', status?.sizeMb ?? 215, deleteModel)}
                             disabled={isSelected}
                             title={isSelected ? t('gigaamDeleteBlocked') : undefined}
                         >
@@ -231,5 +249,6 @@ export function GigaamModelManager({ isSelected, disabled, onSelect }: GigaamMod
                 ) : null}
             </div>
         </div>
+        </>
     );
 }

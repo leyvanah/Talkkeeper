@@ -569,7 +569,7 @@ impl ParakeetEngine {
             .transcribe_samples(audio_data)
             .map_err(|e| anyhow!("Parakeet transcription failed: {}", e))?;
 
-        log::debug!("Parakeet transcription result: '{}'", result.text);
+        log::debug!("Parakeet transcription result: {} chars", result.text.chars().count());
 
         Ok(result.text)
     }
@@ -670,9 +670,29 @@ impl ParakeetEngine {
         self.cancel_downloads.write().await.remove(model_name);
         self.completed_cancellations.write().await.remove(model_name);
 
-        let result = self
-            .download_model_detailed_reserved(model_name, progress_callback)
-            .await;
+        // Only what is left has to fit: the parts already here are resumed.
+        let room = match self.bytes_left(model_name).await {
+            Some((dir, left)) => crate::disk_space::ensure_room(&dir, left),
+            None => Ok(()),
+        };
+        let result = match room {
+            Err(error) => Err(error),
+            Ok(()) => {
+                let result = self
+                    .download_model_detailed_reserved(model_name, progress_callback)
+                    .await;
+                // Unfinished files stay for a resume after a network failure;
+                // after the disk filled up they only hold the space a retry
+                // needs.
+                if result
+                    .as_ref()
+                    .is_err_and(|error| crate::disk_space::is_no_space(error))
+                {
+                    self.remove_unfinished_files(model_name).await;
+                }
+                result
+            }
+        };
         if let Err(error) = &result {
             let mut models = self.available_models.write().await;
             if let Some(model) = models.get_mut(model_name) {
@@ -693,6 +713,45 @@ impl ParakeetEngine {
             self.cancel_downloads.write().await.remove(model_name);
         }
         result
+    }
+
+    /// The model's folder and the bytes still to download into it.
+    async fn bytes_left(&self, model_name: &str) -> Option<(PathBuf, u64)> {
+        let model_info = self.available_models.read().await.get(model_name).cloned()?;
+        let mut left = 0u64;
+        for (filename, expected) in Self::download_file_sizes(model_name, &model_info.quantization) {
+            let have = fs::metadata(model_info.path.join(filename))
+                .await
+                .map(|metadata| metadata.len())
+                .unwrap_or(0);
+            // An oversized file is downloaded again from the start.
+            left += if have <= expected { expected - have } else { expected };
+        }
+        Some((model_info.path, left))
+    }
+
+    /// Removes this model's files that stopped short of their full size.
+    async fn remove_unfinished_files(&self, model_name: &str) {
+        let Some(model_info) = self.available_models.read().await.get(model_name).cloned() else {
+            return;
+        };
+        let file_sizes = Self::download_file_sizes(model_name, &model_info.quantization);
+        for (filename, expected) in file_sizes {
+            let path = model_info.path.join(filename);
+            match fs::metadata(&path).await {
+                Ok(metadata) if metadata.len() < expected => {
+                    match fs::remove_file(&path).await {
+                        Ok(()) => log::info!("Removed unfinished download {}", path.display()),
+                        Err(error) => log::warn!(
+                            "Could not remove unfinished download {}: {}",
+                            path.display(),
+                            error
+                        ),
+                    }
+                }
+                _ => {}
+            }
+        }
     }
 
     async fn download_model_detailed_reserved(
@@ -749,7 +808,8 @@ impl ParakeetEngine {
         }
 
         // Optimized HTTP client for large file downloads
-        let client = reqwest::Client::builder()
+        // Every source is a remote mirror, so any of them picks the client.
+        let client = crate::network_policy::client_builder(base_urls.first().copied().unwrap_or_default())
             .tcp_nodelay(true) // Disable Nagle's algorithm for better streaming
             .pool_max_idle_per_host(1) // Keep connection alive
             .timeout(Duration::from_secs(3600)) // 1 hour timeout for large files
@@ -944,10 +1004,14 @@ impl ParakeetEngine {
                         Ok(Some(Ok(chunk))) => chunk,
                     };
 
-                    writer
-                        .write_all(&chunk)
-                        .await
-                        .map_err(|e| anyhow!("Failed to write chunk to file: {}", e))?;
+                    writer.write_all(&chunk).await.map_err(|e| {
+                        crate::disk_space::write_error(
+                            e,
+                            model_dir,
+                            total_size_bytes.saturating_sub(total_downloaded),
+                            "Failed to write chunk to file",
+                        )
+                    })?;
                     let chunk_len = chunk.len() as u64;
                     file_downloaded += chunk_len;
                     total_downloaded += chunk_len;
@@ -991,10 +1055,14 @@ impl ParakeetEngine {
                     }
                 }
 
-                writer
-                    .flush()
-                    .await
-                    .map_err(|e| anyhow!("Failed to flush file {}: {}", filename, e))?;
+                writer.flush().await.map_err(|e| {
+                    crate::disk_space::write_error(
+                        e,
+                        model_dir,
+                        total_size_bytes.saturating_sub(total_downloaded),
+                        format!("Failed to flush file {}", filename),
+                    )
+                })?;
                 let final_size = fs::metadata(&file_path)
                     .await
                     .map_err(|e| anyhow!("Failed to inspect {}: {}", filename, e))?

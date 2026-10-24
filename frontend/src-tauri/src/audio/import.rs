@@ -336,8 +336,10 @@ async fn run_import<R: Runtime>(
     }
 
     info!(
-        "Starting import for '{}' from {} with language {:?}, model {:?}, provider {:?}",
-        title, source_path, language, model, provider
+        // Neither the title nor the file name: both are the owner's words for
+        // the meeting and would stay in the clear log after it is deleted.
+        "Starting import with language {:?}, model {:?}, provider {:?}",
+        language, model, provider
     );
 
     // Determine which provider to use (default to whisper)
@@ -668,9 +670,8 @@ async fn run_import<R: Runtime>(
         let trimmed = text.trim();
         if !trimmed.is_empty() {
             debug!(
-                "Segment {}/{}: {:.1}s, conf={:.2}, text='{}'",
-                i + 1, processable_count, segment_duration_sec, conf,
-                if trimmed.len() > 80 { let mut end = 80; while !trimmed.is_char_boundary(end) { end -= 1; } &trimmed[..end] } else { trimmed }
+                "Segment {}/{}: {:.1}s, conf={:.2}, {} chars",
+                i + 1, processable_count, segment_duration_sec, conf, trimmed.chars().count()
             );
             all_transcripts.push((text, segment.start_timestamp_ms, segment.end_timestamp_ms));
             total_confidence += conf;
@@ -1119,9 +1120,16 @@ pub async fn start_import_audio_command<R: Runtime>(
         return Err("Import already in progress".to_string());
     }
 
+    // Counted as running before the check, so setting or removing the password
+    // either sees this import or this import sees the change, never neither.
+    let busy = crate::security::session::busy();
+    if crate::security::session::protection_changing() {
+        return Err("Archive protection is being changed".to_string());
+    }
+
     // Spawn import in background
     tauri::async_runtime::spawn(async move {
-        let _busy = crate::security::session::busy();
+        let _busy = busy;
         let result = start_import(app, source_path, title, language, model, provider).await;
 
         if let Err(e) = result {

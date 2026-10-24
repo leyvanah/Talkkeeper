@@ -627,3 +627,12 @@ html[data-panel-resizing] * {
   user-select: none !important;
   transition: none !important;
 }
+
+/* A modal dialog turns the pointer off for the whole page outside it
+   (`pointer-events: none` on body). Toasts render outside every dialog, so
+   their close button and action could not be pressed until they timed out.
+   Each toast takes the pointer back; the dialog itself ignores presses on a
+   toast (lib/toast-layer.ts). */
+[data-sonner-toast] {
+  pointer-events: auto;
+}

@@ -2,11 +2,13 @@ import React from 'react';
 import { AlertTriangle, Mic, Speaker, RefreshCw } from 'lucide-react';
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
 import { invoke } from '@tauri-apps/api/core';
-import { useIsLinux } from '@/hooks/usePlatform';
+import { usePlatform } from '@/hooks/usePlatform';
 import { useTranslations } from 'next-intl';
+import { permissionHelpFor, permissionKey, type MicrophoneProblem } from '@/lib/microphone-access';
 
 interface PermissionWarningProps {
   hasMicrophone: boolean;
+  microphoneProblem: MicrophoneProblem;
   hasSystemAudio: boolean;
   onRecheck: () => void;
   isRechecking?: boolean;
@@ -14,12 +16,15 @@ interface PermissionWarningProps {
 
 export function PermissionWarning({
   hasMicrophone,
+  microphoneProblem,
   hasSystemAudio,
   onRecheck,
   isRechecking = false
 }: PermissionWarningProps) {
   const t = useTranslations('recording');
-  const isLinux = useIsLinux();
+  const platform = usePlatform();
+  const isLinux = platform === 'linux';
+  const help = permissionHelpFor(platform);
 
   // Don't show on Linux - permission handling is not needed
   if (isLinux) {
@@ -31,7 +36,8 @@ export function PermissionWarning({
     return null;
   }
 
-  const isMacOS = navigator.userAgent.includes('Mac');
+  const isMacOS = help === 'macos';
+  const isWindows = help === 'windows';
 
   const openMicrophoneSettings = async () => {
     if (isMacOS) {
@@ -40,6 +46,15 @@ export function PermissionWarning({
       } catch (error) {
         console.error('Failed to open microphone settings:', error);
       }
+    }
+  };
+
+  // Settings → Privacy & security → Microphone; a fixed ms-settings: page.
+  const openWindowsMicrophoneSettings = async () => {
+    try {
+      await invoke('open_microphone_privacy_settings');
+    } catch (error) {
+      console.error('Failed to open Windows microphone settings:', error);
     }
   };
 
@@ -77,6 +92,15 @@ export function PermissionWarning({
                 {t('openMicrophoneSettings')}
               </button>
             )}
+            {isWindows && !hasMicrophone && (
+              <button
+                onClick={openWindowsMicrophoneSettings}
+                className="inline-flex items-center gap-2 px-4 py-2 text-sm font-medium text-white bg-amber-600 hover:bg-amber-700 rounded-md transition-colors"
+              >
+                <Mic className="h-4 w-4" />
+                {t('openWindowsMicrophoneSettings')}
+              </button>
+            )}
             {isMacOS && !hasSystemAudio && (
               <button
                 onClick={openAudioCaptureSettings}
@@ -97,7 +121,10 @@ export function PermissionWarning({
           </div>
           <AlertDescription className="text-amber-800 mt-2">
             {/* Microphone Warning */}
-            {!hasMicrophone && (
+            {!hasMicrophone && microphoneProblem === 'blocked' && (
+              <p className="mb-3">{t('microphoneBlockedWindows')}</p>
+            )}
+            {!hasMicrophone && microphoneProblem !== 'blocked' && (
               <>
                 <p className="mb-3">
                   {t('microphoneAccessNeeded')}
@@ -106,7 +133,7 @@ export function PermissionWarning({
                   <p className="font-medium">{t('pleaseCheck')}</p>
                   <ul className="list-disc list-inside ml-2 space-y-1">
                     <li>{t('micConnectedCheck')}</li>
-                    <li>{t('micPermissionGrantedCheck')}</li>
+                    <li>{t(permissionKey('micPermissionGrantedCheck', help, ['windows', 'macos']))}</li>
                     <li>{t('micNotInUseCheck')}</li>
                   </ul>
                 </div>

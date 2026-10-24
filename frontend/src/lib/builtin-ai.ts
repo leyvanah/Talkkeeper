@@ -16,7 +16,7 @@ export type BuiltInModelStatus =
   | { type: 'available' }
   | { type: 'incomplete', file_size: number, expected_size: number }
   | { type: 'corrupted', file_size: number, expected_min_size: number }
-  | { type: 'error', Error: string };
+  | { type: 'error', message: string };
 
 // Helper functions for status handling
 export function isModelAvailable(status: BuiltInModelStatus): boolean {

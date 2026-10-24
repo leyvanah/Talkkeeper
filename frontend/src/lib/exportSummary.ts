@@ -8,9 +8,11 @@
  */
 
 import { Document, Packer, Paragraph, HeadingLevel, TextRun } from 'docx';
-import { jsPDF } from 'jspdf';
 import { save } from '@tauri-apps/plugin-dialog';
 import { writeFile } from '@tauri-apps/plugin-fs';
+import { invoke } from '@tauri-apps/api/core';
+import { markdownBlocks } from '@/lib/markdown-blocks';
+import { renderPdf, type PdfFont } from '@/lib/pdf-document';
 
 function sanitizeFilename(name: string): string {
   return (name || 'summary').replace(/[^\w\-]+/g, '_').replace(/^_+|_+$/g, '').slice(0, 80) || 'summary';
@@ -74,59 +76,6 @@ async function createDocx(markdown: string): Promise<Uint8Array> {
   return new Uint8Array(await blob.arrayBuffer());
 }
 
-// ---------- PDF ----------
-function createPdf(markdown: string): Uint8Array {
-  const doc = new jsPDF({ unit: 'pt', format: 'a4' });
-  const marginX = 48;
-  const marginTop = 56;
-  const pageWidth = doc.internal.pageSize.getWidth();
-  const pageHeight = doc.internal.pageSize.getHeight();
-  const maxWidth = pageWidth - marginX * 2;
-  let y = marginTop;
-
-  const ensureSpace = (lineHeight: number) => {
-    if (y + lineHeight > pageHeight - marginTop) {
-      doc.addPage();
-      y = marginTop;
-    }
-  };
-
-  const writeWrapped = (text: string, size: number, bold: boolean, gapAfter = 4, indent = 0) => {
-    doc.setFont('helvetica', bold ? 'bold' : 'normal');
-    doc.setFontSize(size);
-    const wrapped = doc.splitTextToSize(text, maxWidth - indent);
-    const lineHeight = size * 1.25;
-    for (const w of wrapped) {
-      ensureSpace(lineHeight);
-      doc.text(w, marginX + indent, y);
-      y += lineHeight;
-    }
-    y += gapAfter;
-  };
-
-  const lines = markdown.replace(/\r\n/g, '\n').split('\n');
-  for (const raw of lines) {
-    const line = raw.replace(/\s+$/g, '');
-    if (line.trim() === '') { y += 6; continue; }
-    if (line.trim() === '---') { ensureSpace(10); doc.setDrawColor(200); doc.line(marginX, y, pageWidth - marginX, y); y += 12; continue; }
-    const h = line.match(/^(#{1,4})\s+(.*)$/);
-    if (h) {
-      const level = h[1].length;
-      const size = level === 1 ? 20 : level === 2 ? 16 : level === 3 ? 13 : 12;
-      writeWrapped(h[2].replace(/\*\*/g, ''), size, true, 6);
-      continue;
-    }
-    const bullet = line.match(/^\s*[-*]\s+(.*)$/);
-    if (bullet) {
-      writeWrapped('•  ' + bullet[1].replace(/\*\*/g, ''), 11, false, 2, 10);
-      continue;
-    }
-    writeWrapped(line.replace(/\*\*/g, ''), 11, false, 4);
-  }
-
-  return new Uint8Array(doc.output('arraybuffer'));
-}
-
 // ---------- Plain text ----------
 export function markdownToPlainText(markdown: string): string {
   return markdown
@@ -181,7 +130,7 @@ export async function exportSummaryAs(
 
   const encoder = new TextEncoder();
   let bytes: Uint8Array;
-  if (format === 'pdf') bytes = createPdf(markdown);
+  if (format === 'pdf') bytes = renderPdf(markdownBlocks(markdown), await invoke<PdfFont>('pdf_export_font'));
   else if (format === 'docx') bytes = await createDocx(markdown);
   else if (format === 'txt') bytes = encoder.encode(markdownToPlainText(markdown));
   else if (format === 'json') bytes = encoder.encode(createJson(markdown, baseName));

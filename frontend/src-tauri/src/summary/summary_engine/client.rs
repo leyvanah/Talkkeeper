@@ -310,6 +310,42 @@ pub async fn is_sidecar_healthy() -> bool {
     }
 }
 
+/// Summaries being written right now.
+static SUMMARIES_WRITING: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+/// Held for the whole of a summary, from its first request to the model to
+/// its last. A summary of a long meeting asks the model several times, and
+/// between two of those asks nothing else shows that it is still under way.
+#[must_use = "the summary counts as being written only while the guard is alive"]
+pub struct SummaryWriting(());
+
+/// Marks a summary as being written until the returned guard is dropped.
+pub fn summary_writing() -> SummaryWriting {
+    SUMMARIES_WRITING.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    SummaryWriting(())
+}
+
+impl Drop for SummaryWriting {
+    fn drop(&mut self) {
+        SUMMARIES_WRITING.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
+/// Whether a summary is being written, by whatever model.
+pub fn is_summary_writing() -> bool {
+    SUMMARIES_WRITING.load(std::sync::atomic::Ordering::SeqCst) > 0
+}
+
+/// Whether the built-in model is busy: a summary under way, or any other
+/// request (the meeting chat, a person overview) being answered.
+pub async fn is_builtin_llm_busy() -> bool {
+    if is_summary_writing() {
+        return true;
+    }
+    let manager = SIDECAR_MANAGER.lock().await.clone();
+    manager.is_some_and(|manager| manager.has_active_requests())
+}
+
 // ============================================================================
 // Tests
 // ============================================================================
@@ -317,6 +353,18 @@ pub async fn is_sidecar_healthy() -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn a_summary_keeps_the_model_busy_until_its_guard_is_dropped() {
+        // The counter is process-wide: check the guard's own effect, not an
+        // absolute value another test could be holding.
+        let before = SUMMARIES_WRITING.load(std::sync::atomic::Ordering::SeqCst);
+        let writing = summary_writing();
+        assert!(is_summary_writing());
+        assert!(is_builtin_llm_busy().await);
+        drop(writing);
+        assert_eq!(SUMMARIES_WRITING.load(std::sync::atomic::Ordering::SeqCst), before);
+    }
 
     #[test]
     fn test_request_serialization() {
