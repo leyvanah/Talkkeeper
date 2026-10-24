@@ -25,7 +25,7 @@
 > **Настройки → Защита**. Приложение само не проверяет обновления — новую
 > версию ставьте поверх старой, данные и ключи сохраняются. Перед обновлением
 > или удалением остановите запись и выйдите из программы через значок в трее:
-> установщик закрывает её без вопроса, и идущая запись пропадёт. При удалении программы папка с записями (по умолчанию
+> установщик закрывает её, и идущая запись пропадёт. При удалении программы папка с записями (по умолчанию
 > `Музыка\meetily-recordings`) остаётся на диске. Подробнее — разделы
 > [Install](#install) и [What goes over the network](#what-goes-over-the-network).
 
@@ -116,8 +116,9 @@ you can also build from source (below).
 3. Run it. The installer is **not code-signed**, so Windows SmartScreen shows
    *Windows protected your PC* and *Unknown publisher*: choose **More info →
    Run anyway**. It installs for the current user only, into
-   `%LOCALAPPDATA%\Talkkeeper`, without administrator rights, and sets up
-   Microsoft's Visual C++ runtime if needed.
+   `%LOCALAPPDATA%\Talkkeeper` by default, without administrator rights, and
+   sets up Microsoft's Visual C++ runtime if needed. If you pick a folder that
+   already holds something, it installs into a `Talkkeeper` folder inside it.
 4. On first start, pick a speech recognition model. It is downloaded once (see
    [What goes over the network](#what-goes-over-the-network)); after that,
    recording and recognition work without a connection.
@@ -129,19 +130,20 @@ Releases on GitHub** opens the releases page in your browser. Run the new
 installer over the old one: your meetings, recordings, models and keys are kept.
 
 **Before updating or uninstalling**, stop any recording, then quit Talkkeeper
-from its tray icon (closing the window only hides it there). The installer and
-the uninstaller close a running app without asking, and a recording still in
-progress is lost.
+from its tray icon (closing the window only hides it there). The installer
+closes a running app once you press OK in its message, the uninstaller without
+asking; either way a recording still in progress is lost.
 
 **Uninstalling.** Use *Settings → Apps → Installed apps → Talkkeeper* in Windows.
 
 - By default only the program is removed; the data folder stays.
 - The tick box *Also delete meetings, models, and local data* deletes the data
-  folder as well. If a password is set, the uninstaller first asks separately
-  and copies the key to
-  `Documents\Talkkeeper-key-backup`. If that copy could not be written, the
-  data folder is kept; the app's window settings (language, theme) are removed
-  either way.
+  folder as well, but only one the installer created; a `data` folder that was
+  there before is left alone. If a password is set, the uninstaller first asks
+  separately, then asks where to save a copy of the key
+  (`Documents\Talkkeeper-key-backup` by default), under a new name each time.
+  If that copy could not be written, the data folder is kept; the app's window
+  settings (language, theme) are removed either way.
 - **The recordings folder is never deleted by the uninstaller.** Delete it
   yourself if you no longer need it. Recordings made without a password are
   ordinary audio files that anyone with access to the disk can play.
@@ -151,7 +153,7 @@ progress is lost.
 | Data | Where |
 | --- | --- |
 | Database, models, templates, keystore | `data\` in the installation folder (`%LOCALAPPDATA%\Talkkeeper\data`) |
-| Recordings | `Music\meetily-recordings` by default; change it in **Settings → General** |
+| Recordings | `Music\meetily-recordings` by default; change it in **Settings → Recording** |
 | Recording folders | named by an opaque identifier, so a folder listing says nothing about who or what |
 
 ## What goes over the network
@@ -159,8 +161,9 @@ progress is lost.
 **Settings → Security → This computer only** is on by default. While it is on,
 summaries, the assistant and speech recognition talk only to programs on this
 computer; a request to a cloud provider or another machine is refused before it
-is made. Turning it off is a deliberate choice, and a cloud provider still needs
-your own key.
+is made. Requests to programs on this computer, such as Ollama, never go through
+a system proxy. Turning it off is a deliberate choice, and a cloud provider
+still needs your own key.
 
 The app itself connects only when you ask it to:
 
@@ -245,7 +248,8 @@ no patched SQLite is shipped.
 - Setting or removing the password converts the database in one transaction; a
   copy is written beside it once, before the first conversion.
 - Search runs in the application, because SQL cannot read a sealed column.
-- The log files do not print titles, transcript text or names.
+- The log files do not print titles, transcript or summary text, search
+  queries or speaker names. Setting a password clears the log.
 
 **What stays visible:** how many meetings there are, when each was recorded, how
 long it ran, which client it is filed under, and how many lines it has. What was
