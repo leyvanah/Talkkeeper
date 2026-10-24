@@ -94,7 +94,10 @@ pub(super) fn dismiss(folder: &Path) {
     }
 }
 
-fn metadata_duration(folder: &Path) -> Option<f64> {
+/// The length saved in a recording's `metadata.json`, when there is one.
+///
+/// The file stays readable while the archive is locked: it holds no content.
+pub(crate) fn metadata_duration(folder: &Path) -> Option<f64> {
     let text = std::fs::read_to_string(folder.join("metadata.json")).ok()?;
     let value: serde_json::Value = serde_json::from_str(&text).ok()?;
     value

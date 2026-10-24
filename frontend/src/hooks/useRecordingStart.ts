@@ -5,9 +5,11 @@ import { useSidebar } from '@/components/Sidebar/SidebarProvider';
 import { useConfig } from '@/contexts/ConfigContext';
 import { useRecordingState, RecordingStatus } from '@/contexts/RecordingStateContext';
 import { recordingService } from '@/services/recordingService';
+import { configService } from '@/services/configService';
 import { showRecordingNotification } from '@/lib/recordingNotification';
 import { toast } from 'sonner';
 import { useTranslations } from 'next-intl';
+import { toastFailure } from '@/lib/failure';
 
 interface UseRecordingStartReturn {
   handleRecordingStart: () => Promise<void>;
@@ -61,7 +63,11 @@ export function useRecordingStart(
   // Prefer Parakeet for live (fast). Whisper is for post-call enhance/retranscribe.
   // Prefetch the configured provider so Start Recording feels snappy after idle unload.
   const prefetchSttModel = useCallback(async (): Promise<boolean> => {
-    const provider = (transcriptModelConfig?.provider || 'parakeet').toLowerCase();
+    // The saved choice, not the context's copy: right after the window opens
+    // the context may not have loaded it yet and would still hold the default.
+    const saved = await configService.getTranscriptConfig().catch(() => null);
+    const chosen = saved?.provider ? saved : transcriptModelConfig;
+    const provider = (chosen?.provider || 'parakeet').toLowerCase();
     const preferParakeet = provider === 'parakeet' || provider.includes('parakeet');
 
     // GigaAM keeps one model; make sure it is on disk and loaded before starting
@@ -84,7 +90,7 @@ export function useRecordingStart(
         const alreadyLoaded = await invoke<boolean>('parakeet_is_model_loaded');
         if (!alreadyLoaded) {
           const models = await invoke<any[]>('parakeet_get_available_models');
-          const configured = transcriptModelConfig?.model;
+          const configured = chosen?.model;
           const ready =
             (configured && models.find((m: any) => m?.name === configured)) ||
             models.find(
@@ -107,7 +113,7 @@ export function useRecordingStart(
       if (!hasModels) return false;
       const alreadyLoaded = await invoke<boolean>('whisper_is_model_loaded');
       if (!alreadyLoaded) {
-        const modelName = transcriptModelConfig?.model || 'large-v3';
+        const modelName = chosen?.model || 'large-v3';
         console.log('Pre-loading Whisper:', modelName);
         await invoke('whisper_load_model', { modelName });
       }
@@ -272,9 +278,10 @@ export function useRecordingStart(
             // Show recording notification if enabled
             await showRecordingNotification();
           } catch (error) {
-            console.error('Failed to auto-start recording:', error);
             setStatus(RecordingStatus.ERROR, error instanceof Error ? error.message : 'Failed to auto-start recording');
-            alert(t('startRecordingFailedAlert'));
+            toastFailure(t('startRecordingFailed'), 'recording-auto-start', error, {
+              description: t('startRecordingFailedDetail'),
+            });
           } finally {
             setIsAutoStarting(false);
           }
@@ -358,9 +365,10 @@ export function useRecordingStart(
         // Show recording notification if enabled
         await showRecordingNotification();
       } catch (error) {
-        console.error('Failed to start recording from sidebar:', error);
         setStatus(RecordingStatus.ERROR, error instanceof Error ? error.message : 'Failed to start recording from sidebar');
-        alert(t('startRecordingFailedAlert'));
+        toastFailure(t('startRecordingFailed'), 'recording-sidebar-start', error, {
+          description: t('startRecordingFailedDetail'),
+        });
       } finally {
         setIsAutoStarting(false);
       }

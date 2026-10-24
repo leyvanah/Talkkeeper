@@ -13,6 +13,10 @@ import {
   formatFileSize,
   isVisibleParakeetModel
 } from '../lib/parakeet';
+import { logFailure, toastFailure } from '@/lib/failure';
+import { failureText } from '@/lib/failure-text';
+import { useDiskSpaceText } from '@/hooks/useDiskSpaceText';
+import { useConfirmModelDelete } from '@/hooks/useConfirmModelDelete';
 
 interface ParakeetModelManagerProps {
   selectedModel?: string;
@@ -28,6 +32,8 @@ export function ParakeetModelManager({
   autoSave = false
 }: ParakeetModelManagerProps) {
   const t = useTranslations('settings');
+  const diskSpaceText = useDiskSpaceText();
+  const confirmDelete = useConfirmModelDelete();
   const [models, setModels] = useState<ParakeetModelInfo[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -60,12 +66,8 @@ export function ParakeetModelManager({
 
         setInitialized(true);
       } catch (err) {
-        console.error('Failed to initialize Parakeet:', err);
-        setError(err instanceof Error ? err.message : t('modelsLoadFailedShort'));
-        toast.error(t('modelsLoadFailedTitle'), {
-          description: err instanceof Error ? err.message : t('unknownError'),
-          duration: 5000
-        });
+        setError(t('modelsLoadFailedShort'));
+        toastFailure(t('modelsLoadFailedTitle'), 'parakeet-models-load', err, { duration: 5000 });
       } finally {
         setLoading(false);
       }
@@ -170,7 +172,8 @@ export function ParakeetModelManager({
       unlistenError = await listen<{ modelName: string; error: string }>(
         'parakeet-model-download-error',
         (event) => {
-          const { modelName, error } = event.payload;
+          const { modelName } = event.payload;
+          const error = diskSpaceText(event.payload.error) ?? event.payload.error;
           const displayInfo = getModelDisplayInfo(modelName);
           const displayName = displayInfo?.friendlyName || modelName;
 
@@ -191,11 +194,12 @@ export function ParakeetModelManager({
           // Clean up throttle data
           progressThrottleRef.current.delete(modelName);
 
+          // Not logged here: the same failure rejects `downloadModel`, whose
+          // catch logs it.
           toast.error(t('modelDownloadFailed', { model: displayName }), {
-            description: error,
             duration: 6000,
             action: {
-              label: 'Retry',
+              label: t('modelRetry'),
               onClick: () => downloadModel(modelName)
             }
           });
@@ -256,11 +260,7 @@ export function ParakeetModelManager({
         duration: 3000
       });
     } catch (err) {
-      console.error('Failed to cancel download:', err);
-      toast.error(t('cancelDownloadFailed'), {
-        description: err instanceof Error ? err.message : t('unknownError'),
-        duration: 4000
-      });
+      toastFailure(t('cancelDownloadFailed'), 'parakeet-download-cancel', err, { duration: 4000 });
     }
   };
 
@@ -295,7 +295,8 @@ export function ParakeetModelManager({
         return newSet;
       });
 
-      const errorMessage = String(err);
+      logFailure('parakeet-model-download', err);
+      const errorMessage = diskSpaceText(err) ?? failureText(err);
       setModels(prev =>
         prev.map(model =>
           model.name === modelName ? { ...model, status: { Error: errorMessage } } : model
@@ -343,13 +344,16 @@ export function ParakeetModelManager({
         onModelSelect('');
       }
     } catch (err) {
-      console.error('Failed to delete model:', err);
-      toast.error(t('modelDeleteFailedNamed', { model: displayName }), {
-        description: err instanceof Error ? err.message : t('deleteFailedShort'),
-        duration: 4000
-      });
+      toastFailure(t('modelDeleteFailedNamed', { model: displayName }), 'parakeet-model-delete', err, { duration: 4000 });
     }
   };
+
+  const askDelete = (model: ParakeetModelInfo) =>
+    confirmDelete.ask(
+      getModelDisplayInfo(model.name)?.friendlyName || model.name,
+      model.size_mb,
+      () => deleteModel(model.name),
+    );
 
   if (loading) {
     return (
@@ -381,6 +385,7 @@ export function ParakeetModelManager({
 
   return (
     <div className={`space-y-3 ${className}`}>
+      {confirmDelete.dialog}
       {/* Recommended Model */}
       {recommendedModel && (
         <ModelCard
@@ -394,7 +399,7 @@ export function ParakeetModelManager({
           }}
           onDownload={() => downloadModel(recommendedModel.name)}
           onCancel={() => cancelDownload(recommendedModel.name)}
-          onDelete={() => deleteModel(recommendedModel.name)}
+          onDelete={() => askDelete(recommendedModel)}
           isDownloading={downloadingModels.has(recommendedModel.name)}
         />
       )}
@@ -415,7 +420,7 @@ export function ParakeetModelManager({
               }}
               onDownload={() => downloadModel(model.name)}
               onCancel={() => cancelDownload(model.name)}
-              onDelete={() => deleteModel(model.name)}
+              onDelete={() => askDelete(model)}
               isDownloading={downloadingModels.has(model.name)}
             />
           ))}

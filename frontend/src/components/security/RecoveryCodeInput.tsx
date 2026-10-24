@@ -22,10 +22,12 @@ export function RecoveryCodeInput({
   value,
   onChange,
   disabled,
+  autoFocus,
 }: {
   value: string
   onChange: (value: string) => void
   disabled?: boolean
+  autoFocus?: boolean
 }) {
   const t = useTranslations('security')
 
@@ -53,6 +55,7 @@ export function RecoveryCodeInput({
       autoCapitalize="characters"
       spellCheck={false}
       disabled={disabled}
+      autoFocus={autoFocus}
       aria-label={t('recoveryCodeLabel')}
       className="w-full rounded-md border border-[var(--af-border)] bg-[var(--af-panel)] px-3 py-2 font-mono text-sm tracking-tight text-[var(--af-text)] placeholder:text-[var(--af-text-2)] focus:border-[var(--af-accent)] focus:outline-none disabled:opacity-50"
     />

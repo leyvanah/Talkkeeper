@@ -28,6 +28,7 @@ use anyhow::{anyhow, Result};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
+use crate::onnx_threads::Role;
 use models::{DiarizationModels, MAX_LOCAL_SPEAKERS};
 
 /// 10 second analysis window (pyannote segmentation-3.0 was trained on 10 s).
@@ -184,7 +185,7 @@ pub fn embeddings_for_debug(wav_path: &Path, model_dir: &Path) -> Result<Vec<Vec
     } else {
         samples
     };
-    let mut models = DiarizationModels::load(model_dir)?;
+    let mut models = DiarizationModels::load(model_dir, Role::OfflineSpeaker)?;
     let turns = collect_turns(&mut models, &samples)?;
     let mut out = Vec::new();
     for turn in &turns {
@@ -256,7 +257,7 @@ pub fn diarize_file_with_models(
     }
     log::info!("🧑‍🤝‍🧑 Diarization starting: {:.1}s of audio", duration);
 
-    let mut models = DiarizationModels::load(model_dir)?;
+    let mut models = DiarizationModels::load(model_dir, Role::OfflineSpeaker)?;
 
     // 2. Slide windows, decode segmentation, collect local turns.
     let turns = collect_turns(&mut models, &samples)?;
@@ -565,9 +566,10 @@ pub async fn rename_meeting_speaker(
     )
     .await
     .map_err(|e| format!("Failed to rename speaker: {}", e))?;
+    // Neither name: the new one is usually a person's (logging.rs).
     log::info!(
-        "🧑‍🤝‍🧑 Renamed speaker '{}' → '{}' across {} segments of meeting {}",
-        from, outcome.speaker, outcome.count, meeting_id
+        "🧑‍🤝‍🧑 Renamed a speaker across {} segments of meeting {}",
+        outcome.count, meeting_id
     );
     Ok(MeetingSpeakerRenameResult {
         speaker: outcome.speaker,
@@ -601,6 +603,76 @@ pub struct MeetingDiarizationResult {
     pub labeled: usize,
     /// (transcript_id, speaker_label) pairs, e.g. ("transcript-…", "Speaker 1").
     pub assignments: Vec<(String, String)>,
+    /// Lines whose label is different now from before the pass.
+    pub changed: usize,
+    /// Lines whose label the pass left as it was.
+    pub unchanged: usize,
+    /// Of the unchanged, lines carrying a speaker a person chose or named.
+    pub kept_by_hand: usize,
+}
+
+/// Whether a label is one the capture or the model makes for a voice nobody
+/// has named: "You", "Guest", "Speaker N", or several of them joined.
+pub(crate) fn is_generated_label(label: &str) -> bool {
+    label.split(" + ").all(|part| {
+        part.eq_ignore_ascii_case("guest")
+            || part.eq_ignore_ascii_case("you")
+            || part.to_ascii_lowercase().starts_with("speaker ")
+    })
+}
+
+/// A line's speaker as stored, read in the clear.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct LineLabel {
+    pub label: Option<String>,
+    /// A person chose this line's speaker, or the speaker has a name.
+    pub by_hand: bool,
+}
+
+/// Every line's speaker in a meeting, by line id.
+pub(crate) async fn line_labels(
+    pool: &sqlx::SqlitePool,
+    meeting_id: &str,
+) -> Result<std::collections::HashMap<String, LineLabel>, String> {
+    let rows: Vec<(String, Option<String>, i64)> = sqlx::query_as(
+        "SELECT id, speaker, speaker_set_at IS NOT NULL FROM transcripts WHERE meeting_id = ?",
+    )
+    .bind(meeting_id)
+    .fetch_all(pool)
+    .await
+    .map_err(|e| format!("Failed to read speaker labels: {e}"))?;
+    let mut labels = std::collections::HashMap::with_capacity(rows.len());
+    for (id, sealed, set_by_hand) in rows {
+        let label = fields::open_opt(fields::TRANSCRIPT_SPEAKER, sealed)
+            .map_err(|e| format!("Failed to read a speaker label: {e}"))?;
+        let named = label
+            .as_deref()
+            .map(|label| !label.trim().is_empty() && !is_generated_label(label.trim()))
+            .unwrap_or(false);
+        labels.insert(id, LineLabel { label, by_hand: set_by_hand != 0 || named });
+    }
+    Ok(labels)
+}
+
+/// What a labelling pass did, told by the lines before and after it:
+/// (changed, unchanged, unchanged lines whose speaker a person chose or named).
+pub(crate) fn label_outcome(
+    before: &std::collections::HashMap<String, LineLabel>,
+    after: &std::collections::HashMap<String, LineLabel>,
+) -> (usize, usize, usize) {
+    let (mut changed, mut unchanged, mut kept_by_hand) = (0, 0, 0);
+    for (id, now) in after {
+        match before.get(id) {
+            Some(was) if was.label == now.label => {
+                unchanged += 1;
+                if now.by_hand {
+                    kept_by_hand += 1;
+                }
+            }
+            _ => changed += 1,
+        }
+    }
+    (changed, unchanged, kept_by_hand)
 }
 
 /// Audio container extensions a meeting recording may use. Recordings are
@@ -666,6 +738,103 @@ fn find_meeting_audio(folder_path: Option<String>, meeting_title: Option<&str>) 
 
     // 2. Install-local data root (where tray/UI stop-recording saves land).
     newest_audio_in(&crate::paths::install_data_root())
+}
+
+/// The generated label to call "Guest" in a meeting, if there is one.
+///
+/// One person on the other end is "Guest" everywhere: live in a one-to-one
+/// recording, after "By device", and here, after the offline pass, when it
+/// found a single remote voice. Numbered speakers are kept only when there
+/// really are several. So the only label ever changed is a lone "Speaker N"
+/// with no other "Speaker M" anywhere in the meeting, combined lines included.
+pub(crate) fn lone_remote_label(labels: &[String]) -> Option<String> {
+    let mut numbered = std::collections::BTreeSet::new();
+    for label in labels {
+        for part in label.split(" + ") {
+            let part = part.trim();
+            let lower = part.to_ascii_lowercase();
+            if let Some(number) = lower.strip_prefix("speaker ") {
+                if number.chars().all(|c| c.is_ascii_digit()) && !number.is_empty() {
+                    numbered.insert(part.to_string());
+                }
+            }
+        }
+    }
+    if numbered.len() == 1 {
+        numbered.into_iter().next()
+    } else {
+        None
+    }
+}
+
+/// Renames a lone remote "Speaker N" of a meeting to "Guest" (see
+/// [`lone_remote_label`]), in every line that carries it and in its role.
+/// Returns the label it renamed, if any.
+pub(crate) async fn settle_lone_remote_voice(
+    pool: &sqlx::SqlitePool,
+    meeting_id: &str,
+) -> Result<Option<String>, String> {
+    let rows: Vec<(String, Option<String>)> =
+        sqlx::query_as("SELECT id, speaker FROM transcripts WHERE meeting_id = ?")
+            .bind(meeting_id)
+            .fetch_all(pool)
+            .await
+            .map_err(|e| format!("Failed to read speaker labels: {e}"))?;
+    let mut lines = Vec::with_capacity(rows.len());
+    for (id, sealed) in rows {
+        let label = fields::open_opt(fields::TRANSCRIPT_SPEAKER, sealed)
+            .map_err(|e| format!("Failed to read a speaker label: {e}"))?;
+        if let Some(label) = label {
+            lines.push((id, label));
+        }
+    }
+    let labels: Vec<String> = lines.iter().map(|(_, label)| label.clone()).collect();
+    let Some(lone) = lone_remote_label(&labels) else {
+        return Ok(None);
+    };
+
+    let mut tx = pool
+        .begin()
+        .await
+        .map_err(|e| format!("Failed to begin speaker update: {e}"))?;
+    for (id, label) in lines {
+        let next = as_settled(&label, &lone);
+        if next == label {
+            continue;
+        }
+        sqlx::query("UPDATE transcripts SET speaker = ? WHERE id = ?")
+            .bind(
+                fields::seal_joinable(fields::TRANSCRIPT_SPEAKER, &next)
+                    .map_err(|e| format!("Failed to seal speaker label: {e}"))?,
+            )
+            .bind(id)
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| format!("Failed to save speaker label: {e}"))?;
+    }
+    crate::database::repositories::speaker_role::SpeakerRolesRepository::follow_rename(
+        &mut tx, meeting_id, &lone, "Guest",
+    )
+    .await
+    .map_err(|e| format!("Failed to move the speaker's role: {e}"))?;
+    tx.commit()
+        .await
+        .map_err(|e| format!("Failed to commit speaker labels: {e}"))?;
+    log::info!("One remote voice in meeting {meeting_id}: {lone} is now Guest");
+    Ok(Some(lone))
+}
+
+/// `label` with the lone remote speaker called "Guest", the way
+/// [`settle_lone_remote_voice`] stored it.
+fn as_settled(label: &str, lone: &str) -> String {
+    let mut parts: Vec<&str> = Vec::new();
+    for part in label.split(" + ") {
+        let renamed = if part.trim() == lone { "Guest" } else { part.trim() };
+        if !parts.contains(&renamed) {
+            parts.push(renamed);
+        }
+    }
+    parts.join(" + ")
 }
 
 fn apply_source_track_hint(
@@ -1177,12 +1346,7 @@ pub async fn diarize_meeting(
         if let Some(ref live) = existing {
             let live_trim = live.trim();
             if !live_trim.is_empty() {
-                let is_generated = live_trim.split(" + ").all(|part| {
-                    part.eq_ignore_ascii_case("guest")
-                        || part.eq_ignore_ascii_case("you")
-                        || part.to_ascii_lowercase().starts_with("speaker ")
-                });
-                let is_named = !is_generated;
+                let is_named = !is_generated_label(live_trim);
                 if is_named {
                     preserved += 1;
                     assignments.push((id, live_trim.to_string()));
@@ -1284,6 +1448,8 @@ pub async fn diarize_meeting(
             updates.push((id, source_hint));
         }
     }
+    // Counted for the window: a pass that changed nothing has to say so.
+    let before = line_labels(pool, &meeting_id).await?;
     let mut tx = pool
         .begin()
         .await
@@ -1303,6 +1469,15 @@ pub async fn diarize_meeting(
     tx.commit()
         .await
         .map_err(|e| format!("Failed to commit speaker labels: {e}"))?;
+    // One voice on the other end is "Guest", as it was live and as "By
+    // device" calls it; numbered speakers are for when there are several.
+    if let Some(lone) = settle_lone_remote_voice(pool, &meeting_id).await? {
+        for (_, label) in assignments.iter_mut() {
+            *label = as_settled(label, &lone);
+        }
+    }
+    let (changed, unchanged, kept_by_hand) =
+        label_outcome(&before, &line_labels(pool, &meeting_id).await?);
     crate::database::repositories::transcript_history::forget(&meeting_id);
     if preserved > 0 {
         log::info!(
@@ -1312,16 +1487,21 @@ pub async fn diarize_meeting(
     }
 
     log::info!(
-        "✅ Meeting {} diarized: {} speakers, {} segments labeled",
+        "✅ Meeting {} diarized: {} speakers, {} segments labeled, {} changed, {} unchanged",
         meeting_id,
         result.num_speakers,
-        assignments.len()
+        assignments.len(),
+        changed,
+        unchanged
     );
 
     Ok(MeetingDiarizationResult {
         num_speakers: result.num_speakers,
         labeled: assignments.len(),
         assignments,
+        changed,
+        unchanged,
+        kept_by_hand,
     })
 }
 
@@ -1433,6 +1613,45 @@ fn collect_turns(models: &mut DiarizationModels, samples: &[f32]) -> Result<Vec<
 mod tests {
     use super::*;
 
+    fn labelled(lines: &[(&str, Option<&str>, bool)]) -> std::collections::HashMap<String, LineLabel> {
+        lines
+            .iter()
+            .map(|(id, label, by_hand)| {
+                (id.to_string(), LineLabel { label: label.map(str::to_string), by_hand: *by_hand })
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_pass_counts_the_lines_it_changed_and_the_ones_it_kept() {
+        let before = labelled(&[
+            ("t1", Some("You"), false),
+            ("t2", Some("Speaker 1"), false),
+            ("t3", Some("Анна"), true),
+            ("t4", None, false),
+        ]);
+        let after = labelled(&[
+            ("t1", Some("You"), false),
+            ("t2", Some("Guest"), false),
+            ("t3", Some("Анна"), true),
+            ("t4", Some("Guest"), false),
+            // A line the pass never saw before is a change too.
+            ("t5", Some("You"), false),
+        ]);
+        assert_eq!(label_outcome(&before, &after), (3, 2, 1));
+        // Nothing moved: all kept, the named one counted as kept by hand.
+        assert_eq!(label_outcome(&after, &after), (0, 5, 1));
+    }
+
+    #[test]
+    fn a_generated_label_is_told_from_a_name() {
+        assert!(is_generated_label("You"));
+        assert!(is_generated_label("Speaker 2"));
+        assert!(is_generated_label("You + Guest"));
+        assert!(!is_generated_label("Анна"));
+        assert!(!is_generated_label("You + Анна"));
+    }
+
     /// The decode diarization reads as "You" loses the stretches the record
     /// marked, keeps everything else, and nothing is left under a temporary
     /// name.
@@ -1506,6 +1725,76 @@ mod tests {
 
         assert_eq!(silence_the_speakers_in_wav(&wav, &[]).unwrap(), 0.0);
         assert_eq!(std::fs::read(&wav).unwrap(), bytes);
+    }
+
+    fn owned(labels: &[&str]) -> Vec<String> {
+        labels.iter().map(|label| label.to_string()).collect()
+    }
+
+    #[test]
+    fn a_lone_numbered_voice_is_the_guest() {
+        assert_eq!(
+            lone_remote_label(&owned(&["You", "Speaker 1", "You + Speaker 1"])).as_deref(),
+            Some("Speaker 1")
+        );
+        // "Guest" already there does not make it two people.
+        assert_eq!(
+            lone_remote_label(&owned(&["Guest", "Speaker 2"])).as_deref(),
+            Some("Speaker 2")
+        );
+    }
+
+    #[test]
+    fn several_voices_keep_their_numbers() {
+        assert_eq!(lone_remote_label(&owned(&["Speaker 1", "Speaker 2"])), None);
+        // The second voice may only ever speak over someone.
+        assert_eq!(lone_remote_label(&owned(&["Speaker 1", "You + Speaker 2"])), None);
+        // Nothing numbered, nothing to change; given names are not numbers.
+        assert_eq!(lone_remote_label(&owned(&["You", "Guest", "Анна"])), None);
+        assert_eq!(lone_remote_label(&owned(&["Speaker Facilitator"])), None);
+    }
+
+    #[test]
+    fn a_combined_line_names_the_guest_once() {
+        assert_eq!(as_settled("You + Speaker 1", "Speaker 1"), "You + Guest");
+        assert_eq!(as_settled("Guest + Speaker 1", "Speaker 1"), "Guest");
+        assert_eq!(as_settled("Анна", "Speaker 1"), "Анна");
+    }
+
+    #[tokio::test]
+    async fn the_lone_voice_is_renamed_in_lines_and_role() {
+        let pool = sqlx::SqlitePool::connect("sqlite::memory:").await.unwrap();
+        crate::database::manager::MIGRATOR.run(&pool).await.unwrap();
+        sqlx::raw_sql(
+            "INSERT INTO meetings (id, title, created_at, updated_at) VALUES ('m1', 't', 'n', 'n'); \
+             INSERT INTO transcripts (id, meeting_id, transcript, timestamp, speaker) VALUES \
+                 ('t1', 'm1', 'a', '00:00', 'You'), \
+                 ('t2', 'm1', 'b', '00:01', 'Speaker 1'), \
+                 ('t3', 'm1', 'c', '00:02', 'You + Speaker 1'); \
+             INSERT INTO meeting_speaker_roles VALUES ('m1', 'Speaker 1', 'host');",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let renamed = settle_lone_remote_voice(&pool, "m1").await.unwrap();
+        assert_eq!(renamed.as_deref(), Some("Speaker 1"));
+
+        let labels: Vec<String> =
+            sqlx::query_scalar("SELECT speaker FROM transcripts ORDER BY id")
+                .fetch_all(&pool)
+                .await
+                .unwrap();
+        assert_eq!(labels, owned(&["You", "Guest", "You + Guest"]));
+        let role_label: String =
+            sqlx::query_scalar("SELECT speaker_label FROM meeting_speaker_roles")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(role_label, "Guest", "the role an owner set follows the speaker");
+
+        // A second pass has nothing left to do.
+        assert_eq!(settle_lone_remote_voice(&pool, "m1").await.unwrap(), None);
     }
 
     #[test]

@@ -1,4 +1,4 @@
-use reqwest::{header, Client};
+use reqwest::header;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
@@ -38,6 +38,8 @@ pub struct ChatResponse {
 #[derive(Deserialize, Debug)]
 pub struct Choice {
     pub message: MessageContent,
+    #[serde(default)]
+    pub finish_reason: Option<String>,
 }
 
 #[derive(Deserialize, Debug)]
@@ -58,6 +60,8 @@ pub struct ClaudeRequest {
 #[derive(Deserialize, Debug)]
 pub struct ClaudeChatResponse {
     pub content: Vec<ClaudeChatContent>,
+    #[serde(default)]
+    pub stop_reason: Option<String>,
 }
 
 #[derive(Deserialize, Debug)]
@@ -96,7 +100,6 @@ impl LLMProvider {
 /// Generates a summary using the specified LLM provider
 ///
 /// # Arguments
-/// * `client` - Reqwest HTTP client (reused for performance)
 /// * `provider` - The LLM provider to use
 /// * `model_name` - The specific model to use (e.g., "gpt-4", "claude-3-opus")
 /// * `api_key` - API key for the provider (not needed for Ollama)
@@ -113,7 +116,57 @@ impl LLMProvider {
 /// # Returns
 /// The generated summary text or an error message
 pub async fn generate_summary(
-    client: &Client,
+    provider: &LLMProvider,
+    model_name: &str,
+    api_key: &str,
+    system_prompt: &str,
+    user_prompt: &str,
+    ollama_endpoint: Option<&str>,
+    custom_openai_endpoint: Option<&str>,
+    max_tokens: Option<u32>,
+    temperature: Option<f32>,
+    top_p: Option<f32>,
+    app_data_dir: Option<&PathBuf>,
+    cancellation_token: Option<&CancellationToken>,
+    hide: Shield<'_>,
+) -> Result<String, String> {
+    generate_reply(
+        provider,
+        model_name,
+        api_key,
+        system_prompt,
+        user_prompt,
+        ollama_endpoint,
+        custom_openai_endpoint,
+        max_tokens,
+        temperature,
+        top_p,
+        app_data_dir,
+        cancellation_token,
+        hide,
+    )
+    .await
+    .map(|reply| reply.text)
+}
+
+/// A model's answer, and whether it stopped on the length limit rather than
+/// finishing what it had to say.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Reply {
+    pub text: String,
+    /// Only as reliable as the provider's own report: the built-in model and
+    /// a server that leaves the reason out are never marked as cut off.
+    pub cut_off: bool,
+}
+
+/// Whether the reason a provider gives for stopping means the length limit:
+/// `length` in the OpenAI-compatible APIs, `max_tokens` in Claude's.
+fn stopped_on_length(reason: Option<&str>) -> bool {
+    matches!(reason, Some("length") | Some("max_tokens"))
+}
+
+/// [`generate_summary`], also telling whether the answer was cut off.
+pub async fn generate_reply(
     provider: &LLMProvider,
     model_name: &str,
     api_key: &str,
@@ -130,7 +183,7 @@ pub async fn generate_summary(
     // session so that every request of one summary speaks the same language,
     // and the caller puts the real words back into the finished answer.
     hide: Shield<'_>,
-) -> Result<String, String> {
+) -> Result<Reply, String> {
     // Check if cancelled before starting
     if let Some(token) = cancellation_token {
         if token.is_cancelled() {
@@ -151,6 +204,7 @@ pub async fn generate_summary(
             cancellation_token,
         )
         .await
+        .map(|text| Reply { text, cut_off: false })
         .map_err(|e| e.to_string());
     }
 
@@ -280,7 +334,9 @@ pub async fn generate_summary(
     info!("🐞 LLM Request to {}: model={}", provider_name(provider), model_name);
 
     // Send request with timeout and cancellation support
-    let request_future = client
+    // Picked by address: a request to this computer must not take the
+    // system proxy (network_policy).
+    let request_future = crate::network_policy::client(&api_url)
         .post(api_url)
         .headers(headers)
         .json(&request_body)
@@ -336,7 +392,10 @@ pub async fn generate_summary(
             .ok_or("No content in LLM response")?
             .text
             .trim();
-        Ok(content.to_string())
+        Ok(Reply {
+            text: content.to_string(),
+            cut_off: stopped_on_length(chat_response.stop_reason.as_deref()),
+        })
     } else {
         let chat_response = response
             .json::<ChatResponse>()
@@ -345,14 +404,14 @@ pub async fn generate_summary(
 
         info!("🐞 LLM Response received from {}", provider_name(provider));
 
-        let content = chat_response
+        let choice = chat_response
             .choices
             .get(0)
-            .ok_or("No content in LLM response")?
-            .message
-            .content
-            .trim();
-        Ok(content.to_string())
+            .ok_or("No content in LLM response")?;
+        Ok(Reply {
+            text: choice.message.content.trim().to_string(),
+            cut_off: stopped_on_length(choice.finish_reason.as_deref()),
+        })
     }
 }
 
@@ -405,5 +464,31 @@ mod tests {
         assert!(leaves_this_machine(&LLMProvider::CustomOpenAI, None, Some("https://api.example.com/v1")));
         assert!(leaves_this_machine(&LLMProvider::Claude, None, None));
         assert!(leaves_this_machine(&LLMProvider::OpenAI, None, None));
+    }
+
+    #[test]
+    fn a_reply_is_cut_off_only_when_the_provider_says_length() {
+        assert!(stopped_on_length(Some("length")));
+        assert!(stopped_on_length(Some("max_tokens")));
+        assert!(!stopped_on_length(Some("stop")));
+        assert!(!stopped_on_length(Some("end_turn")));
+        assert!(!stopped_on_length(None));
+    }
+
+    #[test]
+    fn the_stop_reason_is_read_from_both_response_shapes() {
+        let openai: ChatResponse = serde_json::from_str(
+            r#"{"choices":[{"message":{"content":"a"},"finish_reason":"length"}]}"#,
+        )
+        .unwrap();
+        assert_eq!(openai.choices[0].finish_reason.as_deref(), Some("length"));
+        let silent: ChatResponse =
+            serde_json::from_str(r#"{"choices":[{"message":{"content":"a"}}]}"#).unwrap();
+        assert_eq!(silent.choices[0].finish_reason, None);
+        let claude: ClaudeChatResponse = serde_json::from_str(
+            r#"{"content":[{"text":"a"}],"stop_reason":"max_tokens"}"#,
+        )
+        .unwrap();
+        assert_eq!(claude.stop_reason.as_deref(), Some("max_tokens"));
     }
 }

@@ -1,0 +1,16 @@
+import assert from 'node:assert/strict';
+import {siteSettings,withBase,prefixHTML,prefixCSS,metadata,discovery} from '../metadata.mjs';
+const settings=siteSettings({SITE_PUBLIC:'1',SITE_URL:'https://leyvanah.github.io/Talkkeeper/'});
+assert.equal(settings.basePath,'/Talkkeeper');
+assert.equal(withBase('/guide/#notes',settings),'/Talkkeeper/guide/#notes');
+assert.equal(withBase('#notes',settings),'#notes');
+assert.equal(withBase('https://github.com/leyvanah/Talkkeeper',settings),'https://github.com/leyvanah/Talkkeeper');
+assert.equal(prefixHTML('<a href="/">Home</a><script src="/demo.js"></script><a href="#main">Skip</a>',settings),'<a href="/Talkkeeper/">Home</a><script src="/Talkkeeper/demo.js"></script><a href="#main">Skip</a>');
+assert.equal(prefixCSS('url(/fonts/a.woff2) url("/assets/a.png") url(#feather-gold)',settings),'url(/Talkkeeper/fonts/a.woff2) url("/Talkkeeper/assets/a.png") url(#feather-gold)');
+const meta=metadata({path:'/download/',title:'Install',description:'Description',settings});
+assert(meta.includes('https://leyvanah.github.io/Talkkeeper/download/'));
+assert(meta.includes('https://leyvanah.github.io/Talkkeeper/assets/talkkeeper.png'));
+assert(discovery(settings,['/','/guide/']).sitemap.includes('<loc>https://leyvanah.github.io/Talkkeeper/guide/</loc>'));
+assert.equal(siteSettings({SITE_URL:'https://example.org/'}).basePath,'');
+assert.throws(()=>siteSettings({SITE_URL:'https://example.org/a?token=123'}));
+console.log('OK: repository paths, fonts, fragment links, root/custom-domain URLs, canonical and sitemap.');
