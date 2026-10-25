@@ -49,6 +49,13 @@ pub struct SidecarManager {
     /// Active request count (for graceful shutdown)
     active_request_count: Arc<AtomicUsize>,
 
+    /// One generation at a time on the pipe. The helper answers requests in
+    /// order, one line each, so two requests in flight at once could read
+    /// each other's answers - and stopping one meant killing the process
+    /// under the other (tasks#147). Held from before the helper is started
+    /// for a request until its answer is read; see [`Self::take_turn`].
+    exchange: Arc<Mutex<()>>,
+
     /// Path to llama-helper binary
     helper_binary_path: PathBuf,
 
@@ -103,6 +110,7 @@ impl SidecarManager {
             is_healthy: Arc::new(AtomicBool::new(false)),
             should_shutdown: Arc::new(AtomicBool::new(false)),
             active_request_count: Arc::new(AtomicUsize::new(0)),
+            exchange: Arc::new(Mutex::new(())),
             helper_binary_path,
             current_model_path: Arc::new(RwLock::new(None)),
             idle_timeout_secs,
@@ -458,6 +466,14 @@ impl SidecarManager {
         Ok(())
     }
 
+    /// Waits until no other generation is using the helper, and keeps it for
+    /// the caller until the returned guard is dropped. A caller that gives up
+    /// while waiting (its summary was stopped) leaves the queue and touches
+    /// nothing; a caller holding its turn is the only one a shutdown can cut.
+    pub async fn take_turn(&self) -> tokio::sync::OwnedMutexGuard<()> {
+        self.exchange.clone().lock_owned().await
+    }
+
     /// Send a request to the sidecar and wait for response
     pub async fn send_request(&self, request_json: String, timeout: Duration) -> Result<String> {
         // Track active request
@@ -708,6 +724,7 @@ impl SidecarManager {
             is_healthy: self.is_healthy.clone(),
             should_shutdown: self.should_shutdown.clone(),
             active_request_count: self.active_request_count.clone(),
+            exchange: self.exchange.clone(),
             helper_binary_path: self.helper_binary_path.clone(),
             current_model_path: self.current_model_path.clone(),
             idle_timeout_secs: self.idle_timeout_secs,
@@ -730,10 +747,14 @@ impl SidecarManager {
                     continue;
                 }
 
-                // Don't ping if we are busy with a request
+                // Don't ping if we are busy with a request, or one is
+                // waiting for its turn: the ping shares the pipe.
                 if manager.active_request_count.load(Ordering::SeqCst) > 0 {
                     continue;
                 }
+                let Ok(_turn) = manager.exchange.try_lock() else {
+                    continue;
+                };
 
                 log::debug!("Health check: sending ping");
                 if let Err(e) = manager.send_ping().await {
@@ -756,6 +777,7 @@ impl SidecarManager {
             is_healthy: self.is_healthy.clone(),
             should_shutdown: self.should_shutdown.clone(),
             active_request_count: self.active_request_count.clone(),
+            exchange: self.exchange.clone(),
             helper_binary_path: self.helper_binary_path.clone(),
             current_model_path: self.current_model_path.clone(),
             idle_timeout_secs: self.idle_timeout_secs,
@@ -845,6 +867,7 @@ mod tests {
             is_healthy: Arc::new(AtomicBool::new(false)),
             should_shutdown: Arc::new(AtomicBool::new(false)),
             active_request_count: Arc::new(AtomicUsize::new(0)),
+            exchange: Arc::new(Mutex::new(())),
             helper_binary_path,
             current_model_path: Arc::new(RwLock::new(None)),
             idle_timeout_secs: 60,
@@ -899,5 +922,49 @@ mod tests {
         assert!(error.starts_with(HELPER_EXITED), "{error}");
         assert!(error.ends_with(" 3"), "{error}");
         assert!(!manager.is_healthy());
+    }
+
+    /// tasks#147: summary A is being written, summary B waits for the helper,
+    /// and B is stopped. B leaves the queue; A keeps its turn, and nothing
+    /// shuts the helper down under it.
+    #[tokio::test]
+    async fn stopping_a_waiting_summary_leaves_the_running_one_alone() {
+        use tokio_util::sync::CancellationToken;
+
+        let manager = manager_for(PathBuf::from("llama-helper-that-is-never-started"));
+        let a = super::super::client::wait_for_turn(&manager, None).await.unwrap();
+
+        let stop_b = CancellationToken::new();
+        let b = {
+            let waiting = super::super::client::wait_for_turn(&manager, Some(&stop_b));
+            stop_b.cancel();
+            tokio::time::timeout(Duration::from_secs(5), waiting)
+                .await
+                .expect("a stopped summary does not keep waiting")
+        };
+        assert!(b.unwrap_err().to_string().contains("cancelled"));
+        assert!(!manager.should_shutdown.load(Ordering::SeqCst), "nothing was shut down");
+        assert!(manager.exchange.try_lock().is_err(), "A still holds the helper");
+
+        // Once A is done, the next summary gets its turn.
+        drop(a);
+        let c = tokio::time::timeout(
+            Duration::from_secs(5),
+            super::super::client::wait_for_turn(&manager, None),
+        )
+        .await
+        .expect("the helper is free again");
+        assert!(c.is_ok());
+    }
+
+    /// Two summaries never read from the pipe at the same time.
+    #[tokio::test]
+    async fn the_second_summary_waits_for_the_first() {
+        let manager = manager_for(PathBuf::from("llama-helper-that-is-never-started"));
+        let first = manager.take_turn().await;
+        let second = tokio::time::timeout(Duration::from_millis(200), manager.take_turn()).await;
+        assert!(second.is_err(), "the second one waited");
+        drop(first);
+        assert!(tokio::time::timeout(Duration::from_secs(5), manager.take_turn()).await.is_ok());
     }
 }
