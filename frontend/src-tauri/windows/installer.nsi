@@ -943,6 +943,8 @@ Function PageLeaveReinstall
   ${EndIf}
 
   reinst_uninstall:
+    ; Before the old uninstaller runs: older versions of it still kill the app.
+    !insertmacro Talkkeeper_WaitForAppToClose
     HideWindow
     ClearErrors
 
@@ -1309,7 +1311,7 @@ Section Install
     !insertmacro NSIS_HOOK_PREINSTALL
   !endif
 
-  !insertmacro CheckIfAppIsRunning "${MAINBINARYNAME}.exe" "${PRODUCTNAME}"
+  !insertmacro Talkkeeper_WaitForAppToClose
 
   ; Copy main executable
   File "${MAINBINARYSRCPATH}"
@@ -1484,7 +1486,7 @@ Section Uninstall
     !insertmacro NSIS_HOOK_PREUNINSTALL
   !endif
 
-  !insertmacro CheckIfAppIsRunning "${MAINBINARYNAME}.exe" "${PRODUCTNAME}"
+  !insertmacro Talkkeeper_WaitForAppToClose
 
   ; Delete the app directory and its content from disk
   ; Copy main executable

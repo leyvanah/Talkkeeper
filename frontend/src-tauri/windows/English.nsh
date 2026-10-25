@@ -77,3 +77,7 @@ LangString tkKeyWarning ${LANG_ENGLISH} "You are about to delete the app data, a
 LangString tkKeyFolderPrompt ${LANG_ENGLISH} "Where should the copy of the key go? If this folder syncs to the cloud (OneDrive or similar), the key leaves this computer. Choose a folder that stays here, or a USB drive."
 LangString tkKeyKept ${LANG_ENGLISH} "The key could not be copied, so the app data has been left where it is:$\r$\n$INSTDIR\data$\r$\n$\r$\nIt holds keystore.json, without which the recordings cannot be opened. Save it yourself, then delete the folder by hand."
 LangString tkDataKept ${LANG_ENGLISH} "The data folder has been left where it is:$\r$\n$INSTDIR\data$\r$\n$\r$\nTalkkeeper did not create it, so it may hold files that are not Talkkeeper's. Look through it and delete it by hand if you want. If it holds keystore.json, keep a copy: without it the recordings cannot be opened."
+
+; --- app still running (install, update, uninstall) ---
+LangString tkAppRunning ${LANG_ENGLISH} "Talkkeeper is running.$\r$\n$\r$\nIf a recording is in progress, stop it in the app first. Then quit Talkkeeper: tray icon → Quit.$\r$\n$\r$\nClick Retry once it has closed, or Cancel to change nothing."
+LangString tkAppRunningSilent ${LANG_ENGLISH} "Talkkeeper is running, so nothing was changed. Stop any recording, quit Talkkeeper (tray icon → Quit) and run this again."
