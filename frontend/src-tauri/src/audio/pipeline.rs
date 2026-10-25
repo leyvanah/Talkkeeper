@@ -76,6 +76,23 @@ pub struct AudioLevels {
     pub limiter_hit: bool,
 }
 
+/// [`AudioCapture::admit`] for a capture thread that starts before its
+/// `AudioCapture` can be built (the communications stream learns its rate
+/// only once open). Only atomic reads.
+pub fn admit_block(state: &RecordingState, device_type: &DeviceType) -> Option<bool> {
+    // Check if still recording
+    if !state.is_recording() {
+        return None;
+    }
+    // Pause stops the recording clock but not the capture streams, so
+    // without this the room would keep being recorded while the owner
+    // believes it is not, and the paused stretch would land in the file.
+    if state.is_paused() {
+        return None;
+    }
+    Some(state.is_audio_source_muted(device_type))
+}
+
 /// Simplified audio capture without broadcast channels
 #[derive(Clone)]
 pub struct AudioCapture {
@@ -92,6 +109,9 @@ pub struct AudioCapture {
     // Buffering for variable-size chunks → fixed-size resampler input
     resampler_input_buffer: Arc<std::sync::Mutex<Vec<f32>>>,
     resampler_chunk_size: usize,  // Fixed chunk size for resampler (512 samples)
+    /// Samples into and out of the persistent resampler so far, so `finish`
+    /// knows how much output the input it took is still owed.
+    resampled: Arc<std::sync::Mutex<(u64, u64)>>,
     // Audio enhancement processors (microphone only)
     noise_suppressor: Arc<std::sync::Mutex<Option<NoiseSuppressionProcessor>>>,
     high_pass_filter: Arc<std::sync::Mutex<Option<HighPassFilter>>>,
@@ -283,6 +303,7 @@ impl AudioCapture {
                 RESAMPLER_CHUNK_SIZE * 2,
             ))),
             resampler_chunk_size: RESAMPLER_CHUNK_SIZE,
+            resampled: Arc::new(std::sync::Mutex::new((0, 0))),
             noise_suppressor: Arc::new(std::sync::Mutex::new(noise_suppressor)),
             high_pass_filter: Arc::new(std::sync::Mutex::new(high_pass_filter)),
             normalizer: Arc::new(std::sync::Mutex::new(normalizer)),
@@ -296,17 +317,17 @@ impl AudioCapture {
     /// Only atomic reads: this is what a real-time capture callback asks
     /// before handing the block to [`Self::process_block`] on another thread.
     pub fn admit(&self) -> Option<bool> {
-        // Check if still recording
-        if !self.state.is_recording() {
-            return None;
-        }
-        // Pause stops the recording clock but not the capture streams, so
-        // without this the room would keep being recorded while the owner
-        // believes it is not, and the paused stretch would land in the file.
-        if self.state.is_paused() {
-            return None;
-        }
-        Some(self.state.is_audio_source_muted(&self.device_type))
+        admit_block(&self.state, &self.device_type)
+    }
+
+    /// The device's own rate, before any resampling.
+    pub fn input_rate(&self) -> u32 {
+        self.sample_rate
+    }
+
+    /// The device's channel count, before the down-mix.
+    pub fn input_channels(&self) -> u16 {
+        self.channels
     }
 
     /// Process a block where it arrives. For sources that already deliver on
@@ -375,6 +396,7 @@ impl AudioCapture {
                                 Ok(mut waves_out) => {
                                     if let Some(output) = waves_out.pop() {
                                         resampled_output.extend_from_slice(&output);
+                                        self.note_resampled(self.resampler_chunk_size, output.len());
                                     }
                                 }
                                 Err(e) => {
@@ -443,6 +465,72 @@ impl AudioCapture {
             }
         }
 
+        self.deliver(mono_data, source_muted_at_capture);
+    }
+
+    fn note_resampled(&self, input: usize, output: usize) {
+        if let Ok(mut resampled) = self.resampled.lock() {
+            resampled.0 += input as u64;
+            resampled.1 += output as u64;
+        }
+    }
+
+    /// Convert what the resampler still holds once the stream has ended.
+    ///
+    /// Blocks are resampled in fixed chunks, so up to one chunk waits for the
+    /// next block, and the filter itself holds back a few ms more (together
+    /// 32 ms at 16 kHz). After the last block nothing pushes them out: feed
+    /// the rest and then silence through, until the output matches the input
+    /// taken, and keep exactly that much.
+    pub fn finish(&self) {
+        if !self.needs_resampling {
+            return;
+        }
+        let tail: Vec<f32> = match self.resampler_input_buffer.lock() {
+            Ok(mut buffer) => buffer.drain(..).collect(),
+            Err(_) => return,
+        };
+        let (taken, given) = match self.resampled.lock() {
+            Ok(resampled) => *resampled,
+            Err(_) => return,
+        };
+        let input = taken + tail.len() as u64;
+        let owed = (input * 48_000 / self.sample_rate as u64).saturating_sub(given) as usize;
+        if owed == 0 {
+            return;
+        }
+
+        let mut converted = Vec::with_capacity(owed + self.resampler_chunk_size * 3);
+        if let Ok(mut resampler) = self.resampler.lock() {
+            let Some(resampler) = resampler.as_mut() else {
+                return;
+            };
+            let mut next = tail;
+            // A few chunks of silence are enough for the filter's delay; the
+            // bound only guards against a resampler that never catches up.
+            for _ in 0..8 {
+                if converted.len() >= owed {
+                    break;
+                }
+                next.resize(self.resampler_chunk_size, 0.0);
+                match resampler.process(&vec![std::mem::take(&mut next)], None) {
+                    Ok(mut waves) => converted.extend(waves.pop().unwrap_or_default()),
+                    Err(e) => {
+                        warn!("⚠️ Resampler failed on the stream's tail: {}", e);
+                        break;
+                    }
+                }
+            }
+        }
+        converted.truncate(owed);
+        if !converted.is_empty() {
+            self.deliver(converted, false);
+        }
+    }
+
+    /// The microphone's DSP and the hand-off to the pipeline, for audio
+    /// already at the rate it is delivered at.
+    fn deliver(&self, mut mono_data: Vec<f32>, source_muted_at_capture: bool) {
         // AUDIO ENHANCEMENT PIPELINE (Microphone Only)
         // Processing order is critical: high-pass → noise suppression → normalization
         // This ensures noise is removed before being amplified by the normalizer
@@ -566,6 +654,7 @@ impl AudioCapture {
 
         // RAW AUDIO CHUNK: No gain applied - will be mixed and gained downstream
         // Use 48kHz if we resampled, otherwise use original rate
+        let samples = mono_data.len();
         let audio_chunk = AudioChunk {
             data: mono_data,  // Raw audio (resampled if needed), no gain yet
             sample_rate: if self.needs_resampling {
@@ -603,7 +692,7 @@ impl AudioCapture {
             };
             self.state.report_error(error);
         } else {
-            debug!("Sent audio chunk {} ({} samples)", chunk_id, data.len());
+            debug!("Sent audio chunk {} ({} samples)", chunk_id, samples);
         }
     }
 
@@ -1611,6 +1700,9 @@ mod working_track_tests;
 
 #[cfg(test)]
 mod ring_buffer_tests;
+
+#[cfg(test)]
+mod sample_accounting_tests;
 
 /// A bench, not a test: it runs real speech through the mixing buffer under a
 /// delivery profile taken from the owner's own logs, and prints what came out
