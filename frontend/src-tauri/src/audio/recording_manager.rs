@@ -91,6 +91,16 @@ impl RecordingManager {
         // Start recording state first
         self.state.start_recording()?;
 
+        // The microphone before anything that can wait. Everything said
+        // between the click and the first captured block is lost, and the
+        // pipeline, the device names and a 50 ms sleep took most of a
+        // second here before. The streams send RAW unmixed chunks into the
+        // pipeline's input, where they wait until it is built below; the
+        // pipeline handles mixing and distribution to recording and
+        // transcription.
+        self.pipeline_manager.open_input(&self.state);
+        self.stream_manager.start_streams(microphone_device.clone(), system_device.clone(), None).await?;
+
         // Get device information for adaptive mixing
         // The pipeline uses device kind (Bluetooth vs Wired) to apply adaptive buffering:
         // - Bluetooth: Larger buffers (80-200ms) to handle jitter
@@ -142,13 +152,6 @@ impl RecordingManager {
             level_sender, // Live per-source level meter for the frontend visualizer
             meeting_folder, // Where to keep the 16 kHz working tracks
         )?;
-
-        // Give the pipeline a moment to fully initialize before starting streams
-        tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
-
-        // Start audio streams - they send RAW unmixed chunks to pipeline for mixing
-        // Pipeline handles mixing and distribution to both recording and transcription
-        self.stream_manager.start_streams(microphone_device.clone(), system_device.clone(), None).await?;
 
         // Start device monitoring to detect disconnects
         if let Some(ref mut monitor) = self.device_monitor {

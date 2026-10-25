@@ -925,11 +925,12 @@ impl AudioPipeline {
 
         // Echo can only exist when the speakers and the microphone are both
         // live. Whether *we* are the ones to cancel it is a second question,
-        // and it cannot be answered here: the pipeline is built before the
-        // capture streams open, so asking whether Windows is cancelling gets
-        // the answer from before this recording started - which is always
-        // "no". Build the canceller whenever the owner asked for one, and ask
-        // the live question once per window instead. See `cancel_echo`.
+        // and it is not answered here: whether Windows is cancelling is a fact
+        // about the capture stream, which can fall back to ordinary capture or
+        // be replaced while the recording runs (and was not yet open here
+        // when the pipeline used to be built first). Build the canceller
+        // whenever the owner asked for one, and ask the live question once per
+        // window instead. See `cancel_echo`.
         let echo_canceller = if mic_enabled
             && system_enabled
             && super::recording_preferences::echo_cancellation()
@@ -1432,8 +1433,8 @@ impl AudioPipeline {
     /// echo that is already gone takes some of the owner's voice with it.
     ///
     /// The question is asked here, once per window, rather than when the
-    /// pipeline is built: the capture stream opens afterwards, and until it
-    /// has, the answer is always the stale "no" from before the recording.
+    /// pipeline is built: the answer belongs to the capture stream, which can
+    /// fall back or be replaced while the recording runs.
     fn cancel_echo(&mut self, mic_window: Vec<f32>, sys_window: &[f32]) -> Vec<f32> {
         #[cfg(target_os = "windows")]
         let system_is_cancelling = super::capture::wasapi_comms::is_active();
@@ -1543,6 +1544,9 @@ impl AudioPipeline {
 pub struct AudioPipelineManager {
     pipeline_handle: Option<JoinHandle<Result<()>>>,
     audio_sender: Option<mpsc::UnboundedSender<AudioChunk>>,
+    /// The input end of a channel opened by [`Self::open_input`], waiting for
+    /// [`Self::start`] to build the pipeline that reads it.
+    pending_input: Option<mpsc::UnboundedReceiver<AudioChunk>>,
 }
 
 impl AudioPipelineManager {
@@ -1550,7 +1554,22 @@ impl AudioPipelineManager {
         Self {
             pipeline_handle: None,
             audio_sender: None,
+            pending_input: None,
         }
+    }
+
+    /// Open the pipeline's input before the pipeline exists.
+    ///
+    /// Building the pipeline takes most of a second (two voice detectors, the
+    /// working tracks), and the microphone used to wait for it: whatever was
+    /// said in that time was not recorded. With the input open, the streams
+    /// can start first; their blocks wait in the channel and [`Self::start`]
+    /// picks them up.
+    pub fn open_input(&mut self, state: &RecordingState) {
+        let (audio_sender, audio_receiver) = mpsc::unbounded_channel::<AudioChunk>();
+        state.set_audio_sender(audio_sender.clone());
+        self.audio_sender = Some(audio_sender);
+        self.pending_input = Some(audio_receiver);
     }
 
     /// Start the audio pipeline with device information for adaptive buffering
@@ -1581,11 +1600,17 @@ impl AudioPipelineManager {
             system_device_name, system_device_kind
         );
 
-        // Create audio processing channel
-        let (audio_sender, audio_receiver) = mpsc::unbounded_channel::<AudioChunk>();
-
-        // Set sender in state for audio captures to use
-        state.set_audio_sender(audio_sender.clone());
+        // The channel `open_input` opened, or a new one
+        let audio_receiver = match self.pending_input.take() {
+            Some(receiver) => receiver,
+            None => {
+                let (audio_sender, audio_receiver) = mpsc::unbounded_channel::<AudioChunk>();
+                // Set sender in state for audio captures to use
+                state.set_audio_sender(audio_sender.clone());
+                self.audio_sender = Some(audio_sender);
+                audio_receiver
+            }
+        };
 
         // Create and start pipeline with device information for adaptive mixing
         let mut pipeline = AudioPipeline::new(
@@ -1616,7 +1641,6 @@ impl AudioPipelineManager {
         let handle = tokio::spawn(async move { pipeline.run().await });
 
         self.pipeline_handle = Some(handle);
-        self.audio_sender = Some(audio_sender);
 
         info!("Audio pipeline manager started with mixed audio recording");
         Ok(())

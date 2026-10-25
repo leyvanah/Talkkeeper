@@ -404,7 +404,18 @@ impl AudioStream {
 
         // Get the underlying cpal device and config
         let (cpal_device, config) = get_device_and_config(&device).await?;
+        Self::open_cpal_stream(device, state, device_type, recording_sender, cpal_device, config)
+    }
 
+    /// A CPAL stream on a device already looked up.
+    fn open_cpal_stream(
+        device: Arc<AudioDevice>,
+        state: Arc<RecordingState>,
+        device_type: DeviceType,
+        recording_sender: Option<mpsc::UnboundedSender<super::recording_state::AudioChunk>>,
+        cpal_device: Device,
+        config: SupportedStreamConfig,
+    ) -> Result<Self> {
         info!("Audio config - Sample rate: {}, Channels: {}, Format: {:?}",
               config.sample_rate().0, config.channels(), config.sample_format());
 
@@ -779,6 +790,20 @@ impl AudioStreamManager {
 
         info!("🎙️ Starting audio streams with backend: {:?}", backend);
 
+        // Look the loopback device up on another thread while the microphone
+        // opens: the lookup is the slow part of opening system audio, and it
+        // used to start only once the microphone was open, so the first
+        // seconds of the other side were not recorded.
+        #[cfg(target_os = "windows")]
+        let system_lookup = system_device.clone().map(|device| {
+            let started = Instant::now();
+            tokio::task::spawn_blocking(move || {
+                let found = super::devices::platform::get_windows_device(&device);
+                info!("🔊 System audio device looked up in {} ms", started.elapsed().as_millis());
+                found
+            })
+        });
+
         // Start microphone stream
         if let Some(mic_device) = microphone_device {
             info!("🎤 Creating microphone stream: {} (always uses CPAL)", mic_device.name);
@@ -802,7 +827,27 @@ impl AudioStreamManager {
         // Start system audio stream
         if let Some(sys_device) = system_device {
             info!("🔊 Creating system audio stream: {} (backend: {:?})", sys_device.name, backend);
-            match AudioStream::create(sys_device.clone(), self.state.clone(), DeviceType::System, recording_sender.clone()).await {
+            // On Windows system audio is always a CPAL loopback stream, so the
+            // device found above is all it needs.
+            #[cfg(target_os = "windows")]
+            let created = match system_lookup {
+                Some(lookup) => match lookup.await {
+                    Ok(Ok((cpal_device, config))) => AudioStream::open_cpal_stream(
+                        sys_device.clone(),
+                        self.state.clone(),
+                        DeviceType::System,
+                        recording_sender.clone(),
+                        cpal_device,
+                        config,
+                    ),
+                    Ok(Err(e)) => Err(e),
+                    Err(e) => Err(anyhow::anyhow!("System audio device lookup failed: {}", e)),
+                },
+                None => AudioStream::create(sys_device.clone(), self.state.clone(), DeviceType::System, recording_sender.clone()).await,
+            };
+            #[cfg(not(target_os = "windows"))]
+            let created = AudioStream::create(sys_device.clone(), self.state.clone(), DeviceType::System, recording_sender.clone()).await;
+            match created {
                 Ok(stream) => {
                     self.state.set_system_device(sys_device);
                     self.state.set_capture_active(DeviceType::System, true);
