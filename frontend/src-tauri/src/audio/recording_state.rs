@@ -402,11 +402,9 @@ impl RecordingState {
     }
 
     pub fn send_audio_chunk(&self, chunk: AudioChunk) -> Result<()> {
-        // Don't send audio chunks when paused
-        if self.is_paused() {
-            return Ok(()); // Silently discard chunks while paused
-        }
-
+        // No pause check here: Pause is decided when a block is captured
+        // (`AudioCapture::admit`). A block captured just before the click and
+        // processed just after it is the end of the segment, not paused audio.
         if let Some(sender) = self.audio_sender.lock().unwrap().as_ref() {
             sender.send(chunk).map_err(|_| anyhow::anyhow!("Failed to send audio chunk"))?;
 

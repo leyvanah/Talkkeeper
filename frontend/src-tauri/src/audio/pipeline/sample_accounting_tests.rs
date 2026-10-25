@@ -3,7 +3,9 @@
 //! Synthetic input only. Each test counts what goes in and what comes out of
 //! one stage, under the same stop sequence `stop_streams_and_force_flush` runs.
 use super::*;
+use std::time::Instant;
 use crate::audio::device_detection::InputDeviceKind;
+use crate::audio::stream::DspWorker;
 use crate::audio::devices::configuration::DeviceType as EndpointKind;
 
 const RATE: u32 = 48_000;
@@ -174,63 +176,89 @@ fn delivered(receiver: &mut mpsc::UnboundedReceiver<AudioChunk>) -> f64 {
     seconds(samples)
 }
 
-/// The cpal path: the callback admits a block and queues it; a DSP thread
-/// processes it later. Stop clears `is_recording` and the pipeline sender
-/// *before* the streams are stopped, so whatever the DSP thread still has
-/// queued at that moment is processed into nothing.
+/// Stop in the order `stop_streams_and_force_flush` runs it: the device side
+/// stops (its sender goes), the processing thread works through what was
+/// admitted, and only then does the recording state take the pipeline's
+/// sender away. Before, the state went first, and whatever was still queued
+/// at the click - the last words - was processed into nothing.
 #[test]
-fn blocks_queued_when_stop_is_pressed_never_reach_the_pipeline() {
+fn blocks_queued_when_stop_is_pressed_still_reach_the_pipeline() {
     let state = RecordingState::new();
     state.start_recording().unwrap();
     let (sender, mut receiver) = mpsc::unbounded_channel();
     state.set_audio_sender(sender);
     let capture = microphone_capture(state.clone());
 
-    // 1 s captured; the DSP thread has processed 0.8 s when Stop arrives.
-    let admitted: Vec<(Vec<f32>, bool)> = (0..100)
-        .map(|_| (vec![0.1; BLOCK], capture.admit().expect("recording")))
-        .collect();
-    for (block, muted) in &admitted[..80] {
-        capture.process_block(block, *muted);
+    // A whole second admitted and still queued at the click: the worst case,
+    // a processing thread that has not got to any of it yet.
+    let (blocks, queue) = crossbeam::channel::unbounded();
+    for _ in 0..100 {
+        let muted = capture.admit().expect("recording");
+        blocks.send((vec![0.1; BLOCK], muted, Instant::now())).unwrap();
     }
-    state.stop_recording(); // first thing stop_streams_and_force_flush does
-    for (block, muted) in &admitted[80..] {
-        capture.process_block(block, *muted);
-    }
+    drop(blocks); // the device side stops
+    let worker = DspWorker::spawn(capture, queue, "Microphone".to_string(), || {}).unwrap();
+    worker.wait();
+    state.stop_recording();
+
     let got = delivered(&mut receiver);
-    eprintln!("[#140] cpal path: admitted 1.000s, reached the pipeline {got:.3}s");
-    assert!((got - 0.8).abs() < 0.011, "reached the pipeline: {got:.3}s");
+    eprintln!("[#140] admitted 1.000s before Stop, reached the pipeline {got:.3}s");
+    assert!((got - 1.0).abs() < 1e-9, "reached the pipeline: {got:.3}s");
 }
 
-/// The Windows communications path admits at *processing* time, on a tokio
-/// task. Packets still in its channel at Stop — or at Pause — are dropped.
+/// Pause is decided when a block is captured. A block admitted before the
+/// click and processed after it is the end of the segment and is kept; a
+/// block arriving during the pause is not admitted at all.
 #[test]
-fn communications_packets_still_queued_at_stop_or_pause_are_dropped() {
+fn pause_cuts_at_the_click_not_when_the_block_is_processed() {
     let state = RecordingState::new();
     state.start_recording().unwrap();
     let (sender, mut receiver) = mpsc::unbounded_channel();
-    state.set_audio_sender(sender.clone());
+    state.set_audio_sender(sender);
     let capture = microphone_capture(state.clone());
 
-    // Pause: 0.3 s captured before the click, processed after it.
+    let admitted: Vec<bool> = (0..30).map(|_| capture.admit().expect("recording")).collect();
     state.pause_recording().unwrap();
-    for _ in 0..30 {
-        capture.process_audio_data(&vec![0.1; BLOCK]);
+    for muted in admitted {
+        capture.process_block(&vec![0.1; BLOCK], muted);
     }
-    let after_pause = delivered(&mut receiver);
-    state.resume_recording().unwrap();
+    assert_eq!(capture.admit(), None, "a block arriving during the pause");
+    let got = delivered(&mut receiver);
+    eprintln!("[#140] 0.300s captured before Pause, processed after it -> {got:.3}s kept");
+    assert!((got - 0.3).abs() < 1e-9, "kept: {got:.3}s");
+}
 
-    state.stop_recording();
-    for _ in 0..30 {
-        capture.process_audio_data(&vec![0.1; BLOCK]);
-    }
-    let after_stop = delivered(&mut receiver);
-    eprintln!(
-        "[#140] comms path: 0.300s queued at Pause -> {after_pause:.3}s kept; \
-         0.300s queued at Stop -> {after_stop:.3}s kept"
+/// A 16 kHz device is resampled in fixed chunks, and the last partial chunk
+/// used to stay in the resampler when the stream ended (9.968 s of 10).
+/// `finish` hands it on.
+#[test]
+fn the_resampler_tail_is_handed_on_when_the_stream_ends() {
+    let state = RecordingState::new();
+    state.start_recording().unwrap();
+    let (sender, mut receiver) = mpsc::unbounded_channel();
+    state.set_audio_sender(sender);
+    let rate = 16_000u32;
+    let capture = AudioCapture::new(
+        Arc::new(AudioDevice::new("Test microphone".to_string(), EndpointKind::Input)),
+        state.clone(),
+        rate,
+        1,
+        DeviceType::Microphone,
+        None,
     );
-    assert_eq!(after_pause, 0.0);
-    assert_eq!(after_stop, 0.0);
+
+    let block = rate as usize / 100;
+    for index in 0..1_000 {
+        let samples: Vec<f32> = (0..block)
+            .map(|i| ((index * block + i) as f32 * 0.05).sin() * 0.2)
+            .collect();
+        capture.process_block(&samples, false);
+    }
+    let before = delivered(&mut receiver);
+    capture.finish();
+    let got = before + delivered(&mut receiver);
+    eprintln!("[#140] 10.000s at 16 kHz: {before:.3}s before finish, {got:.3}s after");
+    assert!((got - 10.0).abs() < 0.002, "handed on: {got:.3}s");
 }
 
 /// How far ahead of the device the microphone chain runs in this (debug)
