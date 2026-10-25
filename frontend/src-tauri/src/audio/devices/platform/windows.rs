@@ -192,6 +192,22 @@ pub fn get_windows_device(audio_device: &AudioDevice) -> Result<(cpal::Device, c
                     if name == base_name || name.contains(base_name) {
                         // info!("Found matching output device: {}", name);
 
+                        // The mix format first. Loopback in shared mode
+                        // records in it anyway, and reading it is one call.
+                        // Listing every supported format probes the driver
+                        // once per rate and layout, and the dev logs show it
+                        // taking about 3 s - the start of what the other side
+                        // said was missing from every recording.
+                        let started = std::time::Instant::now();
+                        if let Ok(mix_config) = device.default_output_config() {
+                            info!(
+                                "Using the mix format for loopback: {:?} (read in {} ms)",
+                                mix_config,
+                                started.elapsed().as_millis()
+                            );
+                            return Ok((device, mix_config));
+                        }
+
                         // For output devices, we want to use them in loopback mode
                         if let Ok(supported_configs) = device.supported_output_configs() {
                             let configs: Vec<_> = supported_configs.collect();

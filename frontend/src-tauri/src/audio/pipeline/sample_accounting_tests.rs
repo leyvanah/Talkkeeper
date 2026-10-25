@@ -296,3 +296,60 @@ fn microphone_chain_real_time_factor() {
         );
     }
 }
+
+/// The start order: the pipeline's input opens first and the streams start
+/// sending into it; the pipeline is built only afterwards. What the
+/// microphone captured while it was being built must all reach the tracks,
+/// and system audio that opens later must still land at its own time.
+#[tokio::test]
+async fn blocks_sent_before_the_pipeline_is_built_reach_the_tracks() {
+    let state = RecordingState::new();
+    state.start_recording().expect("recording state");
+    let mut manager = AudioPipelineManager::new();
+    manager.open_input(&state);
+
+    // The first second of the microphone arrives before the pipeline exists.
+    let mut chunks = blocks(DeviceType::Microphone, 0.0, 10.0, 0.1, |_| 0.0);
+    chunks.extend(blocks(DeviceType::System, 0.5, 10.0, 0.1, |_| 0.0));
+    chunks.sort_by(|a, b| a.timestamp.partial_cmp(&b.timestamp).unwrap());
+    let (early, late): (Vec<_>, Vec<_>) = chunks.into_iter().partition(|chunk| chunk.timestamp <= 1.0);
+    for chunk in early {
+        state.send_audio_chunk(chunk).unwrap();
+    }
+
+    let (transcription_sender, _transcription) = mpsc::unbounded_channel();
+    let (recording_sender, mut recording) = mpsc::unbounded_channel::<AudioChunk>();
+    manager
+        .start(
+            state.clone(),
+            transcription_sender,
+            0,
+            RATE,
+            Some(recording_sender),
+            "Test microphone".to_string(),
+            InputDeviceKind::Unknown,
+            "Test system audio".to_string(),
+            InputDeviceKind::Unknown,
+            None,
+            None,
+        )
+        .expect("pipeline start");
+    for chunk in late {
+        state.send_audio_chunk(chunk).unwrap();
+    }
+    state.stop_recording();
+    manager.force_flush_and_stop().await.expect("pipeline stop");
+
+    let mut tracks = Tracks { mixed: vec![], mic: vec![], system: vec![] };
+    while let Ok(chunk) = recording.try_recv() {
+        match chunk.device_type {
+            DeviceType::Mixed => tracks.mixed.extend(chunk.data),
+            DeviceType::Microphone => tracks.mic.extend(chunk.data),
+            DeviceType::System => tracks.system.extend(chunk.data),
+        }
+    }
+    report("1s queued before the pipeline, system from 0.5s", 10.0, &tracks);
+    assert!((seconds(tracks.mixed.len()) - 10.0).abs() <= WINDOW);
+    assert!((seconds(tracks.mic.len()) - 10.0).abs() <= WINDOW);
+    assert!((first_sound(&tracks.system) - 0.5).abs() <= WINDOW);
+}
