@@ -66,6 +66,16 @@ pub fn archive_is_protected() -> bool {
         .unwrap_or(false)
 }
 
+/// The owner has just done something - stopped a recording, from the window,
+/// the mini bar or the tray - that the window's touch, sent every 30 s and
+/// never from the tray, may not report before the idle check comes round.
+/// See [`KeySession::mark_present`].
+pub fn owner_present() {
+    if let Some(session) = CURRENT.get() {
+        session.mark_present();
+    }
+}
+
 /// Long jobs that write to the archive and are running right now.
 static BUSY: AtomicUsize = AtomicUsize::new(0);
 
@@ -277,6 +287,16 @@ impl KeySession {
     /// Whether the key is currently in memory.
     pub fn is_unlocked(&self) -> bool {
         self.lock_inner().dek.is_some()
+    }
+
+    /// Restarts the idle clock for an action that can only be the owner's.
+    /// A lock that is owed (sleep, a locked session) stays owed.
+    ///
+    /// Stopping a recording is one: the idle deadline usually passed during
+    /// the meeting, and without this the archive locked seconds after the
+    /// meeting was saved, with the owner at the keyboard.
+    pub fn mark_present(&self) {
+        self.lock_inner().mark_active();
     }
 
     /// Marks the owner as present, pushing the idle deadline out - unless the
@@ -560,6 +580,24 @@ mod tests {
         assert_eq!(session.touch(false), Some(LockDue::Requested(LockReason::SessionLocked)));
         assert!(!session.idle_expired(), "presence still counts for the idle clock");
         assert_eq!(session.lock_due(), Some(LockDue::Requested(LockReason::SessionLocked)));
+    }
+
+    /// Review of #101: the deadline passed during the recording, and Stop -
+    /// from the window or the tray - restarts it.
+    #[test]
+    fn stopping_a_recording_restarts_an_idle_deadline_that_passed_during_it() {
+        let session = KeySession::new();
+        session.unlock(generate_dek());
+        session.set_auto_lock_after(Some(Duration::from_secs(300)));
+        session.backdate_activity(Duration::from_secs(420));
+        assert_eq!(session.lock_due(), Some(LockDue::Idle));
+
+        session.mark_present();
+        assert_eq!(session.lock_due(), None);
+
+        session.request_lock(LockReason::Sleep);
+        session.mark_present();
+        assert_eq!(session.lock_due(), Some(LockDue::Requested(LockReason::Sleep)), "an owed lock stays owed");
     }
 
     #[test]
