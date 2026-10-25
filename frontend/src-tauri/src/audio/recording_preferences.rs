@@ -846,9 +846,22 @@ pub async fn discard_recording_folder<R: Runtime>(
 /// the window sends. The window's copy of the path can still be the previous
 /// recording's when that one was never saved, and its folder then holds the
 /// only copy of an unsaved meeting.
-static LAST_STOPPED_RECORDING: Mutex<Option<PathBuf>> = Mutex::new(None);
+static LAST_STOPPED_RECORDING: Mutex<Option<StoppedRecording>> = Mutex::new(None);
 
-fn last_stopped_recording() -> std::sync::MutexGuard<'static, Option<PathBuf>> {
+/// The recording that stopped last: its folder, and how long it ran without
+/// its pauses, when that was known at the stop.
+struct StoppedRecording {
+    folder: PathBuf,
+    seconds: Option<f64>,
+}
+
+/// The longest take this backend still deletes as too short. The window calls
+/// anything under 10 s too short; the margin is for its timer and this one
+/// disagreeing. Past it, a wrong timer in the window cannot cost a real
+/// recording.
+const SHORT_TAKE_LIMIT_SECS: f64 = 30.0;
+
+fn last_stopped_recording() -> std::sync::MutexGuard<'static, Option<StoppedRecording>> {
     LAST_STOPPED_RECORDING
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner())
@@ -859,14 +872,16 @@ pub(crate) fn recording_starting() {
     *last_stopped_recording() = None;
 }
 
-/// A recording stopped, with its files in `folder`.
-pub(crate) fn recording_stopped(folder: Option<PathBuf>) {
-    *last_stopped_recording() = folder;
+/// A recording stopped, with its files in `folder`, after `seconds` of
+/// recorded sound (`None` when the length was not known).
+pub(crate) fn recording_stopped(folder: Option<PathBuf>, seconds: Option<f64>) {
+    *last_stopped_recording() = folder.map(|folder| StoppedRecording { folder, seconds });
 }
 
 /// Discards the recording that stopped last, as too short to keep. Returns
 /// whether a folder was deleted. Nothing is deleted while a newer recording
-/// runs, nor when a meeting points at the folder.
+/// runs, when a meeting points at the folder, or when the recording was not
+/// short.
 #[tauri::command]
 pub async fn discard_short_recording<R: Runtime>(
     app: AppHandle<R>,
@@ -878,7 +893,8 @@ pub async fn discard_short_recording<R: Runtime>(
     .await
 }
 
-/// Hands the last stopped recording's folder to `discard`, unless a meeting
+/// Hands the last stopped recording's folder to `discard`, unless the
+/// recording was longer than a short take, its length is unknown, or a meeting
 /// points at it. Either way it is forgotten. A failure to read the meetings
 /// keeps the folder.
 async fn discard_last_stopped<F, Fut>(pool: &sqlx::SqlitePool, discard: F) -> Result<bool, String>
@@ -886,9 +902,22 @@ where
     F: FnOnce(String) -> Fut,
     Fut: std::future::Future<Output = Result<(), String>>,
 {
-    let Some(folder) = last_stopped_recording().take() else {
+    let Some(StoppedRecording { folder, seconds }) = last_stopped_recording().take() else {
         return Ok(false);
     };
+    // The window decides a take is short by its own timer. The backend keeps
+    // the say over what gets deleted: a take it did not see end short stays.
+    match seconds {
+        Some(seconds) if seconds <= SHORT_TAKE_LIMIT_SECS => {}
+        Some(seconds) => {
+            warn!("Kept a recording asked to be discarded as short: it ran {seconds:.0} s");
+            return Ok(false);
+        }
+        None => {
+            warn!("Kept a recording asked to be discarded as short: its length is unknown");
+            return Ok(false);
+        }
+    }
     let stored: Vec<String> =
         sqlx::query_scalar("SELECT folder_path FROM meetings WHERE folder_path IS NOT NULL")
             .fetch_all(pool)
@@ -1136,19 +1165,36 @@ mod tests {
         let pool = archive_with_meeting_at(&saved).await;
 
         // A folder a meeting points at is never discarded.
-        recording_stopped(Some(saved.clone()));
+        recording_stopped(Some(saved.clone()), Some(3.0));
         assert!(!discard_short(&pool).await);
         assert!(saved.join("audio.mp4").exists());
 
         // A recording stopped, was not saved, and the next one started: a
         // discard before the new one stops leaves the unsaved one alone.
-        recording_stopped(Some(unsaved.clone()));
+        recording_stopped(Some(unsaved.clone()), Some(3.0));
         recording_starting();
         assert!(!discard_short(&pool).await);
         assert!(unsaved.join("audio.mp4").exists());
 
+        // A window whose timer went wrong cannot discard a real recording,
+        // nor one whose length the stop did not know.
+        let long = recording_folder(root.path(), "rec-long");
+        recording_stopped(Some(long.clone()), Some(SHORT_TAKE_LIMIT_SECS + 1.0));
+        assert!(!discard_short(&pool).await);
+        assert!(long.join("audio.mp4").exists());
+        recording_stopped(Some(long.clone()), None);
+        assert!(!discard_short(&pool).await);
+        assert!(long.join("audio.mp4").exists());
+
+        // A meeting that points at the folder by another spelling of its path
+        // still keeps it. (On Windows the canonical form is the `\\?\` one.)
+        let namesake = saved.canonicalize().unwrap();
+        recording_stopped(Some(namesake), Some(3.0));
+        assert!(!discard_short(&pool).await);
+        assert!(saved.join("audio.mp4").exists());
+
         // Once the short take has stopped, it is its folder that goes.
-        recording_stopped(Some(short.clone()));
+        recording_stopped(Some(short.clone()), Some(3.0));
         assert!(discard_short(&pool).await);
         assert!(!short.exists());
         assert!(unsaved.join("audio.mp4").exists());
