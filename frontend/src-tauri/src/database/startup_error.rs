@@ -24,6 +24,11 @@ pub fn explain_and_exit(error: &OpenError) -> ! {
     if ask(text(Text::ErrorTitle), &message) {
         open_data_folder();
     }
+    // An orderly refusal, not a crash: without this the next start would
+    // offer a report about an unexpected exit.
+    if let Err(error) = crate::crash_report::finish_session() {
+        log::warn!("Could not close the crash-report session: {error}");
+    }
     std::process::exit(1);
 }
 

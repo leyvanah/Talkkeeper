@@ -196,7 +196,7 @@ fn archive_not_opened_in(lang: Lang, problem: ArchiveProblem<'_>) -> String {
             "Архив записей обновлён более новой версией Talkkeeper, и эта версия не может его открыть. \
              Данные целы: программа ничего в них не меняла.\n\n\
              Установите {}.\n\n\
-             Копия архива до обновления лежит в папке данных, в папке «backup-before-…», и хранится 7 дней.",
+             Если обновление было меньше 7 дней назад, копия архива до него лежит в папке данных, в папке «backup-before-…».",
             match needs {
                 Some(version) => format!("версию {version} или новее"),
                 None => "последнюю версию".to_string(),
@@ -206,7 +206,7 @@ fn archive_not_opened_in(lang: Lang, problem: ArchiveProblem<'_>) -> String {
             "The archive was updated by a newer version of Talkkeeper, and this version cannot open it. \
              Your data is intact: nothing in it was changed.\n\n\
              Install {}.\n\n\
-             A copy of the archive from before the update is in the data folder, in a \"backup-before-…\" folder, kept for 7 days.",
+             If the update was less than 7 days ago, a copy of the archive from before it is in the data folder, in a \"backup-before-…\" folder.",
             match needs {
                 Some(version) => format!("version {version} or newer"),
                 None => "the latest version".to_string(),
@@ -214,11 +214,13 @@ fn archive_not_opened_in(lang: Lang, problem: ArchiveProblem<'_>) -> String {
         ),
         (Lang::Ru, ArchiveProblem::NotCopied) => "Архив записей нужно обновить для этой версии, но перед этим \
              не удалось сделать его копию, поэтому обновление не выполнено. Данные целы.\n\n\
-             Проверьте, что на диске есть свободное место, и запустите программу снова."
+             Проверьте, что на диске есть свободное место и что папку данных не занимает другая программа, \
+             и запустите программу снова."
             .to_string(),
         (Lang::En, ArchiveProblem::NotCopied) => "The archive needs updating for this version, but a copy \
              of it could not be made first, so it was not updated. Your data is intact.\n\n\
-             Check that the disk has free space, and start the program again."
+             Check that the disk has free space and that nothing else is using the data folder, \
+             then start the program again."
             .to_string(),
         (Lang::Ru, ArchiveProblem::Other) => "Не удалось открыть архив записей. \
              Программа ничего в нём не удаляла.\n\n\

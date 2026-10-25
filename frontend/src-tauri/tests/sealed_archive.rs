@@ -1047,3 +1047,39 @@ async fn an_old_copy_stays_when_a_sealed_value_does_not_open() {
     assert_eq!(error.code, "fieldVerificationFailed");
     assert!(backup.exists(), "the copy went although a value does not open");
 }
+
+/// Review of tasks#122: an archive migrated while unprotected leaves its
+/// copy (`backup-before-*`) in the clear. Protecting the archive afterwards
+/// must take that copy too, not only the pre-encryption one.
+#[tokio::test]
+async fn a_copy_made_before_a_migration_goes_once_the_archive_is_sealed() {
+    use app_lib::security::commands::convert_database_at;
+
+    let folder = tempfile::tempdir().unwrap();
+    let pool = archive_in(folder.path()).await;
+    sqlx::raw_sql(
+        "INSERT INTO meetings (id, title, created_at, updated_at) \
+             VALUES ('m1', 'Встреча в пятницу', '2026-09-01T10:00:00Z', '2026-09-01T10:00:00Z');",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    // The copy an update made while the archive was still unprotected.
+    let migration_copy = folder.path().join("backup-before-0.2.35-20261025T100000Z");
+    std::fs::create_dir_all(&migration_copy).unwrap();
+    std::fs::write(migration_copy.join("meeting_minutes.sqlite"), "Встреча в пятницу").unwrap();
+    // Not a copy of the archive: left alone.
+    let recovery = folder.path().join("recovery");
+    std::fs::create_dir_all(&recovery).unwrap();
+
+    let backup = folder.path().join("meeting_minutes.before-encryption.sqlite");
+    convert_database_at(&pool, field_encryption::Direction::Encrypt, &backup)
+        .await
+        .unwrap();
+
+    assert_eq!(field_encryption::count(&pool).await.unwrap().plaintext, 0);
+    assert!(!backup.exists());
+    assert!(!migration_copy.exists(), "a plaintext copy outlived the sealing");
+    assert!(recovery.exists());
+}
