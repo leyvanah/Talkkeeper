@@ -283,13 +283,23 @@ impl KeySession {
     /// deadline has already passed or a lock is owed. Then nothing is pushed
     /// out and the lock is reported as due: a click right after waking the
     /// computer, before the idle check came round, used to cancel the lock.
-    pub fn touch(&self) -> Option<LockDue> {
+    ///
+    /// `lock_allowed` is false while a recording or a job holds the key. The
+    /// idle deadline then passes as a matter of course - nobody clicks during
+    /// a meeting - and could not have been paid anyway, so a touch is plain
+    /// presence: it restarts the idle clock, and only a lock that is owed
+    /// (sleep, a locked session) is still reported. Otherwise the owner would
+    /// land on the lock screen right after almost every long meeting.
+    pub fn touch(&self, lock_allowed: bool) -> Option<LockDue> {
         let mut inner = self.lock_inner();
         if inner.dek.is_some() {
             if let Some(reason) = inner.lock_requested {
+                if !lock_allowed {
+                    inner.mark_active();
+                }
                 return Some(LockDue::Requested(reason));
             }
-            if inner.idle_past_deadline() {
+            if lock_allowed && inner.idle_past_deadline() {
                 return Some(LockDue::Idle);
             }
         }
@@ -321,11 +331,9 @@ impl KeySession {
         }
     }
 
-    /// Whether the key has been idle past its deadline.
-    ///
-    /// Answers only the idle question. Whether locking is *allowed* right now —
-    /// no recording in progress — is the caller's to check, because this module
-    /// has no business knowing about the audio pipeline.
+    /// Whether the key has been idle past its deadline. The app asks
+    /// [`Self::lock_due`]; this is the idle half of it, for the tests.
+    #[cfg(test)]
     pub fn idle_expired(&self) -> bool {
         let inner = self.lock_inner();
         inner.dek.is_some() && inner.idle_past_deadline()
@@ -473,7 +481,7 @@ mod tests {
         session.set_auto_lock_after(Some(Duration::from_secs(300)));
         session.backdate_activity(Duration::from_secs(299));
 
-        assert_eq!(session.touch(), None);
+        assert_eq!(session.touch(true), None);
         session.backdate_activity(Duration::from_secs(200));
         assert!(!session.idle_expired(), "the clock restarted at the touch");
     }
@@ -487,7 +495,7 @@ mod tests {
         session.set_auto_lock_after(Some(Duration::from_secs(300)));
         session.backdate_activity(Duration::from_secs(301));
 
-        assert_eq!(session.touch(), Some(LockDue::Idle));
+        assert_eq!(session.touch(true), Some(LockDue::Idle));
         assert!(session.idle_expired(), "still expired after the touch");
         assert_eq!(session.lock_due(), Some(LockDue::Idle));
     }
@@ -501,7 +509,7 @@ mod tests {
         session.backdate_wall_clock_only(Duration::from_secs(600));
 
         assert!(session.idle_expired());
-        assert_eq!(session.touch(), Some(LockDue::Idle));
+        assert_eq!(session.touch(true), Some(LockDue::Idle));
     }
 
     #[test]
@@ -514,7 +522,7 @@ mod tests {
         session.request_lock(LockReason::SessionLocked);
         assert_eq!(session.lock_due(), Some(LockDue::Requested(LockReason::SessionLocked)));
         // A touch does not cancel it either, and a second request keeps the first reason.
-        assert_eq!(session.touch(), Some(LockDue::Requested(LockReason::SessionLocked)));
+        assert_eq!(session.touch(true), Some(LockDue::Requested(LockReason::SessionLocked)));
         session.request_lock(LockReason::Sleep);
         assert_eq!(session.lock_due(), Some(LockDue::Requested(LockReason::SessionLocked)));
 
@@ -522,6 +530,36 @@ mod tests {
         assert_eq!(session.lock_due(), None);
         session.unlock(generate_dek());
         assert_eq!(session.lock_due(), None, "unlocking again starts clean");
+    }
+
+    /// Review of #101: the idle deadline passes during a long recording, and
+    /// the click on Stop - and everything after it while the meeting is
+    /// saved - is the owner at the keyboard. It restarts the idle clock.
+    #[test]
+    fn a_touch_while_a_recording_holds_the_key_is_presence() {
+        let session = KeySession::new();
+        session.unlock(generate_dek());
+        session.set_auto_lock_after(Some(Duration::from_secs(900)));
+        session.backdate_activity(Duration::from_secs(3600));
+
+        assert_eq!(session.touch(false), None, "no lock reported while it cannot be paid");
+        assert!(!session.idle_expired(), "the idle clock restarted");
+        assert_eq!(session.lock_due(), None);
+    }
+
+    /// The same touch does not cancel a lock that is owed: Win+L during the
+    /// recording still locks once it ends.
+    #[test]
+    fn a_touch_while_a_recording_holds_the_key_keeps_an_owed_lock() {
+        let session = KeySession::new();
+        session.unlock(generate_dek());
+        session.set_auto_lock_after(Some(Duration::from_secs(900)));
+        session.backdate_activity(Duration::from_secs(3600));
+        session.request_lock(LockReason::SessionLocked);
+
+        assert_eq!(session.touch(false), Some(LockDue::Requested(LockReason::SessionLocked)));
+        assert!(!session.idle_expired(), "presence still counts for the idle clock");
+        assert_eq!(session.lock_due(), Some(LockDue::Requested(LockReason::SessionLocked)));
     }
 
     #[test]

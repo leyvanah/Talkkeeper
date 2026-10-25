@@ -943,14 +943,17 @@ pub async fn security_lock<R: Runtime>(app: AppHandle<R>) -> Result<(), Security
 
 /// Tells the lock the owner is still there, so the idle clock restarts - or,
 /// when the lock is already due (the first click after waking the computer,
-/// before the idle check came round), locks instead of postponing it.
+/// before the idle check came round), locks instead of postponing it. While a
+/// recording or a job holds the key, a touch is presence (see
+/// [`KeySession::touch`]).
 #[tauri::command]
 pub async fn security_touch<R: Runtime>(app: AppHandle<R>) {
     let Some(state) = app.try_state::<SecurityState>() else {
         return;
     };
-    if state.session.touch().is_some() {
-        let recording = crate::audio::recording_commands::is_recording().await;
+    let recording = crate::audio::recording_commands::is_recording().await;
+    let lock_allowed = !recording && !super::session::background_work_running();
+    if state.session.touch(lock_allowed).is_some() {
         pay_due_lock(&app, recording);
     }
 }

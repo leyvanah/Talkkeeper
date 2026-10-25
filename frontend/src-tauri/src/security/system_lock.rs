@@ -39,8 +39,7 @@ fn on_event<R: Runtime>(app: &AppHandle<R>, reason: LockReason) {
         return;
     }
     state.session.request_lock(reason);
-    let recording =
-        tauri::async_runtime::block_on(crate::audio::recording_commands::is_recording());
+    let recording = crate::audio::recording_commands::is_recording_active();
     if !pay_due_lock(app, recording) {
         log::info!(
             "Archive lock owed ({reason:?}): a recording or a job is running; it locks when they end"
@@ -116,11 +115,18 @@ mod windows_watch {
             Some(instance.into()),
             None,
         )?;
-        WTSRegisterSessionNotification(window, NOTIFY_FOR_THIS_SESSION)?;
-        log::info!("Watching for sleep and Windows session lock");
+        // Without session notifications the window still hears the power
+        // broadcast, so sleep goes on locking: worth keeping.
+        match WTSRegisterSessionNotification(window, NOTIFY_FOR_THIS_SESSION) {
+            Ok(()) => log::info!("Watching for sleep and Windows session lock"),
+            Err(error) => log::warn!(
+                "Watching for sleep only; Windows session lock is not reported: {error}"
+            ),
+        }
 
         let mut message = MSG::default();
-        while GetMessageW(&mut message, None, 0, 0).as_bool() {
+        // 0 is WM_QUIT and -1 an error; either ends the loop.
+        while GetMessageW(&mut message, None, 0, 0).0 > 0 {
             let _ = TranslateMessage(&message);
             DispatchMessageW(&message);
         }
