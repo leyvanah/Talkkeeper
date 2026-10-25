@@ -28,6 +28,7 @@ pub mod keystore;
 pub mod recovery;
 pub mod session;
 pub mod stream;
+pub mod system_lock;
 
 pub use keystore::{Keystore, KeystoreError};
 pub use session::{KeySession, LockState, SessionError};

@@ -7,11 +7,13 @@
 //!
 //! One consequence, agreed with the owner: **there is no auto-lock during a
 //! recording.** Wiping the key mid-session would end the session. Idle locking
-//! resumes as soon as the recording stops.
+//! resumes as soon as the recording stops. The same holds for the locks that do
+//! not wait for idle time - the computer going to sleep, Win+L, switching user
+//! (`system_lock.rs`): during a recording they are owed, and paid when it ends.
 
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime};
 
 use super::envelope::Dek;
 
@@ -167,8 +169,26 @@ struct Inner {
     configured: bool,
     /// Last sign of the owner being present.
     last_activity: Instant,
+    /// The same moment by the wall clock. `Instant` is not guaranteed to
+    /// count the time the computer sleeps; the wall clock does. Whichever says
+    /// the deadline has passed wins, so a laptop closed with the archive open
+    /// cannot wake up with its idle time forgotten.
+    last_activity_wall: SystemTime,
     /// Idle time after which the key is dropped. `None` means never.
     auto_lock_after: Option<Duration>,
+    /// A lock is owed regardless of idle time: the computer went to sleep or
+    /// its session was locked. Kept while a recording or a job is running,
+    /// and paid as soon as nothing is.
+    lock_requested: Option<LockReason>,
+}
+
+/// Why a lock was asked for, other than idle time. For the log.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LockReason {
+    /// The computer is going to sleep.
+    Sleep,
+    /// The Windows session was locked (Win+L) or switched away from.
+    SessionLocked,
 }
 
 impl Default for KeySession {
@@ -185,7 +205,9 @@ impl KeySession {
                 dek: None,
                 configured: false,
                 last_activity: Instant::now(),
+                last_activity_wall: SystemTime::now(),
                 auto_lock_after: None,
+                lock_requested: None,
             }),
         }
     }
@@ -197,6 +219,7 @@ impl KeySession {
         inner.configured = configured;
         if !configured {
             inner.dek = None;
+            inner.lock_requested = None;
         }
     }
 
@@ -215,7 +238,8 @@ impl KeySession {
         let mut inner = self.lock_inner();
         inner.configured = true;
         inner.dek = Some(dek);
-        inner.last_activity = Instant::now();
+        inner.mark_active();
+        inner.lock_requested = None;
     }
 
     /// Drops the key. The bytes are wiped as the `Zeroizing` value falls out of
@@ -223,6 +247,31 @@ impl KeySession {
     pub fn lock(&self) {
         let mut inner = self.lock_inner();
         inner.dek = None;
+        inner.lock_requested = None;
+    }
+
+    /// Asks for a lock that does not wait for idle time. Paid by the next
+    /// [`Self::lock`]; while a recording or a job runs, the caller leaves it
+    /// owed. Nothing to do when the archive is not open.
+    pub fn request_lock(&self, reason: LockReason) {
+        let mut inner = self.lock_inner();
+        if inner.dek.is_some() && inner.lock_requested.is_none() {
+            inner.lock_requested = Some(reason);
+        }
+    }
+
+    /// Whether the key should go now: idle past its deadline, or a lock was
+    /// asked for. As with [`Self::idle_expired`], whether locking is allowed
+    /// right now is the caller's question.
+    pub fn lock_due(&self) -> Option<LockDue> {
+        let inner = self.lock_inner();
+        if inner.dek.is_none() {
+            return None;
+        }
+        if let Some(reason) = inner.lock_requested {
+            return Some(LockDue::Requested(reason));
+        }
+        inner.idle_past_deadline().then_some(LockDue::Idle)
     }
 
     /// Whether the key is currently in memory.
@@ -230,16 +279,29 @@ impl KeySession {
         self.lock_inner().dek.is_some()
     }
 
-    /// Marks the owner as present, pushing the idle deadline out.
-    pub fn touch(&self) {
-        self.lock_inner().last_activity = Instant::now();
+    /// Marks the owner as present, pushing the idle deadline out - unless the
+    /// deadline has already passed or a lock is owed. Then nothing is pushed
+    /// out and the lock is reported as due: a click right after waking the
+    /// computer, before the idle check came round, used to cancel the lock.
+    pub fn touch(&self) -> Option<LockDue> {
+        let mut inner = self.lock_inner();
+        if inner.dek.is_some() {
+            if let Some(reason) = inner.lock_requested {
+                return Some(LockDue::Requested(reason));
+            }
+            if inner.idle_past_deadline() {
+                return Some(LockDue::Idle);
+            }
+        }
+        inner.mark_active();
+        None
     }
 
     /// Sets the idle timeout. `None` disables automatic locking.
     pub fn set_auto_lock_after(&self, after: Option<Duration>) {
         let mut inner = self.lock_inner();
         inner.auto_lock_after = after;
-        inner.last_activity = Instant::now();
+        inner.mark_active();
     }
 
     /// The idle timeout currently in force.
@@ -266,10 +328,7 @@ impl KeySession {
     /// has no business knowing about the audio pipeline.
     pub fn idle_expired(&self) -> bool {
         let inner = self.lock_inner();
-        match (inner.dek.is_some(), inner.auto_lock_after) {
-            (true, Some(after)) => inner.last_activity.elapsed() >= after,
-            _ => false,
-        }
+        inner.dek.is_some() && inner.idle_past_deadline()
     }
 
     /// A poisoned mutex here means another thread panicked while holding the
@@ -284,6 +343,41 @@ impl KeySession {
     fn backdate_activity(&self, elapsed: Duration) {
         let mut inner = self.lock_inner();
         inner.last_activity = Instant::now() - elapsed;
+        inner.last_activity_wall = SystemTime::now() - elapsed;
+    }
+
+    /// Test seam: the wall clock alone says `elapsed` has passed, as after a
+    /// sleep that `Instant` did not count.
+    #[cfg(test)]
+    fn backdate_wall_clock_only(&self, elapsed: Duration) {
+        self.lock_inner().last_activity_wall = SystemTime::now() - elapsed;
+    }
+}
+
+/// Why a lock is due now.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LockDue {
+    Idle,
+    Requested(LockReason),
+}
+
+impl Inner {
+    fn mark_active(&mut self) {
+        self.last_activity = Instant::now();
+        self.last_activity_wall = SystemTime::now();
+    }
+
+    /// Idle past the timeout by either clock. A wall clock set back reads as
+    /// no time passed, which only ever delays a lock to `Instant`'s answer.
+    fn idle_past_deadline(&self) -> bool {
+        let Some(after) = self.auto_lock_after else {
+            return false;
+        };
+        let by_wall = SystemTime::now()
+            .duration_since(self.last_activity_wall)
+            .map(|idle| idle >= after)
+            .unwrap_or(false);
+        self.last_activity.elapsed() >= after || by_wall
     }
 }
 
@@ -373,15 +467,70 @@ mod tests {
     }
 
     #[test]
-    fn activity_pushes_the_deadline_out() {
+    fn activity_before_the_deadline_pushes_it_out() {
+        let session = KeySession::new();
+        session.unlock(generate_dek());
+        session.set_auto_lock_after(Some(Duration::from_secs(300)));
+        session.backdate_activity(Duration::from_secs(299));
+
+        assert_eq!(session.touch(), None);
+        session.backdate_activity(Duration::from_secs(200));
+        assert!(!session.idle_expired(), "the clock restarted at the touch");
+    }
+
+    /// tasks#116: a click right after waking the computer, before the idle
+    /// check came round, used to push an expired deadline out again.
+    #[test]
+    fn activity_after_the_deadline_does_not_cancel_the_lock() {
         let session = KeySession::new();
         session.unlock(generate_dek());
         session.set_auto_lock_after(Some(Duration::from_secs(300)));
         session.backdate_activity(Duration::from_secs(301));
-        assert!(session.idle_expired());
 
-        session.touch();
-        assert!(!session.idle_expired());
+        assert_eq!(session.touch(), Some(LockDue::Idle));
+        assert!(session.idle_expired(), "still expired after the touch");
+        assert_eq!(session.lock_due(), Some(LockDue::Idle));
+    }
+
+    /// The time asleep counts even if `Instant` did not count it.
+    #[test]
+    fn idle_time_by_the_wall_clock_alone_expires_the_key() {
+        let session = KeySession::new();
+        session.unlock(generate_dek());
+        session.set_auto_lock_after(Some(Duration::from_secs(300)));
+        session.backdate_wall_clock_only(Duration::from_secs(600));
+
+        assert!(session.idle_expired());
+        assert_eq!(session.touch(), Some(LockDue::Idle));
+    }
+
+    #[test]
+    fn a_requested_lock_is_due_whatever_the_idle_timeout_until_it_is_paid() {
+        let session = KeySession::new();
+        session.unlock(generate_dek());
+        session.set_auto_lock_after(None);
+        assert_eq!(session.lock_due(), None);
+
+        session.request_lock(LockReason::SessionLocked);
+        assert_eq!(session.lock_due(), Some(LockDue::Requested(LockReason::SessionLocked)));
+        // A touch does not cancel it either, and a second request keeps the first reason.
+        assert_eq!(session.touch(), Some(LockDue::Requested(LockReason::SessionLocked)));
+        session.request_lock(LockReason::Sleep);
+        assert_eq!(session.lock_due(), Some(LockDue::Requested(LockReason::SessionLocked)));
+
+        session.lock();
+        assert_eq!(session.lock_due(), None);
+        session.unlock(generate_dek());
+        assert_eq!(session.lock_due(), None, "unlocking again starts clean");
+    }
+
+    #[test]
+    fn a_lock_requested_while_locked_is_not_kept_for_later() {
+        let session = KeySession::new();
+        session.set_configured(true);
+        session.request_lock(LockReason::Sleep);
+        session.unlock(generate_dek());
+        assert_eq!(session.lock_due(), None);
     }
 
     #[test]
