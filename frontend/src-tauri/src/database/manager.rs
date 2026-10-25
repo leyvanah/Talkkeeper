@@ -17,6 +17,71 @@ const PEOPLE_MIGRATION_CRLF_CHECKSUM: &str =
 /// is not a reason to refuse the checksum repair.
 const PEOPLE_BY_CLIENT_VERSION: i64 = 20261007000000;
 
+/// How long the copies made before a migration are kept.
+const BACKUP_RETENTION: std::time::Duration = std::time::Duration::from_secs(7 * 24 * 60 * 60);
+/// Folder-name prefix of the copy made before a migration.
+const BACKUP_PREFIX: &str = "backup-before-";
+
+/// Why the archive could not be opened, as far as the person at the screen
+/// needs to know it.
+#[derive(Debug)]
+pub enum OpenError {
+    /// The archive has migrations this build does not know: a newer version
+    /// has opened it. Nothing was changed. `needs` is the version that last
+    /// migrated it, when it recorded one.
+    NewerArchive { needs: Option<String> },
+    /// The archive needed migrating and could not be copied first, so it was
+    /// not migrated.
+    BackupFailed(String),
+    Database(sqlx::Error),
+}
+
+impl std::fmt::Display for OpenError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::NewerArchive { needs } => write!(
+                f,
+                "the archive was migrated by a newer version ({})",
+                needs.as_deref().unwrap_or("unknown")
+            ),
+            Self::BackupFailed(detail) => {
+                write!(f, "could not copy the archive before migrating it: {detail}")
+            }
+            Self::Database(error) => error.fmt(f),
+        }
+    }
+}
+
+impl std::error::Error for OpenError {}
+
+impl From<sqlx::Error> for OpenError {
+    fn from(error: sqlx::Error) -> Self {
+        Self::Database(error)
+    }
+}
+
+impl From<MigrateError> for OpenError {
+    fn from(error: MigrateError) -> Self {
+        Self::Database(error.into())
+    }
+}
+
+/// This build's version as one number, for `PRAGMA user_version`:
+/// `major * 1_000_000 + minor * 1_000 + patch`.
+fn version_number(version: &str) -> Option<i64> {
+    let mut parts = version.split(|c: char| c == '.' || c == '-' || c == '+');
+    let major: i64 = parts.next()?.parse().ok()?;
+    let minor: i64 = parts.next()?.parse().ok()?;
+    let patch: i64 = parts.next()?.parse().ok()?;
+    (minor < 1_000 && patch < 1_000).then_some(major * 1_000_000 + minor * 1_000 + patch)
+}
+
+fn version_text(number: i64) -> Option<String> {
+    (number > 0).then(|| {
+        format!("{}.{}.{}", number / 1_000_000, number / 1_000 % 1_000, number % 1_000)
+    })
+}
+
 #[derive(Clone)]
 pub struct DatabaseManager {
     pool: SqlitePool,
@@ -26,7 +91,12 @@ impl DatabaseManager {
     /// Opens the archive at `tauri_db_path`, creating an empty one if there is
     /// none. Never fills a new archive from another database found nearby: a
     /// copy of someone else's install would arrive unasked and unencrypted.
-    pub async fn new(tauri_db_path: &str) -> Result<Self> {
+    ///
+    /// Before migrating an existing archive, a copy of it is made next to it
+    /// (`backup-before-<version>-<time>/`): a version that turns out bad can
+    /// be rolled back only to an archive it can still read, because an older
+    /// version refuses one migrated by a newer one rather than guess.
+    pub async fn new(tauri_db_path: &str) -> std::result::Result<Self, OpenError> {
         if let Some(parent_dir) = Path::new(tauri_db_path).parent() {
             if !parent_dir.exists() {
                 fs::create_dir_all(parent_dir).map_err(|e| sqlx::Error::Io(e))?;
@@ -40,13 +110,117 @@ impl DatabaseManager {
 
         let migration_pool = SqlitePool::connect_with(Self::connect_options(tauri_db_path)?).await?;
 
+        let applied = Self::applied_versions(&migration_pool).await?;
+        let known: std::collections::HashSet<i64> = MIGRATOR.iter().map(|m| m.version).collect();
+        if applied.iter().any(|version| !known.contains(version)) {
+            // Only a version newer than this one is worth naming. A newer
+            // version that failed half way through its migrations never
+            // recorded itself, and the number there is an older one's -
+            // possibly this very version's.
+            let own = version_number(env!("CARGO_PKG_VERSION"));
+            let needs = sqlx::query_scalar::<_, i64>("PRAGMA user_version")
+                .fetch_one(&migration_pool)
+                .await
+                .ok()
+                .filter(|&recorded| own.is_some_and(|own| recorded > own))
+                .and_then(version_text);
+            migration_pool.close().await;
+            log::error!(
+                "The archive has migrations this version does not know; a newer version ({}) opened it. Not touching it.",
+                needs.as_deref().unwrap_or("unknown")
+            );
+            return Err(OpenError::NewerArchive { needs });
+        }
+
+        let pending = MIGRATOR
+            .iter()
+            .filter(|migration| !applied.contains(&migration.version))
+            .count();
+        // Every start that still has migrations to apply copies again, also
+        // after a failed attempt. Archives are small, and the copy from the
+        // first attempt stays next to the new one until the week is up.
+        if pending > 0 && !applied.is_empty() {
+            if let Some(root) = Path::new(tauri_db_path).parent() {
+                match Self::copy_before_migrating(&migration_pool, root).await {
+                    Ok(copy) => log::info!(
+                        "{pending} migrations to apply; the archive was copied first to {}",
+                        copy.display()
+                    ),
+                    Err(error) => {
+                        migration_pool.close().await;
+                        log::error!("Not migrating: the archive could not be copied first: {error}");
+                        return Err(OpenError::BackupFailed(error.to_string()));
+                    }
+                }
+            }
+        }
+
         Self::run_migrations(&migration_pool).await?;
+        if pending > 0 {
+            Self::record_migrating_version(&migration_pool).await;
+        }
         // A failed checksum pass can leave another pooled SQLite connection
         // holding the pre-migration schema. Reopen before serving app queries.
         migration_pool.close().await;
         let pool = SqlitePool::connect_with(Self::connect_options(tauri_db_path)?).await?;
 
         Ok(DatabaseManager { pool })
+    }
+
+    /// Versions of the migrations applied to the archive; none for a new one.
+    async fn applied_versions(pool: &SqlitePool) -> Result<std::collections::HashSet<i64>> {
+        let has_table: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = '_sqlx_migrations'",
+        )
+        .fetch_one(pool)
+        .await?;
+        if has_table == 0 {
+            return Ok(Default::default());
+        }
+        let versions: Vec<i64> =
+            sqlx::query_scalar("SELECT version FROM _sqlx_migrations WHERE success = 1")
+                .fetch_all(pool)
+                .await?;
+        Ok(versions.into_iter().collect())
+    }
+
+    /// A consistent copy of the archive into `<root>/backup-before-<version>-<time>/`.
+    ///
+    /// `VACUUM INTO` writes the whole database, journal included, through
+    /// SQLite itself, so the copy is consistent even with a write-ahead log
+    /// beside the file. It copies values as they are: sealed fields stay
+    /// sealed.
+    async fn copy_before_migrating(pool: &SqlitePool, root: &Path) -> Result<std::path::PathBuf> {
+        let stamp = chrono::Utc::now().format("%Y%m%dT%H%M%SZ").to_string();
+        let folder = root.join(format!("{BACKUP_PREFIX}{}-{stamp}", env!("CARGO_PKG_VERSION")));
+        fs::create_dir_all(&folder).map_err(sqlx::Error::Io)?;
+        let copy = folder.join("meeting_minutes.sqlite");
+        if let Err(error) = sqlx::query("VACUUM INTO ?")
+            .bind(copy.to_string_lossy().to_string())
+            .execute(pool)
+            .await
+        {
+            // A copy cut short (a full disk) must not stay looking like a
+            // good one.
+            let _ = fs::remove_dir_all(&folder);
+            return Err(error);
+        }
+        Ok(folder)
+    }
+
+    /// Remember which version migrated the archive, so an older version that
+    /// meets it can say which one to install instead. `user_version` is a
+    /// header field SQLite keeps for the application; sqlx does not use it.
+    async fn record_migrating_version(pool: &SqlitePool) {
+        let Some(number) = version_number(env!("CARGO_PKG_VERSION")) else {
+            return;
+        };
+        if let Err(error) = sqlx::query(&format!("PRAGMA user_version = {number}"))
+            .execute(pool)
+            .await
+        {
+            log::warn!("Could not record the version that migrated the archive: {error}");
+        }
     }
 
     /// How every connection to the archive is opened.
@@ -60,14 +234,68 @@ impl DatabaseManager {
     }
 
     async fn run_migrations(pool: &SqlitePool) -> Result<()> {
-        match MIGRATOR.run(pool).await {
-            Ok(()) => Ok(()),
-            Err(MigrateError::VersionMismatch(PEOPLE_MIGRATION_VERSION)) => {
-                Self::repair_people_migration_checksum(pool).await?;
-                MIGRATOR.run(pool).await.map_err(Into::into)
+        // One repair per pass; each pass either finishes or names the next
+        // migration whose checksum it disputes.
+        for _ in 0..=MIGRATOR.iter().count() {
+            match MIGRATOR.run(pool).await {
+                Ok(()) => return Ok(()),
+                Err(MigrateError::VersionMismatch(PEOPLE_MIGRATION_VERSION)) => {
+                    Self::repair_people_migration_checksum(pool).await?;
+                }
+                Err(MigrateError::VersionMismatch(version)) => {
+                    Self::repair_line_ending_checksum(pool, version).await?;
+                }
+                Err(error) => return Err(error.into()),
             }
-            Err(error) => Err(error.into()),
         }
+        MIGRATOR.run(pool).await.map_err(Into::into)
+    }
+
+    /// Accept an applied migration whose recorded checksum is that of this
+    /// build's text with the other line endings.
+    ///
+    /// sqlx checksums the migration's text as it was compiled in, and a
+    /// checkout on Windows may turn LF into CRLF (or the other way round).
+    /// The ten migrations released before they were pinned in
+    /// `.gitattributes` are therefore out there with either checksum, and an
+    /// update built from the other kind of checkout would refuse the archive.
+    /// The SQL is the same either way, so the record is brought in line with
+    /// this build. Any other difference is still refused.
+    async fn repair_line_ending_checksum(pool: &SqlitePool, version: i64) -> Result<()> {
+        let migration = MIGRATOR
+            .iter()
+            .find(|migration| migration.version == version)
+            .ok_or(MigrateError::VersionNotPresent(version))?;
+        let mut transaction = pool.begin().await?;
+        let stored = sqlx::query_scalar::<_, Vec<u8>>(
+            "SELECT checksum FROM _sqlx_migrations WHERE version = ? AND success = 1",
+        )
+        .bind(version)
+        .fetch_optional(&mut *transaction)
+        .await?;
+        let Some(stored) = stored else {
+            return Err(MigrateError::VersionMismatch(version).into());
+        };
+        if !line_ending_variants_checksums(&migration.sql).contains(&stored) {
+            return Err(MigrateError::VersionMismatch(version).into());
+        }
+
+        let result = sqlx::query(
+            "UPDATE _sqlx_migrations SET checksum = ? WHERE version = ? AND success = 1 AND checksum = ?",
+        )
+        .bind(migration.checksum.as_ref())
+        .bind(version)
+        .bind(&stored)
+        .execute(&mut *transaction)
+        .await?;
+        if result.rows_affected() != 1 {
+            return Err(sqlx::Error::Protocol(format!(
+                "Failed to repair the checksum of migration {version}"
+            )));
+        }
+        transaction.commit().await?;
+        log::warn!("Repaired migration {version} checksum: the archive recorded it with other line endings");
+        Ok(())
     }
 
     async fn repair_people_migration_checksum(pool: &SqlitePool) -> Result<()> {
@@ -215,7 +443,21 @@ impl DatabaseManager {
     // after they can just delete the existing .sqlite file and then copy the existing .db file to
     // the current app dir, So the system detects legacy db and copy it and starts with that data
     // (Newly created .sqlite with the copied content from .db)
-    pub async fn new_from_app_handle(app_handle: &tauri::AppHandle) -> Result<Self> {
+    pub async fn new_from_app_handle(
+        app_handle: &tauri::AppHandle,
+    ) -> std::result::Result<Self, OpenError> {
+        let opened = Self::open_install_archive(app_handle).await;
+        if opened.is_ok() {
+            // Only once this version has opened the archive: until then the
+            // copy may be what a roll-back needs.
+            prune_migration_backups(&crate::paths::install_data_root(), std::time::SystemTime::now());
+        }
+        opened
+    }
+
+    async fn open_install_archive(
+        app_handle: &tauri::AppHandle,
+    ) -> std::result::Result<Self, OpenError> {
         // Resolve the install-local data directory (portable / self-contained).
         let _ = app_handle; // retained for signature compatibility
         let app_data_dir = crate::paths::install_data_root();
@@ -244,7 +486,8 @@ impl DatabaseManager {
             Err(e) => {
                 // Check if error is due to corrupted WAL file
                 let error_msg = e.to_string();
-                if error_msg.contains("malformed") || error_msg.contains("corrupt") {
+                let database_error = matches!(e, OpenError::Database(_));
+                if database_error && (error_msg.contains("malformed") || error_msg.contains("corrupt")) {
                     log::warn!("Database appears corrupted, likely due to orphaned WAL file. Attempting recovery...");
                     log::warn!("Error details: {}", error_msg);
 
@@ -356,6 +599,86 @@ impl DatabaseManager {
 
         Ok(())
     }
+}
+
+/// sqlx's checksums (SHA-384) of `sql` with LF and with CRLF line endings.
+fn line_ending_variants_checksums(sql: &str) -> [Vec<u8>; 2] {
+    use sha2::{Digest, Sha384};
+    let lf = sql.replace("\r\n", "\n");
+    let crlf = lf.replace('\n', "\r\n");
+    [
+        Sha384::digest(lf.as_bytes()).to_vec(),
+        Sha384::digest(crlf.as_bytes()).to_vec(),
+    ]
+}
+
+/// The folders in `root` that hold a copy made before a migration.
+fn migration_backups(root: &Path) -> Vec<std::path::PathBuf> {
+    let Ok(entries) = fs::read_dir(root) else {
+        return Vec::new();
+    };
+    entries
+        .flatten()
+        .filter(|entry| {
+            entry.path().is_dir()
+                && entry
+                    .file_name()
+                    .to_str()
+                    .is_some_and(|name| name.starts_with(BACKUP_PREFIX))
+        })
+        .map(|entry| entry.path())
+        .collect()
+}
+
+/// Removes every copy made before a migration, whatever its age, and returns
+/// how many went. For when the archive has just been sealed: a copy made
+/// while it was unprotected is the whole archive in the clear.
+pub fn remove_migration_backups(root: &Path) -> std::io::Result<usize> {
+    let mut removed = 0;
+    for folder in migration_backups(root) {
+        fs::remove_dir_all(&folder)?;
+        removed += 1;
+        log::info!("Removed a copy made before a migration: {}", folder.display());
+    }
+    Ok(removed)
+}
+
+/// Removes the copies made before a migration once they are older than a
+/// week (by the copy's own modification time), and returns how many went.
+/// Anything else in `root` is left alone.
+pub(crate) fn prune_migration_backups(root: &Path, now: std::time::SystemTime) -> usize {
+    let Ok(entries) = fs::read_dir(root) else {
+        return 0;
+    };
+    let mut removed = 0;
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let is_backup = path.is_dir()
+            && entry
+                .file_name()
+                .to_str()
+                .is_some_and(|name| name.starts_with(BACKUP_PREFIX));
+        if !is_backup {
+            continue;
+        }
+        let made = fs::metadata(path.join("meeting_minutes.sqlite"))
+            .or_else(|_| fs::metadata(&path))
+            .and_then(|meta| meta.modified());
+        let old = made
+            .ok()
+            .and_then(|made| now.duration_since(made).ok())
+            .is_some_and(|age| age > BACKUP_RETENTION);
+        if old {
+            match fs::remove_dir_all(&path) {
+                Ok(()) => {
+                    removed += 1;
+                    log::info!("Removed a copy made before a migration a week ago: {}", path.display());
+                }
+                Err(error) => log::warn!("Could not remove an old pre-migration copy: {error}"),
+            }
+        }
+    }
+    removed
 }
 
 /// Copies the given files into `<root>/recovery/<timestamp>/`, skipping any
@@ -702,5 +1025,240 @@ mod tests {
 
         let error = DatabaseManager::run_migrations(&pool).await.unwrap_err();
         assert!(error.to_string().contains("schema differs"));
+    }
+}
+
+#[cfg(test)]
+mod migration_safety_tests {
+    use super::*;
+    use std::borrow::Cow;
+
+    /// This build's migrations without the newest one: an archive left by the
+    /// previous release, with one migration still to apply.
+    fn previous_release() -> Migrator {
+        let newest = MIGRATOR.iter().map(|m| m.version).max().unwrap();
+        Migrator {
+            migrations: Cow::Owned(MIGRATOR.iter().filter(|m| m.version < newest).cloned().collect()),
+            ignore_missing: false,
+            locking: true,
+            no_tx: false,
+        }
+    }
+
+    async fn archive_file(dir: &Path, migrator: &Migrator) -> String {
+        let path = dir.join("meeting_minutes.sqlite").to_string_lossy().to_string();
+        Sqlite::create_database(&path).await.unwrap();
+        let pool = SqlitePool::connect(&path).await.unwrap();
+        migrator.run(&pool).await.unwrap();
+        sqlx::query("INSERT INTO meetings (id, title, created_at, updated_at) VALUES ('m1', 'Kept', 'n', 'n')")
+            .execute(&pool)
+            .await
+            .unwrap();
+        pool.close().await;
+        path
+    }
+
+    fn backups(dir: &Path) -> Vec<std::path::PathBuf> {
+        fs::read_dir(dir)
+            .unwrap()
+            .flatten()
+            .map(|entry| entry.path())
+            .filter(|path| {
+                path.file_name().unwrap().to_string_lossy().starts_with(BACKUP_PREFIX)
+            })
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn an_archive_is_copied_before_it_is_migrated_and_the_copy_still_reads() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = archive_file(dir.path(), &previous_release()).await;
+
+        let manager = DatabaseManager::new(&path).await.unwrap();
+        manager.pool().close().await;
+
+        let copies = backups(dir.path());
+        assert_eq!(copies.len(), 1, "one copy before the migration");
+        let copy = copies[0].join("meeting_minutes.sqlite");
+        let old = SqlitePool::connect(copy.to_str().unwrap()).await.unwrap();
+        // The copy is the archive as the previous release left it: that
+        // release opens it, and the data is there.
+        previous_release().run(&old).await.unwrap();
+        let title: String = sqlx::query_scalar("SELECT title FROM meetings WHERE id = 'm1'")
+            .fetch_one(&old)
+            .await
+            .unwrap();
+        assert_eq!(title, "Kept");
+        old.close().await;
+
+        // Opening again with nothing to migrate makes no second copy.
+        let again = DatabaseManager::new(&path).await.unwrap();
+        again.pool().close().await;
+        assert_eq!(backups(dir.path()).len(), 1);
+    }
+
+    #[tokio::test]
+    async fn a_new_archive_is_not_copied() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("meeting_minutes.sqlite");
+        let manager = DatabaseManager::new(path.to_str().unwrap()).await.unwrap();
+        manager.pool().close().await;
+        assert!(backups(dir.path()).is_empty());
+    }
+
+    #[tokio::test]
+    async fn an_archive_from_a_newer_version_is_refused_untouched_and_named() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = archive_file(dir.path(), &MIGRATOR).await;
+        let pool = SqlitePool::connect(&path).await.unwrap();
+        sqlx::query(
+            "INSERT INTO _sqlx_migrations (version, description, success, checksum, execution_time) \
+             VALUES (99991231000000, 'from the future', 1, X'00', 0)",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query("PRAGMA user_version = 2040").execute(&pool).await.unwrap();
+        pool.close().await;
+        let before = fs::read(&path).unwrap();
+
+        let refused = DatabaseManager::new(&path).await.err().expect("refused");
+        assert!(
+            matches!(&refused, OpenError::NewerArchive { needs: Some(v) } if v == "0.2.40"),
+            "{refused:?}"
+        );
+        assert_eq!(fs::read(&path).unwrap(), before, "the archive is not touched");
+        assert!(backups(dir.path()).is_empty());
+    }
+
+    /// A newer version that failed half way never recorded itself; the number
+    /// left there is this version's own, and naming it would say "install
+    /// the version you are running".
+    #[tokio::test]
+    async fn a_recorded_version_that_is_not_newer_is_not_named() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = archive_file(dir.path(), &MIGRATOR).await;
+        let pool = SqlitePool::connect(&path).await.unwrap();
+        sqlx::query(
+            "INSERT INTO _sqlx_migrations (version, description, success, checksum, execution_time) \
+             VALUES (99991231000000, 'half of a newer version', 1, X'00', 0)",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        let own = version_number(env!("CARGO_PKG_VERSION")).unwrap();
+        sqlx::query(&format!("PRAGMA user_version = {own}")).execute(&pool).await.unwrap();
+        pool.close().await;
+
+        let refused = DatabaseManager::new(&path).await.err().expect("refused");
+        assert!(matches!(&refused, OpenError::NewerArchive { needs: None }), "{refused:?}");
+    }
+
+    #[tokio::test]
+    async fn the_version_that_migrated_the_archive_is_recorded() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = archive_file(dir.path(), &previous_release()).await;
+        let manager = DatabaseManager::new(&path).await.unwrap();
+        let recorded: i64 = sqlx::query_scalar("PRAGMA user_version")
+            .fetch_one(manager.pool())
+            .await
+            .unwrap();
+        manager.pool().close().await;
+        assert_eq!(version_text(recorded).as_deref(), Some(env!("CARGO_PKG_VERSION")));
+    }
+
+    #[tokio::test]
+    async fn a_historical_migration_recorded_with_other_line_endings_opens() {
+        let pool = SqlitePool::connect("sqlite::memory:").await.unwrap();
+        MIGRATOR.run(&pool).await.unwrap();
+        let initial = MIGRATOR.iter().next().unwrap();
+        let [lf, crlf] = line_ending_variants_checksums(&initial.sql);
+        let other = if initial.checksum.as_ref() == lf.as_slice() { crlf } else { lf };
+        sqlx::query("UPDATE _sqlx_migrations SET checksum = ? WHERE version = ?")
+            .bind(&other)
+            .bind(initial.version)
+            .execute(&pool)
+            .await
+            .unwrap();
+        assert!(matches!(MIGRATOR.run(&pool).await, Err(MigrateError::VersionMismatch(_))));
+
+        DatabaseManager::run_migrations(&pool).await.unwrap();
+
+        let stored: Vec<u8> =
+            sqlx::query_scalar("SELECT checksum FROM _sqlx_migrations WHERE version = ?")
+                .bind(initial.version)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(stored, initial.checksum.as_ref());
+    }
+
+    #[tokio::test]
+    async fn a_migration_that_differs_in_more_than_line_endings_is_still_refused() {
+        let pool = SqlitePool::connect("sqlite::memory:").await.unwrap();
+        MIGRATOR.run(&pool).await.unwrap();
+        let initial = MIGRATOR.iter().next().unwrap();
+        let edited = line_ending_variants_checksums(&format!("{} -- edited", initial.sql))[0].clone();
+        sqlx::query("UPDATE _sqlx_migrations SET checksum = ? WHERE version = ?")
+            .bind(&edited)
+            .bind(initial.version)
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        let error = DatabaseManager::run_migrations(&pool).await.unwrap_err();
+        assert!(
+            matches!(&error, sqlx::Error::Migrate(inner) if matches!(**inner, MigrateError::VersionMismatch(v) if v == initial.version)),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn copies_older_than_a_week_are_removed_and_nothing_else() {
+        let dir = tempfile::tempdir().unwrap();
+        let old = dir.path().join(format!("{BACKUP_PREFIX}0.2.34-20261001T000000Z"));
+        let fresh = dir.path().join(format!("{BACKUP_PREFIX}0.2.35-20261020T000000Z"));
+        let unrelated = dir.path().join("recovery");
+        for folder in [&old, &fresh, &unrelated] {
+            fs::create_dir_all(folder).unwrap();
+            fs::write(folder.join("meeting_minutes.sqlite"), b"x").unwrap();
+        }
+        let now = std::time::SystemTime::now();
+        let ten_days_ago = now - std::time::Duration::from_secs(10 * 24 * 60 * 60);
+        for folder in [&old, &unrelated] {
+            fs::File::options()
+                .write(true)
+                .open(folder.join("meeting_minutes.sqlite"))
+                .unwrap()
+                .set_modified(ten_days_ago)
+                .unwrap();
+        }
+
+        assert_eq!(prune_migration_backups(dir.path(), now), 1);
+        assert!(!old.exists());
+        assert!(fresh.exists());
+        assert!(unrelated.exists(), "recovery copies are not this function's");
+    }
+
+    #[tokio::test]
+    async fn a_copy_that_cannot_be_written_is_an_error_not_a_silent_skip() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = archive_file(dir.path(), &previous_release()).await;
+        let pool = SqlitePool::connect(&path).await.unwrap();
+        // A file where the copy's folder has to go.
+        let blocked = dir.path().join("not-a-folder");
+        fs::write(&blocked, b"x").unwrap();
+
+        assert!(DatabaseManager::copy_before_migrating(&pool, &blocked).await.is_err());
+        pool.close().await;
+    }
+
+    #[test]
+    fn versions_survive_the_round_trip_through_user_version() {
+        assert_eq!(version_number("0.2.34"), Some(2_034));
+        assert_eq!(version_text(2_034).as_deref(), Some("0.2.34"));
+        assert_eq!(version_number("1.10.3-beta"), Some(1_010_003));
+        assert_eq!(version_text(0), None);
+        assert_eq!(version_number("not a version"), None);
     }
 }
