@@ -32,6 +32,7 @@ import { logFailure, toastFailure } from '@/lib/failure';
 export default function PageContent({
   meeting,
   summaryData,
+  lastSummaryFailure = null,
   isPostCallRecording = false,
   shouldAutoGenerate = false,
   onAutoGenerateComplete,
@@ -48,6 +49,8 @@ export default function PageContent({
 }: {
   meeting: any;
   summaryData: Summary | null;
+  /** The last attempt to create a summary failed and left none (`error` is the backend's text). */
+  lastSummaryFailure?: { error: string | null } | null;
   isPostCallRecording?: boolean;
   shouldAutoGenerate?: boolean;
   onAutoGenerateComplete?: () => void;
@@ -344,6 +347,7 @@ export default function PageContent({
             onSummaryChange={meetingData.handleSummaryChange}
             onDirtyChange={meetingData.setIsSummaryDirty}
             summaryError={summaryGeneration.summaryError}
+            lastSummaryFailure={lastSummaryFailure}
             onRequestRegenerate={() => setRegenerationRequest({
               open: true,
               initialContext: '',

@@ -24,7 +24,8 @@ import { EmptyStateSummary } from '@/components/EmptyStateSummary';
 import { ModelConfig } from '@/components/ModelSettingsModal';
 import { SummaryGeneratorButtonGroup, SummaryLanguageChoice } from './SummaryGeneratorButtonGroup';
 import { SummaryUpdaterButtonGroup } from './SummaryUpdaterButtonGroup';
-import { InsightTabs } from './InsightTabs';
+import { InsightTabs, SummaryFailure } from './InsightTabs';
+import { summaryErrorText } from '@/lib/summary-errors';
 import { MeetingChat } from './MeetingChat';
 import { NotesEditor } from '@/components/Notes/NotesEditor';
 import { useSavedMeetingNotes } from '@/hooks/useMeetingNotes';
@@ -80,6 +81,8 @@ interface SummaryPanelProps {
   onSummaryChange: (summary: Summary) => void;
   onDirtyChange: (isDirty: boolean) => void;
   summaryError: string | null;
+  /** The last attempt, before this page opened, failed and left no summary. */
+  lastSummaryFailure?: { error: string | null } | null;
   onRequestRegenerate: () => void;
   getSummaryStatusMessage: (status: 'idle' | 'processing' | 'summarizing' | 'regenerating' | 'completed' | 'error') => string;
   availableTemplates: Array<{ id: string, name: string, description: string }>;
@@ -119,6 +122,7 @@ export function SummaryPanel({
   onSummaryChange,
   onDirtyChange,
   summaryError,
+  lastSummaryFailure = null,
   onRequestRegenerate,
   getSummaryStatusMessage,
   availableTemplates,
@@ -271,6 +275,17 @@ export function SummaryPanel({
 
   const isSummaryLoading = summaryStatus === 'processing' || summaryStatus === 'summarizing' || summaryStatus === 'regenerating';
 
+  // A failure in this visit is already explained by the generation hook; one
+  // from before is explained here, with the backend's text for the tooltip.
+  const failure: SummaryFailure | null = summaryError
+    ? { explained: summaryError, raw: null }
+    : lastSummaryFailure
+      ? {
+          explained: lastSummaryFailure.error ? summaryErrorText(lastSummaryFailure.error, t) : null,
+          raw: lastSummaryFailure.error,
+        }
+      : null;
+
   const language: SummaryLanguageChoice = {
     label: effectiveLangLabel,
     picker: (close) => (
@@ -341,18 +356,7 @@ export function SummaryPanel({
 
         {aiSummary && (
           <div className="ml-auto flex-shrink-0">
-            <SummaryUpdaterButtonGroup
-              isSaving={isSaving}
-              isDirty={isTitleDirty || (summaryRef.current?.isDirty || false)}
-              onSave={onSaveAll}
-              onCopy={onCopySummary}
-              onFind={() => {
-                // TODO: Implement find in summary functionality
-                console.log('Find in summary clicked');
-              }}
-              onOpenFolder={onOpenFolder}
-              hasSummary={true}
-            />
+            <SummaryUpdaterButtonGroup onCopy={onCopySummary} hasSummary={true} />
           </div>
         )}
       </div>
@@ -362,6 +366,7 @@ export function SummaryPanel({
           aiSummary={aiSummary}
           transcripts={transcripts}
           generating={isSummaryLoading}
+          failure={failure}
         />
       </div>
       </div>
