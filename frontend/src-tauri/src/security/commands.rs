@@ -12,9 +12,9 @@ use std::time::Duration;
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, Manager, Runtime, State};
 
-use super::keystore::{Keystore, KeystoreError, DEFAULT_AUTO_LOCK_MINUTES};
+use super::keystore::{Keystore, KeystoreError};
 use super::recovery::RecoveryError;
-use super::session::{KeySession, LockState, IDLE_TICK};
+use super::session::{KeySession, LockDue, LockReason, LockState, IDLE_TICK};
 use crate::audio::archive_encryption::{ConversionReport, Direction};
 
 /// Event the window listens for when the key is dropped without it asking —
@@ -941,10 +941,21 @@ pub async fn security_lock<R: Runtime>(app: AppHandle<R>) -> Result<(), Security
     Ok(())
 }
 
-/// Tells the lock the owner is still there, so the idle clock restarts.
+/// Tells the lock the owner is still there, so the idle clock restarts - or,
+/// when the lock is already due (the first click after waking the computer,
+/// before the idle check came round), locks instead of postponing it. While a
+/// recording or a job holds the key, a touch is presence (see
+/// [`KeySession::touch`]).
 #[tauri::command]
-pub fn security_touch(state: State<'_, SecurityState>) {
-    state.session.touch();
+pub async fn security_touch<R: Runtime>(app: AppHandle<R>) {
+    let Some(state) = app.try_state::<SecurityState>() else {
+        return;
+    };
+    let recording = crate::audio::recording_commands::is_recording().await;
+    let lock_allowed = !recording && !super::session::background_work_running();
+    if state.session.touch(lock_allowed).is_some() {
+        pay_due_lock(&app, recording);
+    }
 }
 
 /// Swaps the password. The recovery code keeps working.
@@ -1085,36 +1096,49 @@ pub async fn security_disable<R: Runtime>(
     Ok(())
 }
 
-/// Watches for the archive sitting open with nobody there.
+/// Locks now if a lock is due - idle time, sleep, a locked Windows session -
+/// and nothing forbids it, and tells the window. Returns whether it locked.
 ///
-/// Never locks during a recording — the key is what a recording writes with, and
-/// dropping it mid-session would cost the session. The check simply waits; once
-/// the recording stops, the next tick locks if the idle time has passed.
+/// Never during a recording or a job: the key is what they write with, and
+/// dropping it would cost them their result. The lock then stays due -
+/// deliberately not reset - and the next check after they end pays it.
+pub(crate) fn pay_due_lock<R: Runtime>(app: &AppHandle<R>, recording: bool) -> bool {
+    let Some(state) = app.try_state::<SecurityState>() else {
+        return false;
+    };
+    let Some(due) = state.session.lock_due() else {
+        return false;
+    };
+    if recording || super::session::background_work_running() {
+        return false;
+    }
+
+    state.session.lock();
+    match due {
+        LockDue::Idle => log::info!("Archive locked after idle timeout"),
+        LockDue::Requested(LockReason::Sleep) => {
+            log::info!("Archive locked: the computer went to sleep")
+        }
+        LockDue::Requested(LockReason::SessionLocked) => {
+            log::info!("Archive locked: the Windows session was locked")
+        }
+    }
+    if let Err(error) = app.emit(LOCKED_EVENT, ()) {
+        log::warn!("Could not tell the window the archive locked: {error}");
+    }
+    true
+}
+
+/// Watches for a lock coming due while it could not be paid at once: idle
+/// time running out, or a sleep or session lock during a recording. Checks
+/// every [`IDLE_TICK`], so a lock owed to a recording is paid within that of
+/// the recording stopping.
 pub fn start_idle_locker<R: Runtime>(app: AppHandle<R>) {
     tauri::async_runtime::spawn(async move {
         loop {
             tokio::time::sleep(IDLE_TICK).await;
-
-            let Some(state) = app.try_state::<SecurityState>() else {
-                continue;
-            };
-            if !state.session.idle_expired() {
-                continue;
-            }
-            if crate::audio::recording_commands::is_recording().await
-                || super::session::background_work_running()
-            {
-                // Deliberately not locking, and deliberately not resetting the
-                // idle clock either: the moment the recording or the job
-                // stops, this locks.
-                continue;
-            }
-
-            state.session.lock();
-            log::info!("Archive locked after idle timeout");
-            if let Err(error) = app.emit(LOCKED_EVENT, ()) {
-                log::warn!("Could not tell the window the archive locked: {error}");
-            }
+            let recording = crate::audio::recording_commands::is_recording().await;
+            pay_due_lock(&app, recording);
         }
     });
 }
@@ -1131,9 +1155,10 @@ pub fn initialize(app: &AppHandle<impl Runtime>) {
         Err(error) => log::error!("Could not read the keystore: {}", error.message),
     }
 
-    if DEFAULT_AUTO_LOCK_MINUTES.is_some() {
-        start_idle_locker(app.clone());
-    }
+    // Always: a lock owed to sleep or a locked session during a recording is
+    // paid by this loop, whatever the idle timeout.
+    start_idle_locker(app.clone());
+    super::system_lock::watch(app.clone());
 
     // Clean up after a conversion that was interrupted by a crash or a
     // shutdown. Not a migration — it only puts back what was moved aside and
@@ -1150,6 +1175,7 @@ pub fn initialize(app: &AppHandle<impl Runtime>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use super::super::keystore::DEFAULT_AUTO_LOCK_MINUTES;
 
     #[test]
     fn removing_the_plaintext_copy_takes_its_journal_with_it() {

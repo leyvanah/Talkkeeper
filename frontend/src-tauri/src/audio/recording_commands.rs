@@ -875,10 +875,15 @@ pub async fn start_recording_with_devices_and_meeting<R: Runtime>(
 }
 
 /// Stop recording with optimized graceful shutdown ensuring NO transcript chunks are lost
+///
+/// Only an owner's Stop comes here (the window, the tray); it counts as
+/// presence for the idle lock. The stop after a fatal stream error calls
+/// `stop_recording_inner` directly, since nobody may be there.
 pub async fn stop_recording<R: Runtime>(
     app: AppHandle<R>,
     args: RecordingArgs,
 ) -> Result<StopOutcome, String> {
+    crate::security::session::owner_present();
     let _recording_lifecycle = RECORDING_LIFECYCLE_LOCK.lock().await;
     let _engine_lifecycle_guard = engine_for_stopping().await;
     stop_recording_inner(app, args, false).await
@@ -890,6 +895,7 @@ pub async fn stop_recording_from_compact<R: Runtime>(
     app: AppHandle<R>,
     args: RecordingArgs,
 ) -> Result<StopOutcome, String> {
+    crate::security::session::owner_present();
     let _recording_lifecycle = RECORDING_LIFECYCLE_LOCK.lock().await;
     let _engine_lifecycle_guard = engine_for_stopping().await;
     stop_recording_inner(app, args, true).await
