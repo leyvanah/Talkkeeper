@@ -9,7 +9,10 @@ import { LoaderIcon } from "lucide-react";
 import { useConfig } from "@/contexts/ConfigContext";
 import { usePaginatedTranscripts } from "@/hooks/usePaginatedTranscripts";
 import { shouldSetUpAutoSummary } from "@/lib/meeting-summary-policy";
+import { readSummaryResponse } from "@/lib/summary-presence";
 import { usePostCall } from "@/contexts/PostCallContext";
+import { useTranslations } from "next-intl";
+import { toast } from "sonner";
 
 interface MeetingDetailsResponse {
   id: string;
@@ -30,10 +33,13 @@ function MeetingDetailsContent() {
     ? 'recording'
     : searchParams.get('source');
   const { setCurrentMeeting, refetchMeetings, stopSummaryPolling } = useSidebar();
-  const { isAutoSummary, setModelConfig } = useConfig(); // Get auto-summary toggle state
+  const { isAutoSummary } = useConfig(); // Get auto-summary toggle state
   const router = useRouter();
+  const t = useTranslations('meetingDetails');
   const [meetingDetails, setMeetingDetails] = useState<MeetingDetailsResponse | null>(null);
   const [meetingSummary, setMeetingSummary] = useState<Summary | null>(null);
+  // The last attempt failed and left nothing to show; `error` is the backend's text.
+  const [lastSummaryFailure, setLastSummaryFailure] = useState<{ error: string | null } | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState<boolean>(true);
   const [shouldAutoGenerate, setShouldAutoGenerate] = useState<boolean>(false);
@@ -58,19 +64,6 @@ function MeetingDetailsContent() {
     refetch,
     error: transcriptError,
   } = usePaginatedTranscripts({ meetingId: meetingId || '' });
-
-  // Check if gemma3:1b model is available in Ollama
-  const checkForGemmaModel = useCallback(async (): Promise<boolean> => {
-    try {
-      const models = await invoke('get_ollama_models', { endpoint: null }) as any[];
-      const hasGemma = models.some((m: any) => m.name === 'gemma3:1b');
-      console.log('🔍 Checked for gemma3:1b:', hasGemma);
-      return hasGemma;
-    } catch (error) {
-      console.error('❌ Failed to check Ollama models:', error);
-      return false;
-    }
-  }, []);
 
   // Set up auto-generation - respects DB as source of truth
   const setupAutoGeneration = useCallback(async () => {
@@ -103,38 +96,27 @@ function MeetingDetailsContent() {
         return;
       }
 
-      // DB is empty - check if gemma3:1b exists as fallback
-      const hasGemma = await checkForGemmaModel();
-      if (!isCurrentSetup()) return;
-
-      if (hasGemma) {
-        console.log('💾 DB empty, using gemma3:1b as initial default');
-
-        const fallbackConfig = {
-          provider: 'ollama' as const,
-          model: 'gemma3:1b',
-          whisperModel: 'large-v3',
-          apiKey: null,
-          ollamaEndpoint: null,
-        };
-        await invoke('api_save_model_config', fallbackConfig);
-        if (!isCurrentSetup()) return;
-        setModelConfig(fallbackConfig);
-        const { emit } = await import('@tauri-apps/api/event');
-        if (!isCurrentSetup()) return;
-        await emit('model-config-updated', fallbackConfig);
-        if (!isCurrentSetup()) return;
-
-        setShouldAutoGenerate(true);
-      } else {
-        console.log('⚠️ No model configured and gemma3:1b not found');
-      }
+      // No model chosen. The settings are the owner's: nothing is written into
+      // them on their behalf (this used to save gemma3:1b silently). Say so,
+      // and offer the way to choose one.
+      console.log('⚠️ No summary model chosen; not generating automatically');
+      toast.info(t('summaryModelNotChosenTitle'), {
+        description: t('summaryModelNotChosenDescription'),
+        duration: 8000,
+        action: {
+          label: t('openSummarySettings'),
+          onClick: () => {
+            sessionStorage.setItem('meetily-settings-tab', 'summaryModels');
+            router.push('/settings');
+          },
+        },
+      });
     } catch (error) {
       console.error('❌ Failed to setup auto-generation:', error);
     }
 
     if (isCurrentSetup()) setHasCheckedAutoGen(true);
-  }, [hasCheckedAutoGen, meetingId, checkForGemmaModel, source, isAutoSummary, setModelConfig]);
+  }, [hasCheckedAutoGen, meetingId, source, isAutoSummary, t, router]);
 
   // Metadata owns meeting identity/title. Transcript page changes are handled
   // separately so loading another page cannot restore an older title.
@@ -180,6 +162,7 @@ function MeetingDetailsContent() {
   useEffect(() => {
     setMeetingDetails(null);
     setMeetingSummary(null);
+    setLastSummaryFailure(null);
     setError(null);
     setIsLoading(true);
     // Reset auto-generation state to allow new meeting to be checked
@@ -230,16 +213,20 @@ function MeetingDetailsContent() {
 
         console.log('FETCH SUMMARY: Raw response:', summary);
 
-        // Check if the summary request failed with 404 or error status, or if no summary exists yet (idle)
-        // Note: 'cancelled' and 'failed' statuses can still have data if backup was restored
-        if (summary.status === 'idle' || (!summary.data && summary.status === 'error')) {
-          console.warn('Meeting summary not found or no summary generated yet:', summary.error || 'idle');
+        // Nothing to show - never generated, running, cancelled, or a failed
+        // attempt with no earlier summary kept. A failed or cancelled
+        // regeneration that restored the earlier summary still has data.
+        const record = readSummaryResponse(summary);
+        if (record.kind !== 'present') {
+          console.warn('No summary to show for this meeting:', summary.status, summary.error || '');
           if (!active) return;
           setMeetingSummary(null);
+          setLastSummaryFailure(record.kind === 'failed' ? { error: record.error } : null);
           return;
         }
+        if (active) setLastSummaryFailure(null);
 
-        const summaryData = summary.data || {};
+        const summaryData = record.data as any;
 
         // Parse if it's a JSON string (backend may return double-encoded JSON)
         let parsedData = summaryData;
@@ -398,6 +385,7 @@ function MeetingDetailsContent() {
   return <PageContent
     meeting={meetingDetails}
     summaryData={meetingSummary}
+    lastSummaryFailure={lastSummaryFailure}
     isPostCallRecording={source === 'recording'}
     shouldAutoGenerate={shouldAutoGenerate}
     onAutoGenerateComplete={() => setShouldAutoGenerate(false)}
