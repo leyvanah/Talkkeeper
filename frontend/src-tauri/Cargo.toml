@@ -202,6 +202,9 @@ windows = { version = "0.61", features = [
     "Win32_System_Com",
     "Win32_System_Com_StructuredStorage",
     "Win32_System_Variant",
+    # Reading an endpoint's name, to open the input selected in the app
+    # rather than Windows' device for calls.
+    "Win32_UI_Shell_PropertiesSystem",
     # Giving the taskbar button an icon: Tauri fills only the window's small
     # icon, so the large one is created and sent here.
     "Win32_Graphics_Gdi",

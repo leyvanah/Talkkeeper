@@ -51,13 +51,16 @@ use tracing::{info, warn};
 use windows::core::Interface;
 use windows::Win32::Media::Audio::{
     eCapture, eCommunications, AudioCategory_Communications, AudioClientProperties,
-    IAudioCaptureClient, IAudioClient, IAudioClient2, IMMDeviceEnumerator, MMDeviceEnumerator,
-    AUDCLNT_BUFFERFLAGS_DATA_DISCONTINUITY, AUDCLNT_BUFFERFLAGS_SILENT, AUDCLNT_SHAREMODE_SHARED,
-    WAVEFORMATEXTENSIBLE,
+    IAudioCaptureClient, IAudioClient, IAudioClient2, IMMDevice, IMMDeviceEnumerator,
+    MMDeviceEnumerator, AUDCLNT_BUFFERFLAGS_DATA_DISCONTINUITY, AUDCLNT_BUFFERFLAGS_SILENT,
+    AUDCLNT_SHAREMODE_SHARED, DEVICE_STATE_ACTIVE, WAVEFORMATEXTENSIBLE,
 };
+use windows::Win32::Devices::FunctionDiscovery::PKEY_Device_FriendlyName;
+use windows::Win32::System::Com::StructuredStorage::PropVariantClear;
 use windows::Win32::System::Com::{
-    CoCreateInstance, CoInitializeEx, CoTaskMemFree, CLSCTX_ALL, COINIT_MULTITHREADED,
+    CoCreateInstance, CoInitializeEx, CoTaskMemFree, CLSCTX_ALL, COINIT_MULTITHREADED, STGM_READ,
 };
+use windows::Win32::System::Variant::VT_LPWSTR;
 
 /// `WAVE_FORMAT_IEEE_FLOAT`, as it appears in a format tag or a subformat GUID.
 const FORMAT_FLOAT: u16 = 0x0003;
@@ -119,18 +122,23 @@ impl CommsCapture {
     /// Returns an error rather than degrading if the mode is unavailable: the
     /// caller falls back to the ordinary capture path, and a silent downgrade
     /// would leave the owner with echo and no idea why.
-    pub fn start<F>(on_samples: F) -> Result<Self>
+    ///
+    /// `microphone` is the input selected in the app, by the name the device
+    /// list shows. It is the one opened; `None` opens the device Windows uses
+    /// for calls.
+    pub fn start<F>(microphone: Option<&str>, on_samples: F) -> Result<Self>
     where
         F: FnMut(&[f32]) + Send + 'static,
     {
-        Self::start_as(CommsRole::Recorded, on_samples)
+        Self::start_as(CommsRole::Recorded, microphone, on_samples)
     }
 
     /// The same capture, opened for a stated purpose. See `CommsRole`.
-    pub fn start_as<F>(role: CommsRole, on_samples: F) -> Result<Self>
+    pub fn start_as<F>(role: CommsRole, microphone: Option<&str>, on_samples: F) -> Result<Self>
     where
         F: FnMut(&[f32]) + Send + 'static,
     {
+        let microphone = microphone.map(str::to_owned);
         // The rate is needed before the worker starts, so the device is opened
         // here and the handle handed over.
         let (tx, rx) = std::sync::mpsc::channel();
@@ -143,18 +151,29 @@ impl CommsCapture {
                 // COM has to be initialised on the thread that uses it, which
                 // is why the whole session lives in this worker rather than
                 // being opened outside and moved in.
-                let outcome = unsafe { run(running_for_worker, tx, on_samples) };
+                let outcome = unsafe { run(running_for_worker, tx, microphone, on_samples) };
                 if let Err(error) = outcome {
                     warn!("Communications capture stopped: {error}");
                 }
             })?;
 
         match rx.recv_timeout(std::time::Duration::from_secs(5)) {
-            Ok(Ok(sample_rate)) => {
+            Ok(Ok((sample_rate, opened))) => {
                 let holds_active = role == CommsRole::Recorded;
                 if holds_active {
                     ACTIVE.store(true, Ordering::Relaxed);
-                    info!("🎙️ Microphone opened in communications mode at {sample_rate} Hz — Windows is cancelling the echo");
+                    info!(
+                        "🎙️ Microphone opened in communications mode at {sample_rate} Hz — Windows is cancelling the echo. Recording from: {}",
+                        opened.name
+                    );
+                } else {
+                    info!("🎙️ Own-speech detector opened on: {}", opened.name);
+                }
+                match opened.calls_device {
+                    Some(calls) if calls != opened.name => info!(
+                        "🎙️ Windows' device for calls is a different one ({calls}); the selected microphone is used"
+                    ),
+                    _ => {}
                 }
                 Ok(Self {
                     running,
@@ -200,10 +219,61 @@ impl Drop for CommsCapture {
     }
 }
 
+/// Which endpoint a session actually opened, for the log.
+struct Opened {
+    name: String,
+    /// The device Windows uses for calls, if it could be read.
+    calls_device: Option<String>,
+}
+
+/// The endpoint for the input the app has selected, matched the way the
+/// ordinary capture path finds it (`devices::platform::get_windows_device`):
+/// the list's " (input)" suffix dropped, an exact name first, then a name
+/// that contains it.
+unsafe fn find_capture_endpoint(enumerator: &IMMDeviceEnumerator, wanted: &str) -> Result<IMMDevice> {
+    let endpoints = enumerator.EnumAudioEndpoints(eCapture, DEVICE_STATE_ACTIVE)?;
+    let mut devices = Vec::new();
+    let mut names = Vec::new();
+    for index in 0..endpoints.GetCount()? {
+        let device = endpoints.Item(index)?;
+        if let Ok(name) = friendly_name(&device) {
+            devices.push(device);
+            names.push(name);
+        }
+    }
+    pick_endpoint(&names, wanted)
+        .map(|index| devices.swap_remove(index))
+        .ok_or_else(|| anyhow!("the selected microphone ({wanted}) is not an active input"))
+}
+
+/// Which of the endpoint `names` is the selected input `wanted`.
+fn pick_endpoint(names: &[String], wanted: &str) -> Option<usize> {
+    let base = wanted.strip_suffix(" (input)").unwrap_or(wanted);
+    names
+        .iter()
+        .position(|name| name == base)
+        .or_else(|| names.iter().position(|name| name.contains(base)))
+}
+
+/// The name Windows shows for an endpoint - the same one the device list uses.
+unsafe fn friendly_name(device: &IMMDevice) -> Result<String> {
+    let store = device.OpenPropertyStore(STGM_READ)?;
+    let mut value = store.GetValue(&PKEY_Device_FriendlyName)?;
+    let inner = &value.Anonymous.Anonymous;
+    let name = if inner.vt == VT_LPWSTR && !inner.Anonymous.pwszVal.is_null() {
+        inner.Anonymous.pwszVal.to_string().ok()
+    } else {
+        None
+    };
+    let _ = PropVariantClear(&mut value);
+    name.ok_or_else(|| anyhow!("the endpoint has no readable name"))
+}
+
 /// The capture session. Runs until `running` goes false.
 unsafe fn run<F>(
     running: Arc<AtomicBool>,
-    started: std::sync::mpsc::Sender<Result<u32>>,
+    started: std::sync::mpsc::Sender<Result<(u32, Opened)>>,
+    microphone: Option<String>,
     mut on_samples: F,
 ) -> Result<()>
 where
@@ -213,13 +283,27 @@ where
     // have got here first, and this thread is still free to use COM.
     let _ = CoInitializeEx(None, COINIT_MULTITHREADED);
 
-    let open = || -> Result<(IAudioClient, IAudioCaptureClient, Format)> {
+    let open = || -> Result<(IAudioClient, IAudioCaptureClient, Format, Opened)> {
         let enumerator: IMMDeviceEnumerator =
             CoCreateInstance(&MMDeviceEnumerator, None, CLSCTX_ALL)?;
-        // The communications *role* matters as much as the category: Windows
-        // lets the owner pick a different device for calls, and that is the one
-        // a call would use.
-        let device = enumerator.GetDefaultAudioEndpoint(eCapture, eCommunications)?;
+        // The microphone selected in the app, not Windows' device for calls:
+        // the two can differ (a sound card plugged in and out leaves the
+        // calls device on a dead input), and the owner sees the selected one.
+        // The communications *category* below is what makes Windows cancel
+        // the echo, on whichever endpoint it is set. If the selected input
+        // cannot be found this fails, and the stream falls back to ordinary
+        // capture of that same microphone.
+        let calls = enumerator.GetDefaultAudioEndpoint(eCapture, eCommunications).ok();
+        let device = match microphone.as_deref() {
+            Some(wanted) => find_capture_endpoint(&enumerator, wanted)?,
+            None => calls
+                .clone()
+                .ok_or_else(|| anyhow!("Windows has no input device for calls"))?,
+        };
+        let opened = Opened {
+            name: friendly_name(&device).unwrap_or_else(|_| "an unnamed input".to_string()),
+            calls_device: calls.as_ref().and_then(|calls| friendly_name(calls).ok()),
+        };
         let client: IAudioClient = device.Activate(CLSCTX_ALL, None)?;
 
         // This is the whole point of the module.
@@ -246,17 +330,17 @@ where
 
         let capture: IAudioCaptureClient = client.GetService()?;
         client.Start()?;
-        Ok((client, capture, format))
+        Ok((client, capture, format, opened))
     };
 
-    let (client, capture, format) = match open() {
+    let (client, capture, format, opened) = match open() {
         Ok(opened) => opened,
         Err(error) => {
             let _ = started.send(Err(error));
             return Ok(());
         }
     };
-    let _ = started.send(Ok(format.sample_rate));
+    let _ = started.send(Ok((format.sample_rate, opened)));
 
     let mut mono: Vec<f32> = Vec::with_capacity(format.sample_rate as usize / 10);
     // Gaps the device reported: audio it had to drop because it was not read
@@ -379,6 +463,30 @@ impl Format {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn names(list: &[&str]) -> Vec<String> {
+        list.iter().map(|name| name.to_string()).collect()
+    }
+
+    #[test]
+    fn the_selected_input_is_found_by_its_name_without_the_list_suffix() {
+        let endpoints = names(&["Line In (USB Audio)", "Microphone Array (Intel)"]);
+        assert_eq!(pick_endpoint(&endpoints, "Microphone Array (Intel) (input)"), Some(1));
+        assert_eq!(pick_endpoint(&endpoints, "Line In (USB Audio)"), Some(0));
+    }
+
+    #[test]
+    fn an_exact_name_wins_over_one_that_only_contains_it() {
+        let endpoints = names(&["Headset Microphone (2- USB)", "Headset Microphone"]);
+        assert_eq!(pick_endpoint(&endpoints, "Headset Microphone (input)"), Some(1));
+    }
+
+    #[test]
+    fn an_input_that_is_not_there_is_not_replaced_by_another() {
+        let endpoints = names(&["Line In (USB Audio)"]);
+        assert_eq!(pick_endpoint(&endpoints, "Microphone Array (Intel) (input)"), None);
+        assert_eq!(pick_endpoint(&[], "Microphone Array (Intel)"), None);
+    }
 
     #[test]
     fn a_frame_is_averaged_across_channels() {

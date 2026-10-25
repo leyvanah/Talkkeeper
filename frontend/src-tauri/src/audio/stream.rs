@@ -275,10 +275,11 @@ impl AudioStream {
         {
             let wants_detector = device_type == DeviceType::Microphone
                 && super::recording_preferences::own_speech_detector();
+            let detector_microphone = device.name.clone();
             let mut stream =
                 Self::create_cpal_stream(device, state, device_type, recording_sender).await?;
             if wants_detector {
-                stream.own_speech_detector = Self::start_own_speech_detector();
+                stream.own_speech_detector = Self::start_own_speech_detector(&detector_microphone);
             }
             return Ok(stream);
         }
@@ -308,7 +309,7 @@ impl AudioStream {
         let (tx, rx) = crossbeam::channel::unbounded::<AdmittedBlock>();
         let gate_state = state.clone();
         let gate_type = device_type.clone();
-        let comms = super::capture::CommsCapture::start(move |samples| {
+        let comms = super::capture::CommsCapture::start(Some(&device.name), move |samples| {
             if let Some(muted) = super::pipeline::admit_block(&gate_state, &gate_type) {
                 let _ = tx.send((samples.to_vec(), muted, Instant::now()));
             }
@@ -366,12 +367,13 @@ impl AudioStream {
     /// the detector closed the pipeline keeps every microphone segment, which
     /// is the behaviour from before this existed.
     #[cfg(target_os = "windows")]
-    fn start_own_speech_detector() -> Option<super::capture::CommsCapture> {
+    fn start_own_speech_detector(microphone: &str) -> Option<super::capture::CommsCapture> {
         let gate = super::own_speech::OwnSpeechGate::shared();
         let feed = gate.clone();
 
         match super::capture::CommsCapture::start_as(
             super::capture::CommsRole::Detector,
+            Some(microphone),
             move |samples| feed.push(samples),
         ) {
             Ok(capture) => {
