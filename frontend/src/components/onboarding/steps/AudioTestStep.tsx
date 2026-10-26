@@ -29,6 +29,17 @@ interface AudioLevelUpdate {
   levels: AudioLevelData[];
 }
 
+/** `get_default_audio_devices`: the system's defaults, by their listed names. */
+interface DefaultDevices {
+  input: string | null;
+  output: string | null;
+}
+
+/** The default device when it is in the list, else the first one. */
+function pickDevice(list: AudioDevice[], preferred: string | null): string {
+  return (preferred && list.find((d) => d.name === preferred)?.name) || list[0]?.name || '';
+}
+
 /**
  * Quick mic + system-audio level check so users know capture works before
  * their first real meeting.
@@ -48,6 +59,8 @@ export function AudioTestStep() {
   const [outputs, setOutputs] = useState<AudioDevice[]>([]);
   const [micName, setMicName] = useState<string>('');
   const [sysName, setSysName] = useState<string>('');
+  const [defaultMic, setDefaultMic] = useState<string | null>(null);
+  const [defaultSys, setDefaultSys] = useState<string | null>(null);
   const monitoring = useRef(false);
   const active = useRef(true);
   const deviceLoad = useRef(0);
@@ -131,16 +144,16 @@ export function AudioTestStep() {
             }
           }
           setStatus(
-            isMacOS
-              ? `Listening${mic ? ` · ${shortName(mic)}` : ''} · native system-audio probe complete`
-              : `Listening${mic ? ` · ${shortName(mic)}` : ''}`,
+            mic
+              ? t(isMacOS ? 'audioListeningMac' : 'audioListening', { device: shortName(mic) })
+              : t(isMacOS ? 'audioListeningNoMicMac' : 'audioListeningNoMic'),
           );
         } catch (e) {
           if (!active.current || run !== meterRun.current) return;
           monitoring.current = false;
           logFailure('onboarding-audio-meters', e);
           setError(t('audioMetersFailed'));
-          setStatus('Failed');
+          setStatus(t('audioCheckFailed'));
         }
       });
       meterTransition.current = transition.catch(() => undefined);
@@ -161,15 +174,25 @@ export function AudioTestStep() {
     setError(null);
     setStatus(t('audioFindingDevices'));
     try {
-      const devices = await invoke<AudioDevice[]>('get_audio_devices');
+      const [devices, defaults] = await Promise.all([
+        invoke<AudioDevice[]>('get_audio_devices'),
+        invoke<DefaultDevices>('get_default_audio_devices').catch((e) => {
+          logFailure('onboarding-default-devices', e);
+          return { input: null, output: null } as DefaultDevices;
+        }),
+      ]);
       if (!active.current || run !== deviceLoad.current) return;
       const inputList = devices.filter((d) => String(d.device_type).toLowerCase() === 'input');
       const outputList = devices.filter((d) => String(d.device_type).toLowerCase() === 'output');
       setInputs(inputList);
       setOutputs(outputList);
+      setDefaultMic(defaults.input);
+      setDefaultSys(defaults.output);
 
-      const nextMic = inputList[0]?.name || '';
-      const nextSys = outputList[0]?.name || '';
+      // The system's default first: it is what a recording uses unless the
+      // recording settings name another, so the check listens to it.
+      const nextMic = pickDevice(inputList, defaults.input);
+      const nextSys = pickDevice(outputList, defaults.output);
       setMicName(nextMic);
       setSysName(nextSys);
 
@@ -184,7 +207,7 @@ export function AudioTestStep() {
       if (!active.current || run !== deviceLoad.current) return;
       logFailure('onboarding-audio-devices', e);
       setError(t('audioListDevicesFailed'));
-      setStatus('Failed');
+      setStatus(t('audioCheckFailed'));
     }
   }, [startMeters]);
 
@@ -258,6 +281,22 @@ export function AudioTestStep() {
 
   const finish = async () => {
     await queueStop();
+    // The devices checked here are the ones recordings use (decision of
+    // 06.10). The system default is kept as "follow the system", not by its
+    // name, so a recording still follows it when the default changes.
+    try {
+      const preferences = await invoke<Record<string, unknown>>('get_recording_preferences');
+      await invoke('set_recording_preferences', {
+        preferences: {
+          ...preferences,
+          preferred_mic_device: micName && micName !== defaultMic ? micName : null,
+          preferred_system_device: !isMacOS && sysName && sysName !== defaultSys ? sysName : null,
+        },
+      });
+    } catch (e) {
+      // Not worth stopping onboarding for: Settings -> Recording has the same choice.
+      logFailure('onboarding-save-devices', e);
+    }
     try {
       await completeOnboarding();
       await new Promise((r) => setTimeout(r, 100));
@@ -288,14 +327,11 @@ export function AudioTestStep() {
       title={t('audioTestTitle')}
       description={isMacOS ? t('audioTestDescriptionMac') : t('audioTestDescription')}
       step={5}
-      totalSteps={5}
       showNavigation
       onPrevious={async () => {
         await queueStop();
         goPrevious();
       }}
-      onNext={finish}
-      canGoNext
       canGoPrevious
     >
       <div className="mx-auto max-w-md space-y-5">
@@ -316,7 +352,7 @@ export function AudioTestStep() {
             >
               {inputs.map((d) => (
                 <option key={d.name} value={d.name}>
-                  {d.name}
+                  {d.name === defaultMic ? t('audioDeviceDefault', { device: d.name }) : d.name}
                 </option>
               ))}
             </select>
@@ -347,7 +383,7 @@ export function AudioTestStep() {
             >
               {outputs.map((d) => (
                 <option key={d.name} value={d.name}>
-                  {d.name}
+                  {d.name === defaultSys ? t('audioDeviceDefault', { device: d.name }) : d.name}
                 </option>
               ))}
             </select>
@@ -370,7 +406,7 @@ export function AudioTestStep() {
 
         {error && <p className="text-center text-xs text-amber-400 break-words">{error}</p>}
         <p className="text-center text-xs text-[var(--af-text-3)]">
-          {t('audioFinishHint')}
+          {t('audioFinishHint')} {t('audioChoiceSaved')}
         </p>
 
         <button

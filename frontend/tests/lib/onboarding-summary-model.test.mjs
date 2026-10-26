@@ -92,3 +92,19 @@ assert.equal(getSummaryModelSizeLabel('unknown:model'), '');
 assert.equal(getDownloadTotalMb(0, 'qwen3.5:4b'), 2614);
 assert.equal(getDownloadTotalMb(undefined, 'qwen3.5:2b'), 1221);
 assert.equal(getDownloadTotalMb(512, 'qwen3.5:4b'), 512);
+
+// Onboarding names the summary model the way the summary settings do; the
+// names there come from the backend's model list, so they must match it.
+{
+  const { summaryModelTitle } = loadTsModule(modulePath);
+  const backend = fs.readFileSync(
+    path.join(path.dirname(fileURLToPath(import.meta.url)), '..', '..', 'src-tauri', 'src', 'summary', 'summary_engine', 'models.rs'),
+    'utf8',
+  );
+  const pairs = [...backend.matchAll(/name: "([^"]+)"\.to_string\(\),\s*display_name: "([^"]+)"/g)];
+  assert.ok(pairs.length >= 4, 'the backend model list was found');
+  for (const [, id, displayName] of pairs) {
+    assert.equal(summaryModelTitle(id), displayName, `title of ${id}`);
+  }
+  assert.equal(summaryModelTitle('unknown:1b'), 'unknown:1b', 'an unknown model falls back to its id');
+}

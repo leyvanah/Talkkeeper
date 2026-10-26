@@ -76,3 +76,22 @@ export function formatSummaryModelSizeLabelFromMb(sizeMb: number): string {
 export function getSummaryModelSizeLabel(model: string): string {
   return formatSummaryModelSizeLabelFromMb(getSummaryModelSizeMb(model));
 }
+
+/**
+ * The summary models by the names the summary settings show them under
+ * (`display_name` in `summary_engine/models.rs`). Onboarding used to show
+ * the bare id, such as `gemma3:1b`.
+ */
+const SUMMARY_MODEL_TITLES: Record<string, string> = {
+  'qwen3.5:2b': 'Qwen 3.5 2B (Balanced)',
+  'qwen3.5:4b': 'Qwen 3.5 4B (High Quality)',
+  'gemma3:1b': 'Gemma 3 1B (Fast)',
+  'gemma3:4b': 'Gemma 3 4B (Balanced)',
+};
+
+export function summaryModelTitle(model: string): string {
+  return SUMMARY_MODEL_TITLES[model] ?? model;
+}
+
+/** The recognition engines by the names the recognition settings use. */
+export const STT_ENGINE_TITLE = { parakeet: 'Parakeet v3', gigaam: 'GigaAM v3' } as const;

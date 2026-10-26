@@ -91,7 +91,9 @@
     "recoveryFailedTitle": "Не удалось восстановить встречу",
     "unknownError": "Неизвестная ошибка",
     "restoredFromAudioTitle": "Запись возвращена в библиотеку",
-    "restoredFromAudioDescription": "Текст распознаётся заново из звука — это займёт несколько минут."
+    "restoredFromAudioDescription": "Текст распознаётся заново из звука — это займёт несколько минут.",
+    "speechModelMissing": "Модель распознавания ещё не скачана: живой текст и распознавание записей заработают, когда она скачается.",
+    "speechModelMissingOpen": "Скачать"
   },
   "recording": {
     "finalizingTranscription": "Финализация транскрипта…",
@@ -1229,8 +1231,6 @@
     "searchKeyEsc": "Esc"
   },
   "onboarding": {
-    "next": "Далее",
-    "finish": "Готово",
     "preferenceSaveFailed": "Не удалось сохранить настройку",
     "finishFailed": "Не удалось завершить настройку",
     "openLinkFailed": "Не удалось открыть ссылку",
@@ -1338,11 +1338,23 @@
     "dlSummaryRecommendationNotReady": "Рекомендация модели для саммари ещё не готова",
     "dlSummaryRetryFailed": "Не удалось повторно загрузить модель саммари",
     "dlFailedHint": "Попробуйте ещё раз. Если не получится — проверьте соединение и свободное место на диске.",
-    "dlEngineRequired": "Нужен движок распознавания",
-    "dlRetryBeforeContinuing": "Повторите загрузку, прежде чем продолжать.",
     "dlBackgroundContinue": "Загрузки продолжатся в фоне",
     "dlBackgroundContinueDescription": "Приложением уже можно пользоваться и записывать. Модель саммари догрузится в фоне.",
-    "setupDownloadTotal": "Будет скачано около {size}"
+    "setupDownloadTotal": "Будет скачано около {size}",
+    "setupSummaryInfoLabel": "О саммари",
+    "setupSummaryModel": "Модель {model}, {size}: подобрана для этого компьютера и скачается на следующем шаге.",
+    "setupSummaryModelReady": "Модель {model} уже скачана.",
+    "dlWaitingForEngineButton": "Скачивается модель распознавания…",
+    "dlContinueWithoutEngine": "Продолжить без распознавания",
+    "dlContinuingWithoutEngine": "Распознавание — когда модель скачается",
+    "dlContinuingWithoutEngineDescription": "Модель распознавания не скачалась — скорее всего, нет сети. Её можно скачать позже в «Настройки → Распознавание».",
+    "audioListening": "Слушаем · {device}",
+    "audioListeningMac": "Слушаем · {device} · системный звук проверен",
+    "audioListeningNoMic": "Слушаем",
+    "audioListeningNoMicMac": "Слушаем · системный звук проверен",
+    "audioCheckFailed": "Не удалось",
+    "audioDeviceDefault": "{device} (по умолчанию)",
+    "audioChoiceSaved": "Выбранные здесь устройства сохранятся в настройках записи."
   },
   "app": {
     "copySelectionFailed": "Не удалось скопировать выделенный текст",

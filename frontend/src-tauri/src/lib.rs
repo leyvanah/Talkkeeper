@@ -310,6 +310,23 @@ async fn get_audio_devices() -> Result<Vec<AudioDevice>, String> {
         .map_err(|e| format!("Failed to list audio devices: {}", e))
 }
 
+/// The system's default input and output, by the names `get_audio_devices`
+/// lists them under. The sound check in onboarding opens on these, so it
+/// listens to the microphone a recording would use.
+#[derive(serde::Serialize)]
+struct DefaultAudioDevices {
+    input: Option<String>,
+    output: Option<String>,
+}
+
+#[tauri::command]
+async fn get_default_audio_devices() -> DefaultAudioDevices {
+    DefaultAudioDevices {
+        input: audio::default_input_device().ok().map(|device| device.name),
+        output: audio::default_output_device().ok().map(|device| device.name),
+    }
+}
+
 #[tauri::command]
 async fn trigger_microphone_permission() -> Result<bool, String> {
     trigger_audio_permission()
@@ -700,6 +717,7 @@ pub fn run() {
             gigaam_engine::commands::gigaam_delete_model,
             // Parallel processing commands
             get_audio_devices,
+            get_default_audio_devices,
             get_check_updates_on_launch,
             set_check_updates_on_launch,
             crash_report::get_pending_crash_report,
