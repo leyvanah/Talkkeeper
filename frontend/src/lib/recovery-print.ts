@@ -23,6 +23,11 @@ export const SHEET_POLICY = "default-src 'none'; style-src 'unsafe-inline'"
 /** How long the print dialog has to start opening before it counts as failed. */
 export const PRINT_START_TIMEOUT_MS = 2000
 
+/**
+ * The page has no margins, so the browser has nowhere to print its own header
+ * and footer (the date, the app's address, the page number); the body's
+ * padding keeps the sheet's margins instead.
+ */
 export function recoverySheetHtml(text: RecoverySheetText): string {
   const title = escapeHtml(text.title)
   return `<!doctype html>
@@ -31,8 +36,9 @@ export function recoverySheetHtml(text: RecoverySheetText): string {
     <meta charset="utf-8">
     <meta http-equiv="Content-Security-Policy" content="${escapeHtml(SHEET_POLICY)}">
     <title>${title}</title>
+    <style>@page { margin: 0; }</style>
   </head>
-  <body style="font-family: system-ui, sans-serif; padding: 48px; color: #111;">
+  <body style="font-family: system-ui, sans-serif; margin: 0; padding: 20mm; color: #111;">
     <h1 style="font-size: 18px; margin: 0 0 8px;">${title}</h1>
     <p style="font-size: 13px; color: #444; margin: 0 0 24px; max-width: 46em;">${escapeHtml(text.explanation)}</p>
     <pre style="font-size: 20px; letter-spacing: 1px; font-family: ui-monospace, monospace; margin: 0 0 24px; white-space: pre-wrap; word-break: break-all;">${escapeHtml(text.code)}</pre>

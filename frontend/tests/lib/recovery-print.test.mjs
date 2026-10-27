@@ -33,6 +33,12 @@ describe('recoverySheetHtml', () => {
     }
   });
 
+  test('leaves no room for the browser to print its own header and footer', () => {
+    const html = recoverySheetHtml(TEXT);
+    assert.match(html, /<style>@page \{ margin: 0; \}<\/style>/);
+    assert.match(html, /<body style="[^"]*padding: 20mm;/);
+  });
+
   test('a translation cannot add markup to the sheet', () => {
     const html = recoverySheetHtml({
       ...TEXT,
