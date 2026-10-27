@@ -91,7 +91,9 @@
     "recoveryFailedTitle": "Failed to recover meeting",
     "unknownError": "Unknown error occurred",
     "restoredFromAudioTitle": "Recording is back in the library",
-    "restoredFromAudioDescription": "The text is being recognized again from the audio; this takes a few minutes."
+    "restoredFromAudioDescription": "The text is being recognized again from the audio; this takes a few minutes.",
+    "speechModelMissing": "The speech recognition model is not downloaded yet: until it is, a recording will not start. Download it in Settings → Transcription.",
+    "speechModelMissingOpen": "Open settings"
   },
   "recording": {
     "finalizingTranscription": "Finalizing transcription…",
@@ -1229,8 +1231,6 @@
     "searchKeyEsc": "Esc"
   },
   "onboarding": {
-    "next": "Next",
-    "finish": "Finish",
     "preferenceSaveFailed": "Could not save the setting",
     "finishFailed": "Could not finish the setup",
     "openLinkFailed": "Could not open the link",
@@ -1338,11 +1338,23 @@
     "dlSummaryRecommendationNotReady": "Summary model recommendation is not ready yet",
     "dlSummaryRetryFailed": "Summary model download retry failed",
     "dlFailedHint": "Try again. If it fails again, check the connection and free disk space.",
-    "dlEngineRequired": "Transcription engine required",
-    "dlRetryBeforeContinuing": "Please retry the download before continuing.",
     "dlBackgroundContinue": "Downloads will continue in the background",
     "dlBackgroundContinueDescription": "You can use the app and record right away. The summary model will finish downloading in the background.",
-    "setupDownloadTotal": "About {size} will be downloaded"
+    "setupDownloadTotal": "About {size} will be downloaded",
+    "setupSummaryInfoLabel": "About summaries",
+    "setupSummaryModel": "{model}, {size}: picked for this computer and downloaded on the next step.",
+    "setupSummaryModelReady": "{model} is already downloaded.",
+    "dlWaitingForEngineButton": "Downloading the speech recognition model…",
+    "dlContinueWithoutEngine": "Continue without speech recognition",
+    "dlContinuingWithoutEngine": "Recording needs the speech recognition model",
+    "dlContinuingWithoutEngineDescription": "The speech recognition model did not download. Download it later in Settings → Transcription; until then a recording will not start.",
+    "audioListening": "Listening · {device}",
+    "audioListeningMac": "Listening · {device} · system audio checked",
+    "audioListeningNoMic": "Listening",
+    "audioListeningNoMicMac": "Listening · system audio checked",
+    "audioCheckFailed": "Failed",
+    "audioDeviceDefault": "{device} (default)",
+    "audioChoiceSaved": "The devices chosen here are saved to the recording settings."
   },
   "app": {
     "copySelectionFailed": "Could not copy the selected text",

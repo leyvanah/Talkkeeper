@@ -35,11 +35,8 @@ export function YourNameStep() {
       title={t('nameTitle')}
       description={t('nameDescription')}
       step={4}
-      totalSteps={5}
       showNavigation
       onPrevious={goPrevious}
-      onNext={saveAndNext}
-      canGoNext
       canGoPrevious
     >
       <div className="mx-auto max-w-md space-y-4">
