@@ -92,8 +92,8 @@
     "unknownError": "Unknown error occurred",
     "restoredFromAudioTitle": "Recording is back in the library",
     "restoredFromAudioDescription": "The text is being recognized again from the audio; this takes a few minutes.",
-    "speechModelMissing": "The speech recognition model is not downloaded yet: live text and transcription start working once it is.",
-    "speechModelMissingOpen": "Download"
+    "speechModelMissing": "The speech recognition model is not downloaded yet: until it is, a recording will not start. Download it in Settings → Transcription.",
+    "speechModelMissingOpen": "Open settings"
   },
   "recording": {
     "finalizingTranscription": "Finalizing transcription…",
@@ -1346,8 +1346,8 @@
     "setupSummaryModelReady": "{model} is already downloaded.",
     "dlWaitingForEngineButton": "Downloading the speech recognition model…",
     "dlContinueWithoutEngine": "Continue without speech recognition",
-    "dlContinuingWithoutEngine": "Speech recognition once the model is downloaded",
-    "dlContinuingWithoutEngineDescription": "The speech recognition model did not download, most likely because there is no network. Download it later in Settings → Transcription.",
+    "dlContinuingWithoutEngine": "Recording needs the speech recognition model",
+    "dlContinuingWithoutEngineDescription": "The speech recognition model did not download. Download it later in Settings → Transcription; until then a recording will not start.",
     "audioListening": "Listening · {device}",
     "audioListeningMac": "Listening · {device} · system audio checked",
     "audioListeningNoMic": "Listening",

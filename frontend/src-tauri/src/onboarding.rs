@@ -215,6 +215,10 @@ pub async fn complete_onboarding<R: Runtime>(
 
     status.completed = true;
     status.current_step = 4; // Max step (4 on macOS with permissions, 3 on other platforms)
+    // Recorded as downloaded whatever happened: since tasks#73 onboarding can
+    // finish without the recognition model (no network). Only onboarding
+    // reads these, and a completed one is not entered again; what the app
+    // uses is checked on disk (the main screen's banner, the recording start).
     if stt_provider == "parakeet" {
         status.model_status.parakeet = "downloaded".to_string();
     }

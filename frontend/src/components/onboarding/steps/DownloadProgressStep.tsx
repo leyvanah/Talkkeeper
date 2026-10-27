@@ -389,6 +389,17 @@ export function DownloadProgressStep() {
     }
   };
 
+  // The recognition download failed (no network, no space): onboarding goes on
+  // without the model, and the main screen says so until it is there
+  // (tasks#73). A recording does not start before then.
+  const continueWithoutEngine = () => {
+    toast.info(t('dlContinuingWithoutEngine'), {
+      description: t('dlContinuingWithoutEngineDescription'),
+      duration: 7000,
+    });
+    goNext();
+  };
+
   const handleContinue = async () => {
     // Verify actual model availability (catches state drift)
     try {
@@ -414,17 +425,16 @@ export function DownloadProgressStep() {
           progress: 100,
         }));
       } else if (!actuallyAvailable && sttState.status === 'error') {
-        // No network, most likely. The rest of onboarding does not need the
-        // model, and the main screen says until it is there (tasks#73).
-        toast.info(t('dlContinuingWithoutEngine'), {
-          description: t('dlContinuingWithoutEngineDescription'),
-          duration: 7000,
-        });
-        goNext();
+        continueWithoutEngine();
         return;
       }
     } catch (error) {
       console.warn('[DownloadProgressStep] Failed to verify model:', error);
+      // Not "downloads continue in the background": this one failed.
+      if (sttState.status === 'error') {
+        continueWithoutEngine();
+        return;
+      }
     }
 
     // Check if downloads are complete for toast notification

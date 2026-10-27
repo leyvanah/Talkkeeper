@@ -61,6 +61,11 @@ export function AudioTestStep() {
   const [sysName, setSysName] = useState<string>('');
   const [defaultMic, setDefaultMic] = useState<string | null>(null);
   const [defaultSys, setDefaultSys] = useState<string | null>(null);
+  const [defaultsKnown, setDefaultsKnown] = useState(false);
+  // Whether the owner picked a device from the list, rather than keeping
+  // the one it opened on.
+  const micChosen = useRef(false);
+  const sysChosen = useRef(false);
   const monitoring = useRef(false);
   const active = useRef(true);
   const deviceLoad = useRef(0);
@@ -174,20 +179,25 @@ export function AudioTestStep() {
     setError(null);
     setStatus(t('audioFindingDevices'));
     try {
-      const [devices, defaults] = await Promise.all([
+      const [devices, readDefaults] = await Promise.all([
         invoke<AudioDevice[]>('get_audio_devices'),
         invoke<DefaultDevices>('get_default_audio_devices').catch((e) => {
           logFailure('onboarding-default-devices', e);
-          return { input: null, output: null } as DefaultDevices;
+          return null;
         }),
       ]);
       if (!active.current || run !== deviceLoad.current) return;
+      const defaults: DefaultDevices = readDefaults ?? { input: null, output: null };
       const inputList = devices.filter((d) => String(d.device_type).toLowerCase() === 'input');
       const outputList = devices.filter((d) => String(d.device_type).toLowerCase() === 'output');
       setInputs(inputList);
       setOutputs(outputList);
       setDefaultMic(defaults.input);
       setDefaultSys(defaults.output);
+      setDefaultsKnown(readDefaults !== null);
+      // A fresh list opens on the defaults again.
+      micChosen.current = false;
+      sysChosen.current = false;
 
       // The system's default first: it is what a recording uses unless the
       // recording settings name another, so the check listens to it.
@@ -268,12 +278,14 @@ export function AudioTestStep() {
   }, [loadDevicesAndStart, queueStop]);
 
   const onMicChange = async (name: string) => {
+    micChosen.current = true;
     setMicName(name);
     setMicHeard(false);
     await startMeters(name, sysName);
   };
 
   const onSysChange = async (name: string) => {
+    sysChosen.current = true;
     setSysName(name);
     setSysHeard(false);
     await startMeters(micName, name);
@@ -283,14 +295,21 @@ export function AudioTestStep() {
     await queueStop();
     // The devices checked here are the ones recordings use (decision of
     // 06.10). The system default is kept as "follow the system", not by its
-    // name, so a recording still follows it when the default changes.
+    // name, so a recording still follows it when the default changes. When
+    // the defaults could not be read, only a device the owner picked is kept
+    // by name; the one the list opened on may not be the default at all.
+    const keep = (name: string, systemDefault: string | null, chosen: boolean) => {
+      if (!name) return null;
+      if (!defaultsKnown) return chosen ? name : null;
+      return name !== systemDefault ? name : null;
+    };
     try {
       const preferences = await invoke<Record<string, unknown>>('get_recording_preferences');
       await invoke('set_recording_preferences', {
         preferences: {
           ...preferences,
-          preferred_mic_device: micName && micName !== defaultMic ? micName : null,
-          preferred_system_device: !isMacOS && sysName && sysName !== defaultSys ? sysName : null,
+          preferred_mic_device: keep(micName, defaultMic, micChosen.current),
+          preferred_system_device: isMacOS ? null : keep(sysName, defaultSys, sysChosen.current),
         },
       });
     } catch (e) {

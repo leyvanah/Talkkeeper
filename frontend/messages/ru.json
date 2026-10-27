@@ -92,8 +92,8 @@
     "unknownError": "Неизвестная ошибка",
     "restoredFromAudioTitle": "Запись возвращена в библиотеку",
     "restoredFromAudioDescription": "Текст распознаётся заново из звука — это займёт несколько минут.",
-    "speechModelMissing": "Модель распознавания ещё не скачана: живой текст и распознавание записей заработают, когда она скачается.",
-    "speechModelMissingOpen": "Скачать"
+    "speechModelMissing": "Модель распознавания ещё не скачана: пока её нет, запись не начнётся. Скачать её можно в «Настройки → Распознавание».",
+    "speechModelMissingOpen": "Открыть настройки"
   },
   "recording": {
     "finalizingTranscription": "Финализация транскрипта…",
@@ -1346,8 +1346,8 @@
     "setupSummaryModelReady": "Модель {model} уже скачана.",
     "dlWaitingForEngineButton": "Скачивается модель распознавания…",
     "dlContinueWithoutEngine": "Продолжить без распознавания",
-    "dlContinuingWithoutEngine": "Распознавание — когда модель скачается",
-    "dlContinuingWithoutEngineDescription": "Модель распознавания не скачалась — скорее всего, нет сети. Её можно скачать позже в «Настройки → Распознавание».",
+    "dlContinuingWithoutEngine": "Без модели распознавания запись не начнётся",
+    "dlContinuingWithoutEngineDescription": "Модель распознавания не скачалась. Скачайте её позже в «Настройки → Распознавание» — до тех пор запись не начнётся.",
     "audioListening": "Слушаем · {device}",
     "audioListeningMac": "Слушаем · {device} · системный звук проверен",
     "audioListeningNoMic": "Слушаем",
