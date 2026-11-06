@@ -914,7 +914,16 @@ pub fn security_export_key_backup(
     path: String,
     state: State<'_, SecurityState>,
 ) -> Result<(), SecurityError> {
-    state.export_key_backup(std::path::Path::new(&path))?;
+    let target = std::path::Path::new(&path);
+    // The key copy is what a password guesser needs; it does not go to a
+    // network share (see `local_path`).
+    if crate::local_path::is_network_location(target) {
+        return Err(SecurityError::new(
+            "networkLocation",
+            "the key backup cannot be written to a network folder",
+        ));
+    }
+    state.export_key_backup(target)?;
     log::info!("Key backup written");
     Ok(())
 }

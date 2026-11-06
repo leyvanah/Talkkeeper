@@ -25,32 +25,28 @@
                 "shadow": true
             }
         ],
-        "macOSPrivateApi": true,
         "security": {
             "csp": {
                 "default-src": "'self'",
                 "style-src": "'self' 'unsafe-inline'",
                 "img-src": "'self' data:",
                 "media-src": "'self' recording: http://recording.localhost https://recording.localhost blob: data:",
-                "connect-src": "'self' recording: http://recording.localhost https://recording.localhost"
+                "connect-src": "'self' recording: http://recording.localhost https://recording.localhost",
+                "base-uri": "'self'",
+                "form-action": "'none'"
             },
             "capabilities": [
                 {
                     "identifier": "main",
-                    "description": "Main window: window controls, events, store, save and open dialogs, writing the file the owner picked in it",
+                    "description": "Main window: window controls, events, the app version, save and open dialogs, notifications, writing the file the owner picked in a dialog",
                     "windows": [
-                        "main",
-                        "minibar"
+                        "main"
                     ],
                     "permissions": [
-                        "core:path:default",
                         "core:event:default",
                         "core:window:default",
                         "core:window:allow-set-theme",
                         "core:app:default",
-                        "core:resources:default",
-                        "core:menu:default",
-                        "core:tray:default",
                         "core:window:allow-set-title",
                         "core:window:allow-minimize",
                         "core:window:allow-toggle-maximize",
@@ -58,12 +54,24 @@
                         "core:window:allow-start-dragging",
                         "core:window:allow-start-resize-dragging",
                         "core:window:allow-close",
-                        "store:default",
                         "dialog:allow-save",
                         "dialog:allow-open",
                         "notification:default",
                         "notification:allow-is-permission-granted",
                         "fs:allow-write-file"
+                    ]
+                },
+                {
+                    "identifier": "minibar",
+                    "description": "Compact recording bar: events, its own window and theme, dragging. No files, dialogs or notifications",
+                    "windows": [
+                        "minibar"
+                    ],
+                    "permissions": [
+                        "core:event:default",
+                        "core:window:default",
+                        "core:window:allow-set-theme",
+                        "core:window:allow-start-dragging"
                     ]
                 }
             ]

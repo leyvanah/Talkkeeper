@@ -53,6 +53,7 @@ pub mod groq;
 pub mod openrouter;
 pub mod library_export;
 pub mod live_assistant;
+pub mod local_path;
 pub mod logging;
 pub mod meeting_notes;
 pub mod meeting_detection;
@@ -842,6 +843,8 @@ pub fn run() {
             audio::recording_preferences::get_recording_preferences,
             audio::recording_preferences::set_recording_preferences,
             audio::recording_preferences::get_default_recordings_folder_path,
+            audio::recording_preferences::get_show_recording_notification,
+            audio::recording_preferences::set_show_recording_notification,
             audio::recording_preferences::open_recordings_folder,
             audio::recording_preferences::discard_short_recording,
             audio::recording_preferences::select_recording_folder,
