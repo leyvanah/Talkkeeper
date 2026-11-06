@@ -5,127 +5,21 @@
  * the AI summary, action items and key topics. Questions about the meeting
  * have a tab of their own (MeetingChat).
  *
- * The stored summary can arrive as markdown, BlockNote JSON, or a legacy section
- * map; all three are flattened into the same buckets so the panel renders
- * regardless of which the backend/model produced. Owners and due dates on action
- * items are recovered heuristically from the item text.
+ * The summary is sorted into sections in `lib/summary-buckets`. Action items
+ * and key topics are shown only when the summary has those sections, and
+ * read-only: there is no editor to keep a change in. Owners and due dates on
+ * action items are recovered heuristically from the item text.
  */
 
-import { useMemo, useState } from 'react';
+import { useMemo } from 'react';
 import { useTranslations } from 'next-intl';
-import { toast } from 'sonner';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { modelMarkdownComponents } from '@/lib/model-markdown';
-import {
-  Plus,
-  Circle,
-  CheckCircle2,
-  User,
-  Calendar,
-  Clock,
-} from 'lucide-react';
+import { Calendar, Clock, Dot, User } from 'lucide-react';
 import { Summary, Transcript } from '@/types';
 import { isEmptySectionPlaceholder } from '@/lib/summary-placeholder';
-
-type Bucket = 'summary' | 'actions' | 'topics' | 'insights';
-
-// Headings come from the model, so they follow the summary language, not the UI
-// language. Both English and Russian wordings are matched or a Russian summary
-// would fall through to `insights` and the panel would render one flat list.
-const RE = {
-  actions: /(action|task|to-?do|next[ -]?step|follow[ -]?up|deliverable|задач|действи|шаг|поручен)/i,
-  topics: /(topic|theme|discuss|agenda|subject|тем[аы]|обсужд|повестк)/i,
-  summary: /(summary|overview|abstract|tl;?dr|key[ -]?point|highlight|recap|саммари|резюме|обзор|кратк|основн|главн)/i,
-  insights: /(insight|decision|risk|take[ -]?away|conclusion|outcome|blocker|learn|решени|риск|вывод|итог|наблюден)/i,
-};
-
-function classify(h: string): Bucket {
-  if (RE.actions.test(h)) return 'actions';
-  if (RE.topics.test(h)) return 'topics';
-  if (RE.summary.test(h)) return 'summary';
-  if (RE.insights.test(h)) return 'insights';
-  return 'insights';
-}
-
-function inlineText(node: any): string {
-  if (node == null) return '';
-  if (typeof node === 'string') return node;
-  if (Array.isArray(node)) return node.map(inlineText).join('');
-  if (typeof node === 'object') {
-    if (typeof node.text === 'string') return node.text;
-    if (node.content) return inlineText(node.content);
-  }
-  return '';
-}
-
-function blocksToMarkdown(blocks: any[]): string {
-  const out: string[] = [];
-  const walk = (list: any[]) => {
-    for (const b of list || []) {
-      const text = inlineText(b?.content).trim();
-      const type = b?.type;
-      if (type === 'heading') out.push(`## ${text}`);
-      else if (type === 'bulletListItem' || type === 'numberedListItem' || type === 'checkListItem') out.push(`- ${text}`);
-      else if (text) out.push(text);
-      if (Array.isArray(b?.children) && b.children.length) walk(b.children);
-    }
-  };
-  walk(blocks);
-  return out.join('\n');
-}
-
-function headingOf(line: string): string | null {
-  let m = line.match(/^#{1,6}\s+(.*)$/); if (m) return m[1].replace(/[:*]+$/, '').trim();
-  m = line.match(/^\*\*(.+?)\*\*:?\s*$/); if (m) return m[1].trim();
-  m = line.match(/^([A-ZА-ЯЁ][A-Za-zА-Яа-яЁё /&]{2,40}):\s*$/); if (m) return m[1].trim();
-  return null;
-}
-
-function parseMarkdownBuckets(md: string): Record<Bucket, string[]> {
-  const out: Record<Bucket, string[]> = { summary: [], actions: [], topics: [], insights: [] };
-  let current: Bucket = 'summary';
-  for (const raw of md.split(/\r?\n/)) {
-    const line = raw.trim();
-    if (!line || /^[-=*_]{3,}$/.test(line)) continue;
-    const h = headingOf(line);
-    if (h) { current = classify(h); continue; }
-    const item = line.replace(/^[-*+]\s+/, '').replace(/^\d+[.)]\s+/, '').replace(/^#+\s*/, '').trim();
-    // An empty section holds the model's "nothing here" line, not an item.
-    if (item && !isEmptySectionPlaceholder(item)) out[current].push(item);
-  }
-  return out;
-}
-
-function bucketizeSections(summary: any): Record<Bucket, string[]> {
-  const out: Record<Bucket, string[]> = { summary: [], actions: [], topics: [], insights: [] };
-  const leftovers: string[] = [];
-  const skip = new Set(['markdown', 'summary_json', '_section_order', 'MeetingName']);
-  for (const [key, section] of Object.entries(summary)) {
-    if (skip.has(key) || !section || !Array.isArray((section as any).blocks)) continue;
-    const items = (section as any).blocks
-      .map((b: any) => (b?.content ?? '').trim())
-      .filter((text: string) => text && !isEmptySectionPlaceholder(text));
-    if (items.length === 0) continue;
-    const label = `${key} ${(section as any).title ?? ''}`;
-    if (RE.actions.test(label)) out.actions.push(...items);
-    else if (RE.topics.test(label)) out.topics.push(...items);
-    else if (RE.summary.test(label)) out.summary.push(...items);
-    else if (RE.insights.test(label)) out.insights.push(...items);
-    else leftovers.push(...items);
-  }
-  out.insights.push(...leftovers);
-  if (out.summary.length === 0) out.summary = (leftovers.length ? leftovers : out.insights).slice(0, 4);
-  return out;
-}
-
-function normalize(aiSummary: any): Record<Bucket, string[]> {
-  if (!aiSummary) return { summary: [], actions: [], topics: [], insights: [] };
-  if (typeof aiSummary === 'string') return parseMarkdownBuckets(aiSummary);
-  if (typeof aiSummary.markdown === 'string') return parseMarkdownBuckets(aiSummary.markdown);
-  if (Array.isArray(aiSummary.summary_json)) return parseMarkdownBuckets(blocksToMarkdown(aiSummary.summary_json));
-  return bucketizeSections(aiSummary);
-}
+import { summaryBuckets } from '@/lib/summary-buckets';
 
 const OWNER_CHIP = [
   'bg-purple-500/15 text-purple-300',
@@ -263,31 +157,45 @@ function topicLabel(raw: string): string {
   return t.length > 40 ? t.slice(0, 38).trim() + '…' : t;
 }
 
+
+/** Why the last attempt to create a summary failed, for a meeting that has none. */
+export interface SummaryFailure {
+  /** A sentence the owner can act on, when the cause is a known one. */
+  explained: string | null;
+  /** The backend's own text, for the tooltip. */
+  raw: string | null;
+}
+
 interface InsightTabsProps {
   aiSummary: Summary | null;
   transcripts: Transcript[];
   generating?: boolean;
+  failure?: SummaryFailure | null;
+}
+
+function Spinner({ label }: { label: string }) {
+  return (
+    <div className="flex items-center gap-3 py-2 text-sm text-[var(--af-text-2)]">
+      <span className="h-4 w-4 animate-spin rounded-full border-2 border-[var(--af-accent)] border-t-transparent" />
+      {label}
+    </div>
+  );
 }
 
 export function InsightTabs({
   aiSummary,
   transcripts,
   generating = false,
+  failure = null,
 }: InsightTabsProps) {
   const t = useTranslations('meetingDetails');
-  const [done, setDone] = useState<Set<string>>(new Set());
 
-  const buckets = useMemo(() => normalize(aiSummary), [aiSummary]);
-  const actions = useMemo(() => parseActionItems(buckets.actions), [buckets.actions]);
-  const summaryText = useMemo(() => buckets.summary.join('\n\n'), [buckets.summary]);
+  const buckets = useMemo(() => summaryBuckets(aiSummary, isEmptySectionPlaceholder), [aiSummary]);
+  const actions = useMemo(() => parseActionItems(buckets.items.actions), [buckets.items.actions]);
+  const summaryText = useMemo(() => buckets.items.summary.join('\n\n'), [buckets.items.summary]);
   const hasSummary = !!aiSummary;
-
-  const toggleDone = (key: string) =>
-    setDone((prev) => {
-      const n = new Set(prev);
-      n.has(key) ? n.delete(key) : n.add(key);
-      return n;
-    });
+  const showActions = hasSummary && !generating && buckets.present.has('actions');
+  const showTopics = hasSummary && !generating && buckets.present.has('topics');
 
   return (
     <div className="flex h-full min-h-0 flex-col">
@@ -296,74 +204,51 @@ export function InsightTabs({
         <section>
           <h3 className="mb-3 text-base font-semibold text-[var(--af-text)]">{t('aiSummaryHeading')}</h3>
           {generating ? (
-            <div className="flex items-center gap-3 py-2 text-sm text-[var(--af-text-2)]">
-              <span className="h-4 w-4 animate-spin rounded-full border-2 border-[var(--af-accent)] border-t-transparent" />
-              {t('generatingSummary')}
-            </div>
+            <Spinner label={t('generatingSummary')} />
           ) : !hasSummary ? (
             <div className="py-2">
               <p className="mb-1 text-sm text-[var(--af-text-2)]">{t('noSummaryYet')}</p>
+              {failure && (
+                <p
+                  className="mb-1 text-sm text-red-600 dark:text-red-400"
+                  title={failure.raw ?? undefined}
+                  role="status"
+                >
+                  {t('summaryLastAttemptFailed')}
+                  {failure.explained ? ` ${failure.explained}` : ''}
+                </p>
+              )}
               <p className="text-xs text-[var(--af-text-3)]">
                 {transcripts.length > 0
                   ? t('summaryHintWithTranscript')
                   : t('summaryHintNoTranscript')}
               </p>
             </div>
+          ) : summaryText ? (
+            <div className="prose prose-sm max-w-none leading-relaxed text-[var(--af-text-2)] dark:prose-invert prose-strong:text-[var(--af-text)] prose-p:my-2">
+              <ReactMarkdown remarkPlugins={[remarkGfm]} components={modelMarkdownComponents}>{summaryText}</ReactMarkdown>
+            </div>
           ) : (
-            <>
-              {summaryText ? (
-                <div className="prose prose-sm max-w-none leading-relaxed text-[var(--af-text-2)] dark:prose-invert prose-strong:text-[var(--af-text)] prose-p:my-2">
-                  <ReactMarkdown remarkPlugins={[remarkGfm]} components={modelMarkdownComponents}>{summaryText}</ReactMarkdown>
-                </div>
-              ) : (
-                <p className="text-sm text-[var(--af-text-3)]">{t('noSummaryText')}</p>
-              )}
-            </>
+            <p className="text-sm text-[var(--af-text-3)]">{t('noSummaryText')}</p>
           )}
         </section>
 
-        {/* Action Items */}
-        <section>
-          <div className="mb-1 flex items-center gap-2">
-            <h3 className="text-base font-semibold text-[var(--af-text)]">{t('actionItemsHeading')}</h3>
-            {!generating && actions.length > 0 && <span className="text-sm font-medium text-[var(--af-text-3)]">{actions.length}</span>}
-            <div className="ml-auto">
-              <button
-                type="button"
-                onClick={() => toast.info(t('addActionItemSoon'))}
-                title={t('addActionItem')}
-                aria-label={t('addActionItem')}
-                className="flex h-7 w-7 items-center justify-center rounded-md text-[var(--af-text-3)] transition-colors hover:bg-[var(--af-hover)] hover:text-[var(--af-text)]"
-              >
-                <Plus size={15} />
-              </button>
+        {/* Action Items: only for a summary whose template has them */}
+        {showActions && (
+          <section>
+            <div className="mb-1 flex items-center gap-2">
+              <h3 className="text-base font-semibold text-[var(--af-text)]">{t('actionItemsHeading')}</h3>
+              {actions.length > 0 && <span className="text-sm font-medium text-[var(--af-text-3)]">{actions.length}</span>}
             </div>
-          </div>
-          {generating ? (
-            <div className="flex items-center gap-3 py-2 text-sm text-[var(--af-text-2)]">
-              <span className="h-4 w-4 animate-spin rounded-full border-2 border-[var(--af-accent)] border-t-transparent" />
-              {hasSummary ? t('regeneratingActionItems') : t('generatingActionItems')}
-            </div>
-          ) : actions.length === 0 ? (
-            <div className="py-2 text-sm text-[var(--af-text-3)]">{t('noActionItems')}</div>
-          ) : (
-            <div>
-              {actions.map((a, i) => {
-                const key = `a-${i}`;
-                const isDone = done.has(key);
-                return (
-                  <div key={i} className="flex items-start gap-3 border-b border-[var(--af-border)] py-3 last:border-0">
-                    <button
-                      onClick={() => toggleDone(key)}
-                      className="mt-0.5 shrink-0 text-[var(--af-text-3)] transition-colors hover:text-[var(--af-accent)]"
-                      title={isDone ? t('markAsNotDone') : t('markAsDone')}
-                    >
-                      {isDone ? <CheckCircle2 size={18} className="text-[var(--af-accent)]" /> : <Circle size={18} />}
-                    </button>
+            {actions.length === 0 ? (
+              <div className="py-2 text-sm text-[var(--af-text-3)]">{t('noActionItems')}</div>
+            ) : (
+              <ul>
+                {actions.map((a, i) => (
+                  <li key={i} className="flex items-start gap-2 border-b border-[var(--af-border)] py-3 last:border-0">
+                    <Dot size={18} className="mt-0.5 shrink-0 text-[var(--af-text-3)]" aria-hidden />
                     <div className="min-w-0 flex-1">
-                      <p className={`text-sm leading-relaxed ${isDone ? 'text-[var(--af-text-3)] line-through' : 'text-[var(--af-text)]'}`}>
-                        {a.text}
-                      </p>
+                      <p className="text-sm leading-relaxed text-[var(--af-text)]">{a.text}</p>
                       {(a.owner || a.due || a.timestamp) && (
                         <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
                           {a.owner && (
@@ -387,37 +272,34 @@ export function InsightTabs({
                         </div>
                       )}
                     </div>
-                  </div>
-                );
-              })}
-            </div>
-          )}
-        </section>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </section>
+        )}
 
-        {/* Key Topics */}
-        <section>
-          <h3 className="mb-3 text-base font-semibold text-[var(--af-text)]">{t('keyTopicsHeading')}</h3>
-          {generating ? (
-            <div className="flex items-center gap-3 py-2 text-sm text-[var(--af-text-2)]">
-              <span className="h-4 w-4 animate-spin rounded-full border-2 border-[var(--af-accent)] border-t-transparent" />
-              {hasSummary ? t('regeneratingTopics') : t('generatingTopics')}
-            </div>
-          ) : buckets.topics.length === 0 ? (
-            <div className="py-2 text-sm text-[var(--af-text-3)]">{t('noTopics')}</div>
-          ) : (
-            <div className="flex flex-wrap gap-2">
-              {buckets.topics.map((t, i) => (
-                <span
-                  key={i}
-                  title={t}
-                  className="rounded-md bg-[var(--af-panel-2)] px-2.5 py-1 text-sm text-[var(--af-text-2)]"
-                >
-                  {topicLabel(t)}
-                </span>
-              ))}
-            </div>
-          )}
-        </section>
+        {/* Key Topics: only for a summary whose template has them */}
+        {showTopics && (
+          <section>
+            <h3 className="mb-3 text-base font-semibold text-[var(--af-text)]">{t('keyTopicsHeading')}</h3>
+            {buckets.items.topics.length === 0 ? (
+              <div className="py-2 text-sm text-[var(--af-text-3)]">{t('noTopics')}</div>
+            ) : (
+              <div className="flex flex-wrap gap-2">
+                {buckets.items.topics.map((topic, i) => (
+                  <span
+                    key={i}
+                    title={topic}
+                    className="rounded-md bg-[var(--af-panel-2)] px-2.5 py-1 text-sm text-[var(--af-text-2)]"
+                  >
+                    {topicLabel(topic)}
+                  </span>
+                ))}
+              </div>
+            )}
+          </section>
+        )}
       </div>
     </div>
   );

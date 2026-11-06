@@ -28,10 +28,13 @@ import { usePostCall } from '@/contexts/PostCallContext';
 import { MeetingExportDialog } from '@/components/MeetingDetails/MeetingExportDialog';
 import { SummaryRegenerationDialog } from '@/components/MeetingDetails/SummaryRegenerationDialog';
 import { logFailure, toastFailure } from '@/lib/failure';
+import { readSummaryResponse, type SummaryResponseLike } from '@/lib/summary-presence';
 
 export default function PageContent({
   meeting,
   summaryData,
+  lastSummaryFailure = null,
+  onSummaryFailure,
   isPostCallRecording = false,
   shouldAutoGenerate = false,
   onAutoGenerateComplete,
@@ -48,6 +51,10 @@ export default function PageContent({
 }: {
   meeting: any;
   summaryData: Summary | null;
+  /** The last attempt to create a summary failed and left none (`error` is the backend's text). */
+  lastSummaryFailure?: { error: string | null } | null;
+  /** Report what the last attempt left, when the page reads it again itself. */
+  onSummaryFailure?: (failure: { error: string | null } | null) => void;
   isPostCallRecording?: boolean;
   shouldAutoGenerate?: boolean;
   onAutoGenerateComplete?: () => void;
@@ -203,6 +210,17 @@ export default function PageContent({
   );
   const writtenElsewhere = activeSummaryPolls.has(meeting.id) && !ownSummaryRunning;
   const shownSummaryStatus = writtenElsewhere ? 'summarizing' : summaryGeneration.summaryStatus;
+  // A new attempt that reached the model makes the last one's failure
+  // history: stopping it must not bring the old failure back. Not earlier -
+  // a click refused before the backend (no transcript, no model) is no attempt.
+  const summaryReachedModel = summaryGeneration.summaryStatus === 'summarizing';
+  useEffect(() => {
+    if (summaryReachedModel) onSummaryFailure?.(null);
+  }, [summaryReachedModel, onSummaryFailure]);
+  // The page outlives a switch to another meeting; a reload that answers
+  // after the switch must not report on the meeting now shown.
+  const shownMeetingIdRef = useRef(meeting.id);
+  shownMeetingIdRef.current = meeting.id;
   const wasWrittenElsewhereRef = useRef(false);
   useEffect(() => {
     if (writtenElsewhere) {
@@ -211,13 +229,25 @@ export default function PageContent({
     }
     if (!wasWrittenElsewhereRef.current) return;
     wasWrittenElsewhereRef.current = false;
-    void invoke<{ data?: unknown }>('api_get_summary', { meetingId: meeting.id })
+    // Read the same way as the page's first load (`readSummaryResponse`): a
+    // failure that left nothing says so, and an empty result is no summary.
+    const reloadedMeetingId = meeting.id;
+    void invoke<SummaryResponseLike>('api_get_summary', { meetingId: reloadedMeetingId })
       .then((result) => {
-        const data = typeof result?.data === 'string' ? JSON.parse(result.data) : result?.data;
-        if (data && typeof data === 'object') setAiSummary(data as Summary);
+        if (shownMeetingIdRef.current !== reloadedMeetingId) return;
+        const record = readSummaryResponse(result);
+        if (record.kind !== 'present') {
+          onSummaryFailure?.(record.kind === 'failed' ? { error: record.error } : null);
+          return;
+        }
+        const data = typeof record.data === 'string' ? JSON.parse(record.data) : record.data;
+        if (data && typeof data === 'object') {
+          onSummaryFailure?.(null);
+          setAiSummary(data as Summary);
+        }
       })
       .catch((error) => logFailure('summary-reload', error));
-  }, [writtenElsewhere, meeting.id, setAiSummary]);
+  }, [writtenElsewhere, meeting.id, setAiSummary, onSummaryFailure]);
 
   // Auto-generate summary when flag is set
   useEffect(() => {
@@ -344,6 +374,7 @@ export default function PageContent({
             onSummaryChange={meetingData.handleSummaryChange}
             onDirtyChange={meetingData.setIsSummaryDirty}
             summaryError={summaryGeneration.summaryError}
+            lastSummaryFailure={lastSummaryFailure}
             onRequestRegenerate={() => setRegenerationRequest({
               open: true,
               initialContext: '',
