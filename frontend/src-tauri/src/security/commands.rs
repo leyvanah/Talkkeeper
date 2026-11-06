@@ -461,7 +461,18 @@ async fn discard_verified_backup(
     remove_database_backup_at(backup).map_err(|error| {
         log::warn!("Could not remove the pre-encryption database copy: {error}");
         SecurityError::new("backupDeleteFailed", error.to_string())
-    })
+    })?;
+    // The copies made before a migration (`backup-before-*`) hold the archive
+    // as it was then. Made while it was unprotected, they are the same
+    // plaintext this copy was, and nothing else knows to take them away: the
+    // owner who has just protected the archive gives up that way back.
+    if let Some(root) = backup.parent() {
+        crate::database::manager::remove_migration_backups(root).map_err(|error| {
+            log::warn!("Could not remove a copy made before a migration: {error}");
+            SecurityError::new("backupDeleteFailed", error.to_string())
+        })?;
+    }
+    Ok(())
 }
 
 /// Deletes a pre-encryption copy at `backup` that outlived its sealing pass,

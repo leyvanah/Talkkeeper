@@ -558,11 +558,14 @@ pub fn run() {
             //     });
             // }
 
-            // Initialize database (handles first launch detection and conditional setup)
-            tauri::async_runtime::block_on(async {
+            // Initialize database (handles first launch detection and conditional setup).
+            // An archive that cannot be opened is explained in a window, not a
+            // panic: without a window the app just "does not start".
+            if let Err(error) = tauri::async_runtime::block_on(async {
                 database::setup::initialize_database_on_startup(&_app.handle()).await
-            })
-            .expect("Failed to initialize database");
+            }) {
+                database::startup_error::explain_and_exit(&error);
+            }
 
             // Initialize bundled templates directory for dynamic template discovery
             log::info!("Initializing bundled templates directory...");

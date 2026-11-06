@@ -1,16 +1,14 @@
 use log::info;
 use tauri::{AppHandle, Emitter, Manager};
 
-use super::manager::DatabaseManager;
+use super::manager::{DatabaseManager, OpenError};
 use crate::state::AppState;
 
 /// Initialize database on app startup
 /// Handles first launch detection and conditional initialization
-pub async fn initialize_database_on_startup(app: &AppHandle) -> Result<(), String> {
+pub async fn initialize_database_on_startup(app: &AppHandle) -> Result<(), OpenError> {
     // Check if this is the first launch (no database exists yet)
-    let is_first_launch = DatabaseManager::is_first_launch(app)
-        .await
-        .map_err(|e| format!("Failed to check first launch status: {}", e))?;
+    let is_first_launch = DatabaseManager::is_first_launch(app).await?;
 
     if is_first_launch {
         info!("First launch detected - will notify window when ready");
@@ -26,9 +24,10 @@ pub async fn initialize_database_on_startup(app: &AppHandle) -> Result<(), Strin
         });
     } else {
         // Normal flow - initialize database immediately
-        let db_manager = DatabaseManager::new_from_app_handle(app)
-            .await
-            .map_err(|e| format!("Failed to initialize database manager: {}", e))?;
+        let db_manager = DatabaseManager::new_from_app_handle(app).await.map_err(|e| {
+            log::error!("Failed to initialize database manager: {}", e);
+            e
+        })?;
 
         // A development build takes its own recordings out of the installed
         // application's folder, before anything scans or plays them.

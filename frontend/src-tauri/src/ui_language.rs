@@ -175,6 +175,69 @@ fn words(lang: Lang, key: Text) -> &'static str {
     }
 }
 
+/// Why the archive could not be opened at start, for the window that says so.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ArchiveProblem<'a> {
+    /// Migrated by a newer version; `needs` is that version, when known.
+    Newer { needs: Option<&'a str> },
+    /// Could not be copied before migrating, so it was not migrated.
+    NotCopied,
+    Other,
+}
+
+/// The text of that window, ending in the question its Yes/No buttons answer.
+pub fn archive_not_opened(problem: ArchiveProblem<'_>) -> String {
+    archive_not_opened_in(current(), problem)
+}
+
+fn archive_not_opened_in(lang: Lang, problem: ArchiveProblem<'_>) -> String {
+    let body = match (lang, problem) {
+        (Lang::Ru, ArchiveProblem::Newer { needs }) => format!(
+            "Архив записей обновлён более новой версией Talkkeeper, и эта версия не может его открыть. \
+             Данные целы: программа ничего в них не меняла.\n\n\
+             Установите {}.\n\n\
+             Если обновление было меньше 7 дней назад, копия архива до него лежит в папке данных, в папке «backup-before-…».",
+            match needs {
+                Some(version) => format!("версию {version} или новее"),
+                None => "последнюю версию".to_string(),
+            }
+        ),
+        (Lang::En, ArchiveProblem::Newer { needs }) => format!(
+            "The archive was updated by a newer version of Talkkeeper, and this version cannot open it. \
+             Your data is intact: nothing in it was changed.\n\n\
+             Install {}.\n\n\
+             If the update was less than 7 days ago, a copy of the archive from before it is in the data folder, in a \"backup-before-…\" folder.",
+            match needs {
+                Some(version) => format!("version {version} or newer"),
+                None => "the latest version".to_string(),
+            }
+        ),
+        (Lang::Ru, ArchiveProblem::NotCopied) => "Архив записей нужно обновить для этой версии, но перед этим \
+             не удалось сделать его копию, поэтому обновление не выполнено. Данные целы.\n\n\
+             Проверьте, что на диске есть свободное место и что папку данных не занимает другая программа, \
+             и запустите программу снова."
+            .to_string(),
+        (Lang::En, ArchiveProblem::NotCopied) => "The archive needs updating for this version, but a copy \
+             of it could not be made first, so it was not updated. Your data is intact.\n\n\
+             Check that the disk has free space and that nothing else is using the data folder, \
+             then start the program again."
+            .to_string(),
+        (Lang::Ru, ArchiveProblem::Other) => "Не удалось открыть архив записей. \
+             Программа ничего в нём не удаляла.\n\n\
+             Подробности — в журнале: папка «logs» в папке данных."
+            .to_string(),
+        (Lang::En, ArchiveProblem::Other) => "The archive could not be opened. \
+             Nothing in it was deleted.\n\n\
+             The details are in the log: the \"logs\" folder in the data folder."
+            .to_string(),
+    };
+    let question = match lang {
+        Lang::Ru => "Открыть папку с данными?",
+        Lang::En => "Open the data folder?",
+    };
+    format!("{body}\n\n{question}")
+}
+
 /// "Meeting starts in N minutes", with the plural Russian needs.
 pub fn meeting_reminder(minutes: u64) -> String {
     match current() {
@@ -194,6 +257,25 @@ fn russian_minutes(n: u64) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_archive_window_is_written_in_both_languages_and_asks_its_question() {
+        let problems = [
+            ArchiveProblem::Newer { needs: Some("0.2.40") },
+            ArchiveProblem::Newer { needs: None },
+            ArchiveProblem::NotCopied,
+            ArchiveProblem::Other,
+        ];
+        for problem in problems {
+            let ru = archive_not_opened_in(Lang::Ru, problem);
+            let en = archive_not_opened_in(Lang::En, problem);
+            assert_ne!(ru, en, "{problem:?}");
+            assert!(ru.ends_with("Открыть папку с данными?"), "{problem:?}");
+            assert!(en.ends_with("Open the data folder?"), "{problem:?}");
+        }
+        let named = archive_not_opened_in(Lang::Ru, problems[0]);
+        assert!(named.contains("версию 0.2.40 или новее"), "{named}");
+    }
 
     #[test]
     fn every_text_has_both_languages_and_they_differ() {
