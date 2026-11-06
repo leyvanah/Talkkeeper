@@ -45,7 +45,9 @@ import {
   type RequestedModel,
 } from '@/lib/enhancement-model';
 import { planPostCall, type PostCallPlan } from '@/lib/post-call-plan';
+import { mayAskNow } from '@/lib/post-call-question';
 import { useSecurity } from '@/contexts/SecurityContext';
+import { useRecordingState } from '@/contexts/RecordingStateContext';
 import { BackgroundSummary } from '@/components/MeetingDetails/BackgroundSummary';
 import { toastFailure } from '@/lib/failure';
 
@@ -171,6 +173,7 @@ export function PostCallProvider({ children }: { children: React.ReactNode }) {
   const router = useRouter();
   const { selectedLanguage, transcriptModelConfig } = useConfig();
   const { job, start: startRetranscription, setAmbientStep } = useRetranscription();
+  const { isRecording, status: recordingStatus } = useRecordingState();
 
   const [runs, setRuns] = useState<Record<string, PostCallRun>>({});
   // The async steps read the newest state, not the one they were started with.
@@ -486,8 +489,11 @@ export function PostCallProvider({ children }: { children: React.ReactNode }) {
     if (working && working.meetingId !== meetingId) toast.info(t('postCallWaiting'));
   };
 
-  // The question and the failure are asked about one recording at a time.
-  const asking = Object.values(runs).find((run) => run.stage === 'prompt' || run.stage === 'error');
+  // The question and the failure are asked about one recording at a time,
+  // and not over a recording in progress: the run waits for it to stop.
+  const asking = mayAskNow({ isRecording, status: recordingStatus })
+    ? Object.values(runs).find((run) => run.stage === 'prompt' || run.stage === 'error')
+    : undefined;
 
   return (
     <PostCallContext.Provider value={value}>
