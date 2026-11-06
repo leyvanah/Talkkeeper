@@ -34,6 +34,7 @@ macro_rules! perf_trace {
 
 // Declare audio module
 pub mod api;
+pub mod app_identity;
 pub mod audio;
 pub mod clipboard;
 pub mod config;
@@ -403,6 +404,10 @@ pub fn run() {
     crash_report::install_panic_hook();
     // Before any model loads: sessions built by dependencies take this pool.
     onnx_threads::init_environment();
+
+    // Settings kept under the inherited identifier move to this app's own,
+    // before the stores are read and before the window's profile is created.
+    app_identity::migrate();
 
     // Set the unpackaged Windows app identity before Tauri creates any HWNDs.
     // The taskbar and installer shortcuts use this same AUMID.
