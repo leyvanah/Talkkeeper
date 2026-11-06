@@ -259,13 +259,13 @@ impl RecordingManager {
             monitor.stop_monitoring().await;
         }
 
-        // Stop recording state first
-        self.state.stop_recording();
-
-        // Stop audio streams
+        // Streams first: they hand on what they already captured (see
+        // `stop_streams_and_force_flush`)
         if let Err(e) = self.stream_manager.stop_streams() {
             error!("Error stopping audio streams: {}", e);
         }
+
+        self.state.stop_recording();
 
         // Stop audio pipeline
         if let Err(e) = self.pipeline_manager.stop().await {
@@ -288,14 +288,18 @@ impl RecordingManager {
             monitor.stop_monitoring().await;
         }
 
-        // Stop recording state first - this clears device references
-        self.state.stop_recording();
-
-        // Stop audio streams immediately
+        // Streams before the recording state. Stopping a stream closes the
+        // device and then waits for its processing thread to hand on every
+        // block the device already delivered; the state below is what takes
+        // the pipeline's sender away, and in the old order the blocks still
+        // queued at that moment - the last words - were thrown away.
         if let Err(e) = self.stream_manager.stop_streams() {
             error!("Error stopping audio streams: {}", e);
             errors.push(format!("Failed to stop audio streams: {}", e));
         }
+
+        // This clears the device references and the pipeline's sender
+        self.state.stop_recording();
 
         // CRITICAL: Force pipeline to flush ALL accumulated audio before stopping
         debug!("💨 Forcing pipeline to flush accumulated audio immediately");
@@ -350,13 +354,13 @@ impl RecordingManager {
         let recording_duration = self.state.get_active_recording_duration();
         info!("Recording duration before stop: {:?}s", recording_duration);
 
-        // Stop recording state first
-        self.state.stop_recording();
-
-        // Stop audio streams
+        // Streams first: they hand on what they already captured (see
+        // `stop_streams_and_force_flush`)
         if let Err(e) = self.stream_manager.stop_streams() {
             error!("Error stopping audio streams: {}", e);
         }
+
+        self.state.stop_recording();
 
         // Stop audio pipeline
         if let Err(e) = self.pipeline_manager.stop().await {

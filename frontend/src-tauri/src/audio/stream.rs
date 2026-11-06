@@ -1,4 +1,5 @@
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 use anyhow::Result;
 use cpal::traits::{DeviceTrait, StreamTrait};
 use cpal::{Device, Stream, SupportedStreamConfig};
@@ -15,10 +16,125 @@ use super::capture::CoreAudioCapture;
 #[cfg(target_os = "macos")]
 use super::recording_state::AudioError;
 
+/// A block the capture admitted, with whether its source was muted and when
+/// the device handed it over.
+pub type AdmittedBlock = (Vec<f32>, bool, Instant);
+
+/// How long Stop waits for a capture's processing thread to work through
+/// what is queued. The chain runs far ahead of real time, so this is only
+/// reached if it is stuck - and then Stop must not hang with it.
+const DRAIN_LIMIT: Duration = Duration::from_secs(3);
+
+/// The thread that runs one capture's DSP chain, away from the device's
+/// real-time callback.
+///
+/// It ends once every sender of its channel is gone - that is, once the
+/// device side has stopped - and only after processing everything already
+/// admitted. So Stop keeps what the device delivered up to the click.
+pub struct DspWorker {
+    finished: std::sync::mpsc::Receiver<()>,
+}
+
+impl DspWorker {
+    /// Process what arrives on `receiver` until its senders are gone. `on_end`
+    /// runs on the worker after the last block, before Stop is told.
+    pub fn spawn(
+        capture: AudioCapture,
+        receiver: crossbeam::channel::Receiver<AdmittedBlock>,
+        label: String,
+        on_end: impl FnOnce() + Send + 'static,
+    ) -> Result<Self> {
+        let (done, finished) = std::sync::mpsc::channel();
+        let mut ledger = CaptureLedger::new(label, capture.input_rate(), capture.input_channels());
+        std::thread::Builder::new()
+            .name("audio-capture-dsp".to_string())
+            .spawn(move || {
+                for (block, muted, at) in receiver {
+                    ledger.note(block.len(), at);
+                    capture.process_block(&block, muted);
+                }
+                capture.finish();
+                ledger.report();
+                on_end();
+                let _ = done.send(());
+            })
+            .map_err(|e| anyhow::anyhow!("Failed to start the capture processing thread: {}", e))?;
+        Ok(Self { finished })
+    }
+
+    /// Wait until the worker has handed on its queue (bounded, see
+    /// [`DRAIN_LIMIT`]). Call after the device side has stopped.
+    pub fn wait(self) {
+        let started = Instant::now();
+        match self.finished.recv_timeout(DRAIN_LIMIT) {
+            // Disconnected: the worker panicked; nothing left to wait for.
+            Ok(()) | Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => info!(
+                "Capture queue handed on {} ms after the device stopped",
+                started.elapsed().as_millis()
+            ),
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => warn!(
+                "Capture processing did not finish within {} s; stopping without the rest of its queue",
+                DRAIN_LIMIT.as_secs()
+            ),
+        }
+    }
+}
+
+/// What the device itself delivered, as opposed to what reached the tracks
+/// (the pipeline's "Capture seams" line). Comparing the two tells "the device
+/// gave less than the time that passed" from "audio was lost on the way".
+struct CaptureLedger {
+    label: String,
+    rate: u32,
+    channels: u16,
+    opened: Instant,
+    first: Option<Instant>,
+    last: Option<Instant>,
+    samples: u64,
+}
+
+impl CaptureLedger {
+    fn new(label: String, rate: u32, channels: u16) -> Self {
+        Self {
+            label,
+            rate: rate.max(1),
+            channels: channels.max(1),
+            opened: Instant::now(),
+            first: None,
+            last: None,
+            samples: 0,
+        }
+    }
+
+    fn note(&mut self, samples: usize, at: Instant) {
+        self.first.get_or_insert(at);
+        self.last = Some(at);
+        self.samples += samples as u64;
+    }
+
+    fn report(&self) {
+        let delivered = self.samples as f64 / self.channels as f64 / self.rate as f64;
+        match (self.first, self.last) {
+            (Some(first), Some(last)) => info!(
+                "🎚️ {} capture: device delivered {:.3}s of audio over {:.3}s of wall time; \
+                 first block {:.3}s after the stream opened",
+                self.label,
+                delivered,
+                last.duration_since(first).as_secs_f64(),
+                first.duration_since(self.opened).as_secs_f64(),
+            ),
+            _ => info!("🎚️ {} capture: the device delivered no audio", self.label),
+        }
+    }
+}
+
 /// Stream backend implementation
 pub enum StreamBackend {
     /// CPAL-based stream (ScreenCaptureKit or default)
-    Cpal(Stream),
+    Cpal {
+        stream: Stream,
+        dsp: DspWorker,
+    },
     /// Core Audio direct implementation (macOS only)
     #[cfg(target_os = "macos")]
     CoreAudio {
@@ -29,7 +145,7 @@ pub enum StreamBackend {
     #[cfg(target_os = "windows")]
     WasapiComms {
         capture: Option<super::capture::CommsCapture>,
-        task: Option<tokio::task::JoinHandle<()>>,
+        dsp: Option<DspWorker>,
         /// Set when the stream is stopped on purpose, so the capture ending
         /// is not taken for its device going away.
         stopping: Arc<std::sync::atomic::AtomicBool>,
@@ -178,6 +294,10 @@ impl AudioStream {
     /// is only known once the stream is open, and the processor has to be
     /// built with it. One copy per 10ms packet is not worth designing
     /// around.
+    ///
+    /// Blocks are admitted on the capture thread, as they arrive, like the
+    /// cpal callback does: Pause and Stop then cut at the click, not at the
+    /// moment the processing thread gets to the block.
     #[cfg(target_os = "windows")]
     async fn create_comms_stream(
         device: Arc<AudioDevice>,
@@ -185,9 +305,13 @@ impl AudioStream {
         device_type: DeviceType,
         recording_sender: Option<mpsc::UnboundedSender<super::recording_state::AudioChunk>>,
     ) -> Result<Self> {
-        let (tx, mut rx) = mpsc::unbounded_channel::<Vec<f32>>();
+        let (tx, rx) = crossbeam::channel::unbounded::<AdmittedBlock>();
+        let gate_state = state.clone();
+        let gate_type = device_type.clone();
         let comms = super::capture::CommsCapture::start(move |samples| {
-            let _ = tx.send(samples.to_vec());
+            if let Some(muted) = super::pipeline::admit_block(&gate_state, &gate_type) {
+                let _ = tx.send((samples.to_vec(), muted, Instant::now()));
+            }
         })?;
 
         let sample_rate = comms.sample_rate();
@@ -203,16 +327,20 @@ impl AudioStream {
 
         let stopping = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let stopped_on_purpose = stopping.clone();
-        let task = tokio::spawn(async move {
-            while let Some(chunk) = rx.recv().await {
-                capture.process_audio_data(&chunk);
-            }
+        let label = format!("{:?} (communications mode)", device_type);
+        let dsp = match DspWorker::spawn(capture, rx, label, move || {
             // The capture thread ended without being asked to: its device
             // went away. The recording goes on and opens another.
             if !stopped_on_purpose.load(std::sync::atomic::Ordering::SeqCst) {
                 state.report_source_lost(device_type);
             }
-        });
+        }) {
+            Ok(dsp) => dsp,
+            Err(error) => {
+                comms.stop();
+                return Err(error);
+            }
+        };
 
         info!(
             "✅ Stream: microphone opened in communications mode at {} Hz for {}",
@@ -223,7 +351,7 @@ impl AudioStream {
             device,
             backend: StreamBackend::WasapiComms {
                 capture: Some(comms),
-                task: Some(task),
+                dsp: Some(dsp),
                 stopping,
             },
             own_speech_detector: None,
@@ -281,6 +409,7 @@ impl AudioStream {
               config.sample_rate().0, config.channels(), config.sample_format());
 
         // Create audio capture processor
+        let label = format!("{:?}", device_type);
         let capture = AudioCapture::new(
             device.clone(),
             state.clone(),
@@ -291,7 +420,7 @@ impl AudioStream {
         );
 
         // Build the appropriate stream based on sample format
-        let stream = Self::build_stream(&cpal_device, &config, capture.clone())?;
+        let (stream, dsp) = Self::build_stream(&cpal_device, &config, capture.clone(), label)?;
 
         // Start the stream
         stream.play()?;
@@ -299,7 +428,7 @@ impl AudioStream {
 
         Ok(Self {
             device,
-            backend: StreamBackend::Cpal(stream),
+            backend: StreamBackend::Cpal { stream, dsp },
             #[cfg(target_os = "windows")]
             own_speech_detector: None,
         })
@@ -441,24 +570,18 @@ impl AudioStream {
     /// and the hand-off to the pipeline — work that takes locks and allocates,
     /// and that on a busy CPU could make the driver drop audio if it ran in
     /// the callback. The thread ends when the stream is dropped and the
-    /// callbacks, which own the sending side, go with it.
+    /// callbacks, which own the sending side, go with it - after it has
+    /// processed what they had already sent (see [`DspWorker`]).
     fn build_stream(
         device: &Device,
         config: &SupportedStreamConfig,
         capture: AudioCapture,
-    ) -> Result<Stream> {
+        label: String,
+    ) -> Result<(Stream, DspWorker)> {
         let config_copy = config.clone();
-        let (sender, receiver) = crossbeam::channel::unbounded::<(Vec<f32>, bool)>();
+        let (sender, receiver) = crossbeam::channel::unbounded::<AdmittedBlock>();
 
-        let processor = capture.clone();
-        std::thread::Builder::new()
-            .name("audio-capture-dsp".to_string())
-            .spawn(move || {
-                for (block, muted) in receiver {
-                    processor.process_block(&block, muted);
-                }
-            })
-            .map_err(|e| anyhow::anyhow!("Failed to start the capture processing thread: {}", e))?;
+        let dsp = DspWorker::spawn(capture.clone(), receiver, label, || {})?;
 
         let stream = match config.sample_format() {
             cpal::SampleFormat::F32 => {
@@ -469,7 +592,7 @@ impl AudioStream {
                     &config_copy.into(),
                     move |data: &[f32], _: &cpal::InputCallbackInfo| {
                         if let Some(muted) = admit.admit() {
-                            let _ = blocks.send((data.to_vec(), muted));
+                            let _ = blocks.send((data.to_vec(), muted, Instant::now()));
                         }
                     },
                     move |err| {
@@ -490,7 +613,7 @@ impl AudioStream {
                                 .iter()
                                 .map(|&sample| sample as f32 / i16::MAX as f32)
                                 .collect();
-                            let _ = blocks.send((block, muted));
+                            let _ = blocks.send((block, muted, Instant::now()));
                         }
                     },
                     move |err| {
@@ -511,7 +634,7 @@ impl AudioStream {
                                 .iter()
                                 .map(|&sample| sample as f32 / i32::MAX as f32)
                                 .collect();
-                            let _ = blocks.send((block, muted));
+                            let _ = blocks.send((block, muted, Instant::now()));
                         }
                     },
                     move |err| {
@@ -532,7 +655,7 @@ impl AudioStream {
                                 .iter()
                                 .map(|&sample| sample as f32 / i8::MAX as f32)
                                 .collect();
-                            let _ = blocks.send((block, muted));
+                            let _ = blocks.send((block, muted, Instant::now()));
                         }
                     },
                     move |err| {
@@ -549,7 +672,7 @@ impl AudioStream {
         // long as the stream.
         drop(sender);
 
-        Ok(stream)
+        Ok((stream, dsp))
     }
 
     /// Get device info
@@ -572,7 +695,7 @@ impl AudioStream {
         }
 
         match self.backend {
-            StreamBackend::Cpal(stream) => {
+            StreamBackend::Cpal { stream, dsp } => {
                 // CRITICAL: Pause the stream first to stop callbacks immediately
                 // This ensures closures stop executing before we drop the stream,
                 // allowing Arc references captured in callbacks to be released
@@ -581,18 +704,21 @@ impl AudioStream {
                 }
                 info!("Stream paused, now dropping to release callbacks");
                 drop(stream);
+                // The device is released; what it already delivered is still
+                // on its way to the pipeline.
+                dsp.wait();
             }
             #[cfg(target_os = "windows")]
-            StreamBackend::WasapiComms { capture, task, stopping } => {
+            StreamBackend::WasapiComms { capture, dsp, stopping } => {
                 stopping.store(true, std::sync::atomic::Ordering::SeqCst);
-                // The capture thread first: it owns the channel's sender,
-                // so dropping it ends the forwarding task on its own rather
-                // than by abort, and no packet is lost on the way out.
+                // The capture thread first: it owns the channel's sender, so
+                // stopping it lets the processing thread finish its queue and
+                // end on its own.
                 if let Some(capture) = capture {
                     capture.stop();
                 }
-                if let Some(task) = task {
-                    task.abort();
+                if let Some(dsp) = dsp {
+                    dsp.wait();
                 }
                 info!("Communications capture stopped");
             }

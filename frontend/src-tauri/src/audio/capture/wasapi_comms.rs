@@ -52,7 +52,8 @@ use windows::core::Interface;
 use windows::Win32::Media::Audio::{
     eCapture, eCommunications, AudioCategory_Communications, AudioClientProperties,
     IAudioCaptureClient, IAudioClient, IAudioClient2, IMMDeviceEnumerator, MMDeviceEnumerator,
-    AUDCLNT_BUFFERFLAGS_SILENT, AUDCLNT_SHAREMODE_SHARED, WAVEFORMATEXTENSIBLE,
+    AUDCLNT_BUFFERFLAGS_DATA_DISCONTINUITY, AUDCLNT_BUFFERFLAGS_SILENT, AUDCLNT_SHAREMODE_SHARED,
+    WAVEFORMATEXTENSIBLE,
 };
 use windows::Win32::System::Com::{
     CoCreateInstance, CoInitializeEx, CoTaskMemFree, CLSCTX_ALL, COINIT_MULTITHREADED,
@@ -258,8 +259,18 @@ where
     let _ = started.send(Ok(format.sample_rate));
 
     let mut mono: Vec<f32> = Vec::with_capacity(format.sample_rate as usize / 10);
-    while running.load(Ordering::Relaxed) {
-        std::thread::sleep(POLL_INTERVAL);
+    // Gaps the device reported: audio it had to drop because it was not read
+    // in time. The first packet after a start often carries the flag as well
+    // and means nothing, so it is not counted.
+    let mut gaps = 0u32;
+    let mut first_packet = true;
+    loop {
+        // After Stop, one more pass: packets the device delivered before the
+        // click are still waiting in its buffer, and they are the last words.
+        let last_pass = !running.load(Ordering::Relaxed);
+        if !last_pass {
+            std::thread::sleep(POLL_INTERVAL);
+        }
 
         loop {
             // An endpoint that went away — a headset unplugged — fails here
@@ -283,6 +294,10 @@ where
                 break;
             }
 
+            if flags & AUDCLNT_BUFFERFLAGS_DATA_DISCONTINUITY.0 as u32 != 0 && !first_packet {
+                gaps += 1;
+            }
+            first_packet = false;
             let silent = flags & AUDCLNT_BUFFERFLAGS_SILENT.0 as u32 != 0;
             mono.clear();
             mono.reserve(frames as usize);
@@ -299,10 +314,18 @@ where
                 on_samples(&mono);
             }
         }
+
+        if last_pass {
+            break;
+        }
     }
 
     client.Stop().ok();
-    info!("🎙️ Communications capture stopped");
+    if gaps > 0 {
+        warn!("🎙️ Communications capture stopped; the device reported {gaps} gaps (audio it dropped because it was not read in time)");
+    } else {
+        info!("🎙️ Communications capture stopped; the device reported no gaps");
+    }
     Ok(())
 }
 
