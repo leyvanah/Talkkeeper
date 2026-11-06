@@ -463,8 +463,10 @@ pub async fn list_unsaved_recordings<R: tauri::Runtime>(
     Ok(unsaved)
 }
 
-/// Only folders inside the recording roots, so the window cannot point these
-/// commands at an arbitrary path.
+/// Only the folders [`find`] could have offered — one level inside a recording
+/// root, holding a journal or a recording — so the window cannot point these
+/// commands at an arbitrary path, nor at the data folder's own `models` or
+/// `logs`, which sit at that level too.
 pub(super) async fn checked_folder<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
     folder_path: &str,
@@ -473,7 +475,10 @@ pub(super) async fn checked_folder<R: tauri::Runtime>(
         .canonicalize()
         .map_err(|error| format!("No such recording folder: {error}"))?;
     let roots = super::recording_preferences::recording_roots(app).await;
-    if super::recording_preferences::is_meeting_folder(&folder, &roots) {
+    if folder.is_dir()
+        && super::recording_preferences::is_meeting_folder(&folder, &roots)
+        && (folder.join(JOURNAL_FILE).is_file() || looks_like_recording(&folder))
+    {
         Ok(folder)
     } else {
         Err("That folder is not a recording folder".to_string())

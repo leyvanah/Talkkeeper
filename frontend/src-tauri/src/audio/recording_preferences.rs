@@ -768,10 +768,22 @@ pub async fn select_recording_folder<R: Runtime>(
 
 /// Every folder a recording of this application may live in, canonicalized.
 ///
-/// Anything that reaches into recordings from outside — deleting a discarded
-/// take, serving a track to the player — decides what it may touch by this
+/// Anything that reaches into recordings from outside — serving a track to the
+/// player, finding a recording to restore — decides what it may touch by this
 /// list, so there is one answer to "is that ours" rather than three.
+///
+/// The data folder is among them only for reading: old portable builds saved
+/// recordings there. It also holds the key, the database and the models, so
+/// nothing is ever deleted under it (see [`deletable_recording_roots`]).
 pub async fn recording_roots<R: Runtime>(app: &AppHandle<R>) -> Vec<PathBuf> {
+    let mut roots = deletable_recording_roots(app).await;
+    roots.push(canonical(crate::paths::install_data_root()));
+    roots
+}
+
+/// The recording folders a meeting folder may be deleted from: the configured
+/// one and the default one. Not the data folder.
+async fn deletable_recording_roots<R: Runtime>(app: &AppHandle<R>) -> Vec<PathBuf> {
     let configured = load_recording_preferences(app)
         .await
         .map(|preferences| preferences.save_folder)
@@ -780,27 +792,50 @@ pub async fn recording_roots<R: Runtime>(app: &AppHandle<R>) -> Vec<PathBuf> {
             get_default_recordings_folder()
         });
 
-    [
-        configured,
-        get_default_recordings_folder(),
-        crate::paths::install_data_root(),
-    ]
-    .into_iter()
-    .map(|root| root.canonicalize().unwrap_or(root))
-    .collect()
+    [configured, get_default_recordings_folder()]
+        .into_iter()
+        .map(canonical)
+        .collect()
 }
 
-/// Whether a path is one meeting inside a recording folder, and so something
-/// this application may delete.
+fn canonical(path: PathBuf) -> PathBuf {
+    path.canonicalize().unwrap_or(path)
+}
+
+/// Whether a path is one meeting folder in a recording folder: a direct child
+/// of one of `roots`, and not itself a root or a folder that holds one.
 ///
-/// Equality with a root is rejected in a pass of its own: a custom recordings
-/// folder can be nested beneath the default one, and must not pass merely
-/// because it is that root's child.
+/// Only the first level counts. A meeting is never nested deeper, and anything
+/// deeper — a track, a working file, a folder inside a meeting — is not a
+/// meeting. A root is never a meeting even when it sits inside another root:
+/// a custom folder under the default one would otherwise take every recording
+/// with it.
 pub(crate) fn is_meeting_folder(path: &Path, roots: &[PathBuf]) -> bool {
-    if roots.iter().any(|root| path == root) {
+    let Some(parent) = path.parent() else {
         return false;
-    }
-    roots.iter().any(|root| path.starts_with(root))
+    };
+    roots.iter().any(|root| parent == root) && !roots.iter().any(|root| root.starts_with(path))
+}
+
+/// Whether `path` may be deleted as a meeting folder: a meeting folder in one
+/// of `roots` (see [`is_meeting_folder`]) that holds none of `protected`.
+///
+/// `protected` is what must survive any delete — the data folder with the key
+/// and the database — for the case where a recordings folder was chosen above
+/// it, which makes the data folder a "child" of a recordings root.
+fn may_delete_as_meeting(path: &Path, roots: &[PathBuf], protected: &[PathBuf]) -> bool {
+    is_meeting_folder(path, roots) && !protected.iter().any(|kept| kept.starts_with(path))
+}
+
+/// Whether a folder on disk is a recording rather than something else that
+/// happens to sit in a recordings folder: named the way the recorder names
+/// one, or holding a recording (folders from before the opaque names).
+fn is_recording_on_disk(folder: &Path) -> bool {
+    let opaque = folder
+        .file_name()
+        .and_then(|name| name.to_str())
+        .is_some_and(|name| name.starts_with("rec-"));
+    opaque || super::orphan_recordings::looks_like_recording(folder)
 }
 
 /// Delete a meeting folder — the recording, its source tracks and everything
@@ -808,8 +843,13 @@ pub(crate) fn is_meeting_folder(path: &Path, roots: &[PathBuf]) -> bool {
 ///
 /// Used when a take is discarded as too short, and when a meeting is deleted:
 /// removing the rows and leaving the audio would mean a deleted session is
-/// only hidden. Only paths inside a recording folder of this application are
-/// touched. Not a command: the window never names a folder to delete.
+/// only hidden. Not a command: the window never names a folder to delete.
+///
+/// Only a folder at the first level of the configured or the default
+/// recordings folder is deleted, and only when it is a recording. Never a
+/// file, never anything in the data folder, never a folder that holds it. The
+/// path comes from the database or the recorder, and a wrong one must cost at
+/// most that one recording.
 pub async fn discard_recording_folder<R: Runtime>(
     app: AppHandle<R>,
     folder_path: String,
@@ -824,18 +864,23 @@ pub async fn discard_recording_folder<R: Runtime>(
 
     let path_canon = path.canonicalize().map_err(|e| e.to_string())?;
 
-    let roots_canon = recording_roots(&app).await;
-    if !is_meeting_folder(&path_canon, &roots_canon) {
-        return Err("Refusing to delete path outside recordings folders".into());
+    let roots = deletable_recording_roots(&app).await;
+    let protected = [canonical(crate::paths::install_data_root())];
+    discard_meeting_folder(&path_canon, &roots, &protected)
+}
+
+/// Deletes `folder` (canonical) if it is a recording folder at the first
+/// level of `roots` that holds none of `protected`; refuses anything else.
+fn discard_meeting_folder(folder: &Path, roots: &[PathBuf], protected: &[PathBuf]) -> Result<(), String> {
+    if !folder.is_dir()
+        || !may_delete_as_meeting(folder, roots, protected)
+        || !is_recording_on_disk(folder)
+    {
+        return Err("Refusing to delete a path that is not a recording folder".into());
     }
 
-    if path_canon.is_dir() {
-        std::fs::remove_dir_all(&path_canon)
-            .map_err(|e| format!("Failed to discard folder: {e}"))?;
-        info!("Discarded recording folder: {}", path_canon.display());
-    } else if path_canon.is_file() {
-        std::fs::remove_file(&path_canon).map_err(|e| format!("Failed to discard file: {e}"))?;
-    }
+    std::fs::remove_dir_all(folder).map_err(|e| format!("Failed to discard folder: {e}"))?;
+    info!("Discarded recording folder: {}", folder.display());
     Ok(())
 }
 
@@ -1383,5 +1428,89 @@ mod tests {
         // Anywhere else is not ours to delete.
         assert!(!is_meeting_folder(Path::new("/elsewhere/Meeting"), &roots));
         assert!(!is_meeting_folder(Path::new("/"), &roots));
+
+        // Only the first level: a track, or a folder inside a meeting, is not
+        // a meeting.
+        assert!(!is_meeting_folder(
+            Path::new("/recordings/Meeting 2026/.checkpoints"),
+            &roots
+        ));
+        assert!(!is_meeting_folder(
+            Path::new("/recordings/Meeting 2026/mic.mp4"),
+            &roots
+        ));
+
+        // A folder that holds a root is not a meeting either.
+        let nested = vec![PathBuf::from("/recordings/a/b")];
+        assert!(!is_meeting_folder(Path::new("/recordings/a"), &nested));
+    }
+
+    /// A recordings folder chosen above the data folder makes the data folder
+    /// a first-level child; it still may not go.
+    #[test]
+    fn the_data_folder_is_never_a_meeting_to_delete() {
+        let roots = vec![PathBuf::from("/app")];
+        let protected = vec![PathBuf::from("/app/data")];
+
+        assert!(is_meeting_folder(Path::new("/app/data"), &roots));
+        assert!(!may_delete_as_meeting(Path::new("/app/data"), &roots, &protected));
+        assert!(may_delete_as_meeting(Path::new("/app/rec-1"), &roots, &protected));
+    }
+
+    /// The delete on disk: the key, the database and the models survive any
+    /// path; a recording at the first level goes.
+    #[test]
+    fn a_discard_deletes_one_recording_and_nothing_else() {
+        let temp = tempfile::tempdir().unwrap();
+        let base = temp.path().canonicalize().unwrap();
+        let recordings = base.join("recordings");
+        let data = base.join("data");
+        std::fs::create_dir_all(data.join("models")).unwrap();
+        std::fs::write(data.join("keystore.json"), b"{}").unwrap();
+        std::fs::write(data.join("meeting_minutes.sqlite"), b"db").unwrap();
+
+        let opaque = recordings.join("rec-0123");
+        std::fs::create_dir_all(opaque.join(".checkpoints")).unwrap();
+        std::fs::write(opaque.join("metadata.json"), b"{}").unwrap();
+        let legacy = recordings.join("Meeting 2026-09-01");
+        std::fs::create_dir_all(&legacy).unwrap();
+        std::fs::write(legacy.join("audio.mp4"), b"audio").unwrap();
+        let stranger = recordings.join("holiday photos");
+        std::fs::create_dir_all(&stranger).unwrap();
+        std::fs::write(stranger.join("a.jpg"), b"jpg").unwrap();
+        let loose = recordings.join("notes.txt");
+        std::fs::write(&loose, b"text").unwrap();
+
+        // Even with the data folder given as a root, as it used to be.
+        let roots = vec![recordings.clone(), data.clone()];
+        let protected = vec![data.clone()];
+        for refused in [
+            data.join("keystore.json"),
+            data.join("meeting_minutes.sqlite"),
+            data.join("models"),
+            data.clone(),
+            recordings.clone(),
+            opaque.join(".checkpoints"),
+            stranger.clone(),
+            loose.clone(),
+        ] {
+            assert!(
+                discard_meeting_folder(&refused, &roots, &protected).is_err(),
+                "{} must be refused",
+                refused.display()
+            );
+        }
+        assert!(data.join("keystore.json").is_file());
+        assert!(data.join("meeting_minutes.sqlite").is_file());
+        assert!(data.join("models").is_dir());
+        assert!(opaque.join(".checkpoints").is_dir());
+        assert!(stranger.join("a.jpg").is_file());
+        assert!(loose.is_file());
+
+        discard_meeting_folder(&opaque, &roots, &protected).unwrap();
+        discard_meeting_folder(&legacy, &roots, &protected).unwrap();
+        assert!(!opaque.exists());
+        assert!(!legacy.exists());
+        assert!(recordings.is_dir());
     }
 }
