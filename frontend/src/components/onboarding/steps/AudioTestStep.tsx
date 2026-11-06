@@ -295,13 +295,13 @@ export function AudioTestStep() {
     await queueStop();
     // The devices checked here are the ones recordings use (decision of
     // 06.10). The system default is kept as "follow the system", not by its
-    // name, so a recording still follows it when the default changes. When
-    // the defaults could not be read, only a device the owner picked is kept
-    // by name; the one the list opened on may not be the default at all.
+    // name, so a recording still follows it when the default changes. Only a
+    // device the owner picked is kept by name: the one the list opened on may
+    // not be the default at all — the defaults may not have been read, or the
+    // default's name may be missing from the list.
     const keep = (name: string, systemDefault: string | null, chosen: boolean) => {
-      if (!name) return null;
-      if (!defaultsKnown) return chosen ? name : null;
-      return name !== systemDefault ? name : null;
+      if (!name || !chosen) return null;
+      return !defaultsKnown || name !== systemDefault ? name : null;
     };
     try {
       const preferences = await invoke<Record<string, unknown>>('get_recording_preferences');
