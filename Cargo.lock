@@ -3615,6 +3615,7 @@ dependencies = [
  "tracing-subscriber",
  "url",
  "uuid",
+ "webview2-com",
  "whatlang",
  "which 6.0.3",
  "whisper-rs",

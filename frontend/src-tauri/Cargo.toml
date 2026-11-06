@@ -210,6 +210,10 @@ windows = { version = "0.61", features = [
 # The async-operation type the Hello call returns. `windows` depends on it but
 # does not re-export it, so naming the type needs the crate directly.
 windows-future = "0.2"
+# Filtering the requests a window makes before WebView2 sends them
+# (navigation_guard.rs). Already in the tree through wry; naming its types needs
+# the crate directly.
+webview2-com = "0.38"
 
 # macOS-specific dependencies with Metal GPU acceleration
 [target.'cfg(target_os = "macos")'.dependencies]
