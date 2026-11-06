@@ -8,11 +8,13 @@
  * put it somewhere. That is friction on purpose.
  */
 
-import { useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { useTranslations } from 'next-intl'
 import { Copy, Check, Printer, ShieldAlert } from 'lucide-react'
 import { Button } from '@/components/ui/button'
+import { toastFailure } from '@/lib/failure'
 import { copyText } from '@/lib/private-clipboard'
+import { recoverySheetHtml, watchPrint } from '@/lib/recovery-print'
 
 export function RecoveryCodeCard({
   code,
@@ -35,28 +37,61 @@ export function RecoveryCodeCard({
     }
   }
 
-  // Prints just the code and what it is for, in a window of its own, so the page
-  // around it does not end up on the paper.
-  const print = () => {
-    const sheet = window.open('', '_blank', 'width=600,height=400')
-    if (!sheet) return
+  // The hidden frame the sheet is printed from, and what stops waiting for its
+  // dialog. Both go as soon as printing is over, so the code does not stay in
+  // the page any longer than the screen shows it.
+  const sheetFrame = useRef<HTMLIFrameElement | null>(null)
+  const stopWatching = useRef<(() => void) | null>(null)
 
-    sheet.document.write(`
-      <html>
-        <head><title>${escapeHtml(t('recoveryPrintTitle'))}</title></head>
-        <body style="font-family: system-ui, sans-serif; padding: 48px; color: #111;">
-          <h1 style="font-size: 18px; margin: 0 0 8px;">${escapeHtml(t('recoveryPrintTitle'))}</h1>
-          <p style="font-size: 13px; color: #444; margin: 0 0 24px; max-width: 46em;">
-            ${escapeHtml(t('recoveryPrintExplanation'))}
-          </p>
-          <pre style="font-size: 20px; letter-spacing: 1px; font-family: ui-monospace, monospace; margin: 0 0 24px;">${escapeHtml(code)}</pre>
-          <p style="font-size: 12px; color: #666;">${escapeHtml(t('recoveryPrintDate', { date: new Date().toLocaleDateString() }))}</p>
-        </body>
-      </html>
-    `)
-    sheet.document.close()
-    sheet.focus()
-    sheet.print()
+  const removeSheet = useCallback(() => {
+    stopWatching.current?.()
+    stopWatching.current = null
+    sheetFrame.current?.remove()
+    sheetFrame.current = null
+  }, [])
+
+  useEffect(() => removeSheet, [removeSheet])
+
+  // Prints just the code and what it is for from a frame of its own, so the
+  // page around it does not end up on the paper.
+  const print = () => {
+    removeSheet()
+    const failed = (error: unknown) => {
+      removeSheet()
+      toastFailure(t('printFailed'), 'recovery-print', error)
+    }
+
+    try {
+      const frame = document.createElement('iframe')
+      frame.setAttribute('aria-hidden', 'true')
+      frame.tabIndex = -1
+      // Off screen rather than `display: none`, which may leave it nothing to print.
+      frame.style.cssText = 'position: fixed; left: -10000px; top: 0; width: 600px; height: 400px; border: 0;'
+      document.body.appendChild(frame)
+      sheetFrame.current = frame
+
+      const sheet = frame.contentWindow
+      if (!sheet) throw new Error('The print frame has no window')
+      sheet.document.open()
+      sheet.document.write(
+        recoverySheetHtml({
+          title: t('recoveryPrintTitle'),
+          explanation: t('recoveryPrintExplanation'),
+          code,
+          issued: t('recoveryPrintDate', { date: new Date().toLocaleDateString() }),
+        }),
+      )
+      sheet.document.close()
+
+      const stop = watchPrint(sheet, { onDone: removeSheet, onFailed: failed }, (ms, run) => {
+        const timer = window.setTimeout(run, ms)
+        return () => window.clearTimeout(timer)
+      })
+      // A dialog that has already closed took the frame with it.
+      if (sheetFrame.current === frame) stopWatching.current = stop
+    } catch (error) {
+      failed(error)
+    }
   }
 
   return (
@@ -101,13 +136,4 @@ export function RecoveryCodeCard({
       </Button>
     </div>
   )
-}
-
-/** The code is generated locally, but the label texts come from translations. */
-function escapeHtml(text: string): string {
-  return text
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
 }
