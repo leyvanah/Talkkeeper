@@ -9,11 +9,13 @@
 //! git blob ids matched against the tree).
 //!
 //! The hash is computed while the file streams in, so a multi-gigabyte model
-//! is not read a second time.
+//! is not read a second time. A model already on disk is checked again before
+//! it is first loaded; see [`verify_before_load`].
 
 use anyhow::{anyhow, Result};
 use sha2::{Digest, Sha256};
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::time::UNIX_EPOCH;
 
 /// What a file must be.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -139,13 +141,17 @@ impl Check {
     }
 
     /// Compares what arrived with the pin. On a mismatch `path` is deleted, so
-    /// a file that is not the model never sits where the model is looked for.
+    /// a file that is not the model never sits where the model is looked for;
+    /// on a match it is stamped, so its first load need not hash it again.
+    /// The file must be closed: the stamp records its final modification time.
     pub fn finish(self, pinned: &Pinned, path: &Path) -> Result<()> {
         let actual = format!("{:x}", self.hasher.finalize());
         if self.bytes == pinned.size && actual == pinned.sha256 {
+            write_stamp(pinned, path);
             return Ok(());
         }
         let _ = std::fs::remove_file(path);
+        let _ = std::fs::remove_file(stamp_path(path));
         Err(anyhow!(
             "{} failed its integrity check ({} bytes, sha256 {}; expected {} bytes, sha256 {}) and was deleted",
             pinned.file,
@@ -160,21 +166,87 @@ impl Check {
 /// Hashes a file already on disk against its pin, off the async runtime.
 pub async fn verify_file(pinned: &'static Pinned, path: &Path) -> Result<()> {
     let path = path.to_path_buf();
-    tokio::task::spawn_blocking(move || {
-        use std::io::Read;
-        let mut file = std::fs::File::open(&path)?;
-        let mut check = Check::new();
-        let mut buffer = vec![0u8; 1 << 20];
-        loop {
-            let read = file.read(&mut buffer)?;
-            if read == 0 {
-                break;
-            }
-            check.update(&buffer[..read]);
+    tokio::task::spawn_blocking(move || hash_file(pinned, &path)).await?
+}
+
+/// Checks a model on disk against its pin before native code parses it.
+///
+/// The pin used to be checked only while a model downloaded, so a file from
+/// before the pins, or one replaced on disk since, went to the parser on the
+/// strength of its length alone. Hashing a multi-gigabyte model on every load
+/// would be slow, so a match leaves a stamp beside the file — its length,
+/// modification time and hash — and a file that still fits its stamp is taken
+/// as checked. A mismatch deletes the file, as a failed download does, so the
+/// model shows as needing a download again.
+pub async fn verify_before_load(pinned: &'static Pinned, path: &Path) -> Result<()> {
+    let path = path.to_path_buf();
+    tokio::task::spawn_blocking(move || check_before_load(pinned, &path).map(|_| ())).await?
+}
+
+/// How [`check_before_load`] satisfied itself.
+#[derive(Debug, PartialEq, Eq)]
+enum Checked {
+    /// The file fits the stamp a previous check left.
+    Stamped,
+    /// The file was read and hashed.
+    Hashed,
+}
+
+fn check_before_load(pinned: &Pinned, path: &Path) -> Result<Checked> {
+    let metadata = std::fs::metadata(path)?;
+    if let Some(expected) = stamp_for(&metadata, pinned.sha256) {
+        if std::fs::read_to_string(stamp_path(path)).ok().as_deref() == Some(expected.as_str()) {
+            return Ok(Checked::Stamped);
         }
-        check.finish(pinned, &path)
-    })
-    .await?
+    }
+    log::info!("Checking {} against its pinned SHA-256 before loading it", pinned.file);
+    hash_file(pinned, path)?;
+    Ok(Checked::Hashed)
+}
+
+/// Hashes `path` against its pin; see [`Check::finish`].
+fn hash_file(pinned: &Pinned, path: &Path) -> Result<()> {
+    use std::io::Read;
+    let mut file = std::fs::File::open(path)?;
+    let mut check = Check::new();
+    let mut buffer = vec![0u8; 1 << 20];
+    loop {
+        let read = file.read(&mut buffer)?;
+        if read == 0 {
+            break;
+        }
+        check.update(&buffer[..read]);
+    }
+    drop(file);
+    check.finish(pinned, path)
+}
+
+/// Where the stamp of a checked file lives: beside it, `<file>.verified`.
+fn stamp_path(path: &Path) -> PathBuf {
+    let mut stamp = path.as_os_str().to_owned();
+    stamp.push(".verified");
+    PathBuf::from(stamp)
+}
+
+/// What the stamp of a file with this metadata and hash says.
+fn stamp_for(metadata: &std::fs::Metadata, sha256: &str) -> Option<String> {
+    let modified = metadata.modified().ok()?.duration_since(UNIX_EPOCH).ok()?;
+    Some(format!("{} {} {}", metadata.len(), modified.as_nanos(), sha256))
+}
+
+/// Records that `path` matched its pin. A failure only costs a re-hash on the
+/// next load, so it is logged rather than returned.
+fn write_stamp(pinned: &Pinned, path: &Path) {
+    let stamp = std::fs::metadata(path)
+        .ok()
+        .and_then(|metadata| stamp_for(&metadata, pinned.sha256));
+    let written = match stamp {
+        Some(stamp) => std::fs::write(stamp_path(path), stamp).map_err(|error| error.to_string()),
+        None => Err("no modification time".to_string()),
+    };
+    if let Err(error) = written {
+        log::warn!("Could not record that {} was checked: {}", pinned.file, error);
+    }
 }
 
 #[cfg(test)]
@@ -222,5 +294,70 @@ mod tests {
         let error = bad.finish(&HELLO, &path).unwrap_err();
         assert!(error.to_string().contains("integrity check"));
         assert!(!path.exists());
+    }
+
+    const HELLO: Pinned = Pinned {
+        file: "hello.txt",
+        size: 5,
+        sha256: "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824",
+    };
+
+    #[test]
+    fn a_model_on_disk_is_hashed_once_then_known_by_its_stamp() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("hello.txt");
+        std::fs::write(&path, b"hello").unwrap();
+
+        assert_eq!(check_before_load(&HELLO, &path).unwrap(), Checked::Hashed);
+        assert!(stamp_path(&path).exists());
+        assert_eq!(check_before_load(&HELLO, &path).unwrap(), Checked::Stamped);
+    }
+
+    #[test]
+    fn a_changed_byte_of_the_same_length_is_caught_and_deleted() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("hello.txt");
+        std::fs::write(&path, b"hello").unwrap();
+        check_before_load(&HELLO, &path).unwrap();
+
+        // Same length, new modification time: the stamp no longer fits.
+        std::fs::write(&path, b"hellO").unwrap();
+        let later = std::fs::metadata(&path).unwrap().modified().unwrap()
+            + std::time::Duration::from_secs(1);
+        std::fs::File::options()
+            .write(true)
+            .open(&path)
+            .unwrap()
+            .set_modified(later)
+            .unwrap();
+
+        let error = check_before_load(&HELLO, &path).unwrap_err();
+        assert!(error.to_string().contains("integrity check"));
+        assert!(!path.exists(), "a file that is not the model stayed where it is loaded from");
+        assert!(!stamp_path(&path).exists());
+    }
+
+    #[test]
+    fn a_stamp_for_another_file_is_not_trusted() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("hello.txt");
+        std::fs::write(&path, b"hello").unwrap();
+        // Right length and hash, wrong time: left by an earlier copy.
+        std::fs::write(stamp_path(&path), format!("5 1 {}", HELLO.sha256)).unwrap();
+
+        assert_eq!(check_before_load(&HELLO, &path).unwrap(), Checked::Hashed);
+        assert_eq!(check_before_load(&HELLO, &path).unwrap(), Checked::Stamped);
+    }
+
+    #[tokio::test]
+    async fn a_verified_download_is_stamped() {
+        static PINNED: Pinned = HELLO;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("hello.txt");
+        std::fs::write(&path, b"hello").unwrap();
+
+        verify_file(&PINNED, &path).await.unwrap();
+
+        assert_eq!(check_before_load(&HELLO, &path).unwrap(), Checked::Stamped);
     }
 }
