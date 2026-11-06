@@ -1055,6 +1055,7 @@ pub async fn diarize_meeting(
     method: Option<String>,
 ) -> Result<MeetingDiarizationResult, String> {
     let _busy = crate::security::session::busy();
+    let _meeting_work = crate::meeting_work::start(&meeting_id);
     let _operation_guard = operation_guard().await;
     let pool = state.db_manager.pool();
 

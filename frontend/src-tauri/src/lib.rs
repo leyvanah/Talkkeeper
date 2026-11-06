@@ -56,6 +56,7 @@ pub mod live_assistant;
 pub mod logging;
 pub mod meeting_notes;
 pub mod meeting_detection;
+pub mod meeting_work;
 pub mod microphone_access;
 pub mod minibar;
 pub mod minibar_dock;

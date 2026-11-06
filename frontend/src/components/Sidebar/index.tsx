@@ -63,6 +63,7 @@ import {
 } from '@/lib/panel-layout';
 import { ComplianceNotification } from '../ComplianceNotification';
 import { toastFailure } from '@/lib/failure';
+import { failureText } from '@/lib/failure-text';
 
 /** Which folders were left open, so the tree looks the same after a restart. */
 const EXPANDED_FOLDERS_KEY = 'meetily_expanded_folders';
@@ -114,6 +115,10 @@ function formatMeetingDate(d: Date): string {
 function formatMeetingTime(d: Date): string {
   return d.toLocaleString(undefined, { hour: 'numeric', minute: '2-digit' });
 }
+
+/** What `api_delete_meeting` answers while work runs on the meeting (meeting_work.rs). */
+const MEETING_BUSY = 'The meeting is being processed; wait for it to finish or cancel it';
+const isMeetingBusy = (error: unknown) => failureText(error) === MEETING_BUSY;
 
 /** What `api_delete_meeting` reports: the meeting is gone, its audio may not be. */
 interface DeleteMeetingResult {
@@ -386,7 +391,9 @@ const Sidebar: React.FC = () => {
         router.push('/');
       }
     } catch (error) {
-      toastFailure(t('deleteMeetingFailed'), 'meeting-delete', error);
+      toastFailure(t('deleteMeetingFailed'), 'meeting-delete', error, {
+        description: isMeetingBusy(error) ? t('deleteMeetingBusy') : undefined,
+      });
     }
   };
 
@@ -436,9 +443,15 @@ const Sidebar: React.FC = () => {
 
   const handleBulkDelete = async () => {
     let recordingsLeft = 0;
+    let busy = 0;
     const { deleted, failed } = await deleteEach(Array.from(selectedIds), async (id) => {
-      const result = await invoke<DeleteMeetingResult>('api_delete_meeting', { meetingId: id });
-      if (result?.recordingRemoved === false) recordingsLeft++;
+      try {
+        const result = await invoke<DeleteMeetingResult>('api_delete_meeting', { meetingId: id });
+        if (result?.recordingRemoved === false) recordingsLeft++;
+      } catch (error) {
+        if (isMeetingBusy(error)) busy++;
+        throw error;
+      }
     });
     // Only what actually went leaves the list; a meeting that failed is still
     // in the archive and must not look deleted.
@@ -460,7 +473,10 @@ const Sidebar: React.FC = () => {
     }
     if (failed.length > 0) {
       toast.error(t('failedToDeleteCount', { count: failed.length }), {
-        description: t('failedToDeleteKeptSelected'),
+        description:
+          busy > 0
+            ? `${t('deleteMeetingBusy')} ${t('failedToDeleteKeptSelected')}`
+            : t('failedToDeleteKeptSelected'),
       });
     }
     // The ones that failed stay selected, so it is plain which they are.
