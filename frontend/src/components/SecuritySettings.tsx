@@ -238,6 +238,8 @@ export function SecuritySettings() {
           return t('errorDecryptionIncomplete')
         case 'locked':
           return t('errorLocked')
+        case 'networkLocation':
+          return t('errorNetworkLocation')
         case 'fieldVerificationFailed':
           return t('errorFieldVerificationFailed')
         case 'fieldVerificationIncomplete':

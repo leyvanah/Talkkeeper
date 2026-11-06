@@ -143,9 +143,7 @@ export function RecordingSettings({ onSave }: RecordingSettingsProps) {
   useEffect(() => {
     const loadNotificationPref = async () => {
       try {
-        const { Store } = await import('@tauri-apps/plugin-store');
-        const store = await Store.load('preferences.json');
-        const show = await store.get<boolean>('show_recording_notification') ?? true;
+        const show = await invoke<boolean>('get_show_recording_notification');
         setShowRecordingNotification(show);
       } catch (error) {
         console.error('Failed to load notification preference:', error);
@@ -257,10 +255,7 @@ export function RecordingSettings({ onSave }: RecordingSettingsProps) {
   const handleNotificationToggle = async (enabled: boolean) => {
     try {
       setShowRecordingNotification(enabled);
-      const { Store } = await import('@tauri-apps/plugin-store');
-      const store = await Store.load('preferences.json');
-      await store.set('show_recording_notification', enabled);
-      await store.save();
+      await invoke('set_show_recording_notification', { show: enabled });
       toast.success(t('preferenceSaved'));
     } catch (error) {
       console.error('Failed to save notification preference:', error);

@@ -1568,6 +1568,7 @@
     "noticeRecordingsEncrypted": "The existing recordings are encrypted.",
     "errorDecryptionIncomplete": "Some recordings could not be decrypted, so the password was kept. Nothing was lost — see the application log.",
     "errorLocked": "The archive is locked. Enter your password and try again.",
+    "errorNetworkLocation": "The key backup cannot be saved to a network folder. Choose a folder on this computer.",
     "errorFieldVerificationFailed": "Some encrypted values could not be decrypted during the check, so the unencrypted copy of the database was kept. See the application log.",
     "errorFieldVerificationIncomplete": "The check of the encrypted values could not finish, so the unencrypted copy of the database was kept. Try again.",
     "errorBackupDeleteFailed": "The values are encrypted, but the unencrypted copy of the database could not be deleted. Delete it with the button below.",
@@ -1680,7 +1681,8 @@
     "libraryImportDone": "Package imported",
     "libraryImportPartial": "Package imported, but {failed, plural, one {# recording} other {# recordings}} could not be added — see the log",
     "libraryImportFailed": "Could not import the package",
-    "libraryImportFailedHint": "Check the package password. If it is right, the package may have been damaged in transfer."
+    "libraryImportFailedHint": "Check the package password. If it is right, the package may have been damaged in transfer.",
+    "libraryNetworkFolderHint": "Network folders cannot be used: choose a folder on this computer."
   },
   "notes": {
     "title": "Notes",

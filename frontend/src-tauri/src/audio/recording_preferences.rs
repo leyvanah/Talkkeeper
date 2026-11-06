@@ -744,6 +744,40 @@ pub async fn set_recording_preferences<R: Runtime>(
         .map_err(|e| format!("Failed to save recording preferences: {}", e))
 }
 
+/// The store the "recording notification" switch lives in. The window used to
+/// open it itself through the store plugin, which writes any path it is
+/// handed; now it asks for this one value by name, and the plugin is not
+/// open to the window at all.
+const WINDOW_PREFERENCES_STORE: &str = "preferences.json";
+const SHOW_RECORDING_NOTIFICATION: &str = "show_recording_notification";
+
+/// Whether the owner wants a notification when a recording starts (on by
+/// default).
+#[tauri::command]
+pub async fn get_show_recording_notification<R: Runtime>(app: AppHandle<R>) -> Result<bool, String> {
+    let store = app
+        .store(WINDOW_PREFERENCES_STORE)
+        .map_err(|error| format!("Could not open the preferences: {error}"))?;
+    Ok(store
+        .get(SHOW_RECORDING_NOTIFICATION)
+        .and_then(|value| value.as_bool())
+        .unwrap_or(true))
+}
+
+#[tauri::command]
+pub async fn set_show_recording_notification<R: Runtime>(
+    app: AppHandle<R>,
+    show: bool,
+) -> Result<(), String> {
+    let store = app
+        .store(WINDOW_PREFERENCES_STORE)
+        .map_err(|error| format!("Could not open the preferences: {error}"))?;
+    store.set(SHOW_RECORDING_NOTIFICATION, show);
+    store
+        .save()
+        .map_err(|error| format!("Could not save the preferences: {error}"))
+}
+
 #[tauri::command]
 pub async fn get_default_recordings_folder_path() -> Result<String, String> {
     let path = get_default_recordings_folder();

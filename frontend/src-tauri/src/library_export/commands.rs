@@ -88,8 +88,13 @@ fn refuse_when_locked() -> Result<(), String> {
     Ok(())
 }
 
+/// The folder the owner chose for an export or an import. Never a network
+/// share: the library would leave the computer over SMB (see
+/// [`crate::local_path`]). Checked before the folder is looked at, since
+/// looking at a share already reaches it.
 fn existing_folder(dir: &str) -> Result<PathBuf, String> {
     let path = PathBuf::from(dir.trim());
+    crate::local_path::refuse_network_location(&path)?;
     if !path.is_dir() {
         return Err("The chosen folder does not exist".to_string());
     }

@@ -41,6 +41,12 @@ const MIN_PASSWORD = 8
 
 /** `library_export/sealed.rs`: what opening a package with a wrong password returns. */
 const WRONG_PASSWORD_OR_DAMAGED = 'Wrong password, or the package is damaged'
+// The backend refuses network shares for exports and imports (local_path.rs).
+const NETWORK_FOLDER = 'Network folders are not allowed here: choose a folder on this computer'
+
+/** What the owner can do about a failure, when there is something. */
+const networkHint = (error: unknown, hint: string): string | undefined =>
+  failureText(error) === NETWORK_FOLDER ? hint : undefined
 
 interface ExportReport {
   folder: string
@@ -119,7 +125,9 @@ export function LibraryExportCard() {
         }),
       )
     } catch (error) {
-      toastFailure(t('libraryExportFailed'), 'library-export-readable', error)
+      toastFailure(t('libraryExportFailed'), 'library-export-readable', error, {
+        description: networkHint(error, t('libraryNetworkFolderHint')),
+      })
     } finally {
       setRunning(null)
     }
@@ -134,7 +142,9 @@ export function LibraryExportCard() {
     try {
       finishExport(await invoke<ExportReport>('export_library_package', { targetDir: target, password: chosen }))
     } catch (error) {
-      toastFailure(t('libraryExportFailed'), 'library-export-package', error)
+      toastFailure(t('libraryExportFailed'), 'library-export-package', error, {
+        description: networkHint(error, t('libraryNetworkFolderHint')),
+      })
     } finally {
       setRunning(null)
     }
@@ -161,7 +171,9 @@ export function LibraryExportCard() {
       // A mistyped password is the one reason the owner can act on; the
       // backend cannot tell it from a damaged package, so the hint names both.
       toastFailure(t('libraryImportFailed'), 'library-import', error, {
-        description: failureText(error) === WRONG_PASSWORD_OR_DAMAGED ? t('libraryImportFailedHint') : undefined,
+        description:
+          networkHint(error, t('libraryNetworkFolderHint')) ??
+          (failureText(error) === WRONG_PASSWORD_OR_DAMAGED ? t('libraryImportFailedHint') : undefined),
       })
     } finally {
       setRunning(null)
