@@ -157,10 +157,11 @@ export function SecurityProvider({ children }: { children: React.ReactNode }) {
     refresh()
   }, [refresh])
 
-  // The backend locks on its own after an idle timeout; the window finds out here.
+  // The backend locks on its own (idle timeout, sleep, a locked Windows
+  // session); the window finds out here. The backend log says which.
   useEffect(() => {
     const unlisten = listen('archive-locked', () => {
-      console.log('[Security] Archive locked after idle timeout')
+      console.log('[Security] Archive locked by the backend')
       refresh()
     })
     return () => {

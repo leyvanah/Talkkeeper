@@ -206,6 +206,10 @@ windows = { version = "0.61", features = [
     # icon, so the large one is created and sent here.
     "Win32_Graphics_Gdi",
     "Win32_UI_WindowsAndMessaging",
+    # Locking the archive when Windows locks the session (Win+L) or goes to
+    # sleep: a hidden window registered for session notifications.
+    "Win32_System_RemoteDesktop",
+    "Win32_System_LibraryLoader",
 ] }
 # The async-operation type the Hello call returns. `windows` depends on it but
 # does not re-export it, so naming the type needs the crate directly.
