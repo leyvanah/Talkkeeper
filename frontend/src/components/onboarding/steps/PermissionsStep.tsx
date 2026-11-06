@@ -120,7 +120,6 @@ export function PermissionsStep() {
       step={4}
       hideProgress={true}
       showNavigation={allPermissionsGranted}
-      canGoNext={allPermissionsGranted}
     >
       <div className="max-w-lg mx-auto space-y-6">
         {/* Permission Rows */}

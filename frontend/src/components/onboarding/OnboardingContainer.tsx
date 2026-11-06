@@ -1,42 +1,36 @@
 import React from 'react';
-import { useTranslations } from 'next-intl';
-import { ChevronLeft, ChevronRight } from 'lucide-react';
+import { ChevronLeft } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { ProgressIndicator } from './shared/ProgressIndicator';
-import { useOnboarding } from '@/contexts/OnboardingContext';
+import { ONBOARDING_STEPS, useOnboarding } from '@/contexts/OnboardingContext';
 import type { OnboardingContainerProps } from '@/types/onboarding';
 
+/**
+ * The frame of every onboarding screen: the step indicator, a "back" arrow,
+ * the title and the content.
+ *
+ * Forward is each screen's own button, and only that: an arrow beside it was
+ * a second way on, one step had both.
+ */
 export function OnboardingContainer({
   title,
   description,
   children,
   step,
-  totalSteps = 5,
   stepOffset = 0,
   hideProgress = false,
   className,
   showNavigation = false,
-  onNext,
   onPrevious,
-  canGoNext = true,
   canGoPrevious = true,
 }: OnboardingContainerProps) {
-  const t = useTranslations('onboarding');
-  const { goToStep, goPrevious, goNext } = useOnboarding();
+  const { goToStep, goPrevious } = useOnboarding();
 
   const handlePrevious = () => {
     if (onPrevious) {
       onPrevious();
     } else {
       goPrevious();
-    }
-  };
-
-  const handleNext = () => {
-    if (onNext) {
-      onNext();
-    } else {
-      goNext();
     }
   };
 
@@ -53,9 +47,9 @@ export function OnboardingContainer({
         {/* Progress Indicator with Navigation - Fixed */}
         {step && !hideProgress && (
           <div className="mb-2 relative flex-shrink-0">
-            {/* Navigation Buttons */}
+            {/* Back only; forward is the screen's own button */}
             {showNavigation && (
-              <div className="absolute top-1/2 -translate-y-1/2 left-0 right-0 flex justify-between pointer-events-none">
+              <div className="absolute top-1/2 -translate-y-1/2 left-0 right-0 flex justify-start pointer-events-none">
                 <button
                   onClick={handlePrevious}
                   disabled={!canGoPrevious || step === 1}
@@ -68,25 +62,11 @@ export function OnboardingContainer({
                 >
                   <ChevronLeft className="w-4 h-4" />
                 </button>
-
-                <button
-                  onClick={handleNext}
-                  disabled={!canGoNext}
-                  aria-label={step === totalSteps ? t('finish') : t('next')}
-                  className={cn(
-                    'pointer-events-auto w-8 h-8 rounded-full bg-white border border-gray-200 shadow-sm flex items-center justify-center transition-all duration-200',
-                    canGoNext
-                      ? 'hover:bg-gray-50 hover:shadow-md hover:scale-110 text-gray-700'
-                      : 'opacity-0 cursor-not-allowed'
-                  )}
-                >
-                  <ChevronRight className="w-4 h-4" />
-                </button>
               </div>
             )}
 
-            {/* Progress Indicator */}
-            <ProgressIndicator current={step} total={totalSteps} onStepClick={handleStepClick} />
+            {/* Progress Indicator: the same number of steps on every screen */}
+            <ProgressIndicator current={step} total={ONBOARDING_STEPS} onStepClick={handleStepClick} />
           </div>
         )}
 

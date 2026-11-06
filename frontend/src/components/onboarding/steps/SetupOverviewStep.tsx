@@ -12,7 +12,12 @@ import {
 import { OnboardingContainer } from '../OnboardingContainer';
 import { toastFailure } from '@/lib/failure';
 import { useOnboarding, type SttEngine } from '@/contexts/OnboardingContext';
-import { onboardingDownloadMb } from '@/lib/onboarding-summary-model';
+import {
+  getSummaryModelSizeLabel,
+  onboardingDownloadMb,
+  STT_ENGINE_TITLE,
+  summaryModelTitle,
+} from '@/lib/onboarding-summary-model';
 import { formatDiskSize } from '@/lib/disk-space';
 import { useDiskSpaceText } from '@/hooks/useDiskSpaceText';
 import {
@@ -35,6 +40,7 @@ export function SetupOverviewStep() {
     recommendedSummaryModel,
     summaryModelDownloaded,
   } = useOnboarding();
+  const summaryModel = selectedSummaryModel || recommendedSummaryModel;
   const [spaceError, setSpaceError] = useState<string | null>(null);
   const [checkingSpace, setCheckingSpace] = useState(false);
   // Both downloads, before the first one starts: recognition fetched only
@@ -43,10 +49,9 @@ export function SetupOverviewStep() {
     onboardingDownloadMb({
       sttEngine,
       sttDownloaded,
-      summaryModel: selectedSummaryModel || recommendedSummaryModel,
+      summaryModel,
       summaryDownloaded: summaryModelDownloaded,
     }) * 1024 * 1024;
-  const [isMac, setIsMac] = useState(false);
   const [whisperBackend, setWhisperBackend] = useState<WhisperBackend | null | undefined>();
 
   // Which recognition backend this build has. There is one build per
@@ -62,28 +67,19 @@ export function SetupOverviewStep() {
   };
 
   useEffect(() => {
-    const checkPlatform = async () => {
-      try {
-        const { platform } = await import('@tauri-apps/plugin-os');
-        setIsMac(platform() === 'macos');
-      } catch (e) {
-        setIsMac(navigator.userAgent.includes('Mac'));
-      }
-    };
-    checkPlatform();
     void checkAcceleration();
   }, []);
 
   const engines: { id: SttEngine; title: string; note: string; badge?: string }[] = [
     {
       id: 'gigaam',
-      title: 'GigaAM v3',
+      title: STT_ENGINE_TITLE.gigaam,
       note: t('setupEngineGigaamNote'),
       badge: t('setupEngineGigaamBadge'),
     },
     {
       id: 'parakeet',
-      title: 'Parakeet v3',
+      title: STT_ENGINE_TITLE.parakeet,
       note: t('setupEngineParakeetNote'),
     },
   ];
@@ -134,7 +130,6 @@ export function SetupOverviewStep() {
       title={t('setupTitle')}
       description={t('setupDescription')}
       step={2}
-      totalSteps={isMac ? 4 : 3}
     >
       <div className="flex flex-col items-center space-y-10">
         {/* Steps Card */}
@@ -179,21 +174,38 @@ export function SetupOverviewStep() {
             <p className="ml-1 text-xs text-gray-500">{t('setupEngineChangeLater')}</p>
           </div>
 
-          <h3 className="font-medium text-gray-900 flex items-center gap-2 ml-1">
-            {t('setupStepPrefix', { number: 2 })}  {t('setupStepSummarization')}
-            <TooltipProvider>
-              <Tooltip>
-                <TooltipTrigger asChild>
-                  <button className="text-gray-400 hover:text-gray-600">
-                    <Info className="w-4 h-4" />
-                  </button>
-                </TooltipTrigger>
-                <TooltipContent className="max-w-xs text-sm">
-                  {t('setupSummaryProvidersTooltip')}
-                </TooltipContent>
-              </Tooltip>
-            </TooltipProvider>
-          </h3>
+          <div className="space-y-1">
+            <h3 className="font-medium text-gray-900 flex items-center gap-2 ml-1">
+              {t('setupStepPrefix', { number: 2 })}  {t('setupStepSummarization')}
+              <TooltipProvider>
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <button
+                      type="button"
+                      aria-label={t('setupSummaryInfoLabel')}
+                      className="text-gray-400 hover:text-gray-600"
+                    >
+                      <Info className="w-4 h-4" />
+                    </button>
+                  </TooltipTrigger>
+                  <TooltipContent className="max-w-xs text-sm">
+                    {t('setupSummaryProvidersTooltip')}
+                  </TooltipContent>
+                </Tooltip>
+              </TooltipProvider>
+            </h3>
+            {/* Nothing to choose here: say what will be downloaded instead. */}
+            <p className="ml-1 text-sm text-gray-600">
+              {!summaryModel
+                ? t('dlSelectingModel')
+                : summaryModelDownloaded
+                  ? t('setupSummaryModelReady', { model: summaryModelTitle(summaryModel) })
+                  : t('setupSummaryModel', {
+                      model: summaryModelTitle(summaryModel),
+                      size: getSummaryModelSizeLabel(summaryModel),
+                    })}
+            </p>
+          </div>
         </div>
 
         <div className="w-full max-w-md rounded-lg border border-gray-200 bg-white p-4">

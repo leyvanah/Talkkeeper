@@ -1,5 +1,5 @@
 import React from 'react';
-import { Check, Lock, Download, CheckCircle2, BrainCircuit } from 'lucide-react';
+import { Check, Lock, Download, CheckCircle2, BrainCircuit, User, Mic } from 'lucide-react';
 
 interface ProgressIndicatorProps {
   current: number;
@@ -11,7 +11,8 @@ const stepIcons = [
   Lock,         // 1. Welcome
   BrainCircuit, // 2. Setup Overview
   Download,     // 3. Download Progress
-  // Step 4 (Permissions) doesn't need icon - auto-skipped on non-macOS
+  User,         // 4. Your name
+  Mic,          // 5. Sound check
 ];
 
 export function ProgressIndicator({ current, total, onStepClick }: ProgressIndicatorProps) {

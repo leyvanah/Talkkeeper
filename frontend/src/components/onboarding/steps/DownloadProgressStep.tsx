@@ -8,8 +8,13 @@ import { OnboardingContainer } from '../OnboardingContainer';
 import { useOnboarding } from '@/contexts/OnboardingContext';
 import { toast } from 'sonner';
 import { motion, AnimatePresence } from 'framer-motion';
-import { getSummaryModelSizeLabel, getSummaryModelSizeMb, STT_DOWNLOAD_MB } from '@/lib/onboarding-summary-model';
-import { GIGAAM_MODEL_NAME } from '@/components/GigaamModelManager';
+import {
+  getSummaryModelSizeLabel,
+  getSummaryModelSizeMb,
+  STT_DOWNLOAD_MB,
+  STT_ENGINE_TITLE,
+  summaryModelTitle,
+} from '@/lib/onboarding-summary-model';
 import { logFailure } from '@/lib/failure';
 import { failureText } from '@/lib/failure-text';
 import { useDiskSpaceText } from '@/hooks/useDiskSpaceText';
@@ -43,8 +48,6 @@ export function DownloadProgressStep() {
     startBackgroundDownloads,
     completeOnboarding,
   } = useOnboarding();
-
-  const [isMac, setIsMac] = useState(false);
 
   const [sttState, setSttState] = useState<DownloadState>({
     status: sttDownloaded ? 'completed' : 'waiting',
@@ -175,20 +178,6 @@ export function DownloadProgressStep() {
       logFailure('onboarding-summary-download', summaryState.error);
     }
   }, [summaryState.status, summaryState.error]);
-
-  // Detect platform on mount
-  useEffect(() => {
-    const checkPlatform = async () => {
-      try {
-        const { platform } = await import('@tauri-apps/plugin-os');
-        setIsMac(platform() === 'macos');
-      } catch (e) {
-        setIsMac(navigator.userAgent.includes('Mac'));
-      }
-    };
-
-    checkPlatform();
-  }, []);
 
   // Start the required transcription model immediately; summary readiness must not block it.
   useEffect(() => {
@@ -400,6 +389,17 @@ export function DownloadProgressStep() {
     }
   };
 
+  // The recognition download failed (no network, no space): onboarding goes on
+  // without the model, and the main screen says so until it is there
+  // (tasks#73). A recording does not start before then.
+  const continueWithoutEngine = () => {
+    toast.info(t('dlContinuingWithoutEngine'), {
+      description: t('dlContinuingWithoutEngineDescription'),
+      duration: 7000,
+    });
+    goNext();
+  };
+
   const handleContinue = async () => {
     // Verify actual model availability (catches state drift)
     try {
@@ -425,13 +425,16 @@ export function DownloadProgressStep() {
           progress: 100,
         }));
       } else if (!actuallyAvailable && sttState.status === 'error') {
-        toast.error(t('dlEngineRequired'), {
-          description: t('dlRetryBeforeContinuing'),
-        });
+        continueWithoutEngine();
         return;
       }
     } catch (error) {
       console.warn('[DownloadProgressStep] Failed to verify model:', error);
+      // Not "downloads continue in the background": this one failed.
+      if (sttState.status === 'error') {
+        continueWithoutEngine();
+        return;
+      }
     }
 
     // Check if downloads are complete for toast notification
@@ -545,7 +548,6 @@ export function DownloadProgressStep() {
       title={t('dlTitle')}
       description={t('dlDescription')}
       step={3}
-      totalSteps={isMac ? 4 : 3}
     >
       <div className="flex flex-col items-center space-y-6">
         {/* Download Cards */}
@@ -553,7 +555,7 @@ export function DownloadProgressStep() {
           {renderDownloadCard(
             1,
             t('dlTranscriptionEngine'),
-            sttEngine === 'gigaam' ? GIGAAM_MODEL_NAME : PARAKEET_MODEL,
+            STT_ENGINE_TITLE[sttEngine],
             <Mic className="w-5 h-5 text-gray-600" />,
             sttState,
             `~${STT_DOWNLOAD_MB[sttEngine]} MB`
@@ -562,7 +564,9 @@ export function DownloadProgressStep() {
           {renderDownloadCard(
             2,
             t('dlSummaryEngine'),
-            selectedSummaryModel || recommendedSummaryModel || t('dlSelectingModel'),
+            selectedSummaryModel || recommendedSummaryModel
+              ? summaryModelTitle(selectedSummaryModel || recommendedSummaryModel)
+              : t('dlSelectingModel'),
             <Sparkles className="w-5 h-5 text-gray-600" />,
             summaryState,
             getSummaryModelSizeLabel(selectedSummaryModel || recommendedSummaryModel),
@@ -595,13 +599,20 @@ export function DownloadProgressStep() {
 
         {/* Continue Button */}
         <div className="w-full max-w-xs">
+          {/* A failed recognition download (no network) does not hold
+              onboarding up; one still running does, and says so. */}
           <Button
             onClick={handleContinue}
-            disabled={!sttDownloaded || isCompleting}
+            disabled={(!sttDownloaded && sttState.status !== 'error') || isCompleting}
             className="w-full h-11 bg-gray-900 hover:bg-gray-800 text-white disabled:opacity-50 disabled:cursor-not-allowed"
           >
-            {(isCompleting || !sttDownloaded) ? (
-              <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+            {isCompleting || (!sttDownloaded && sttState.status !== 'error') ? (
+              <>
+                <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                {t('dlWaitingForEngineButton')}
+              </>
+            ) : !sttDownloaded ? (
+              t('dlContinueWithoutEngine')
             ) : (
               t('continue')
             )}

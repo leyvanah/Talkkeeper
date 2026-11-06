@@ -10,6 +10,13 @@ import { useAppLocale } from '@/contexts/LocaleContext';
 
 const PARAKEET_MODEL = 'parakeet-tdt-0.6b-v3-int8';
 
+/**
+ * Steps on the onboarding path, on every platform: Welcome, Setup, Download,
+ * Your name, Sound check. The progress indicator shows this many on every
+ * step; each screen used to pass its own number (3, 4 or 5).
+ */
+export const ONBOARDING_STEPS = 5;
+
 /** Live speech recognition engine offered during onboarding. */
 export type SttEngine = 'parakeet' | 'gigaam';
 
@@ -614,13 +621,13 @@ export function OnboardingProvider({ children }: { children: React.ReactNode }) 
   }, []);
 
   const goToStep = useCallback((step: number) => {
-    setCurrentStep(Math.max(1, Math.min(step, 5)));
+    setCurrentStep(Math.max(1, Math.min(step, ONBOARDING_STEPS)));
   }, []);
 
   const goNext = useCallback(() => {
     setCurrentStep((prev: number) => {
       const next = prev + 1;
-      return Math.min(next, 5);
+      return Math.min(next, ONBOARDING_STEPS);
     });
   }, []);
 

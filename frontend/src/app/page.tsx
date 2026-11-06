@@ -25,6 +25,7 @@ import { toast } from 'sonner';
 import { useRouter } from 'next/navigation';
 import { NotesEditor } from '@/components/Notes/NotesEditor';
 import { useRecordingNotes } from '@/hooks/useMeetingNotes';
+import { useSpeechModelMissing } from '@/hooks/useSpeechModelMissing';
 import { toastFailure } from '@/lib/failure';
 
 /** Whether the notes beside a recording are open; a habit, kept per machine. */
@@ -54,6 +55,8 @@ export default function Home() {
 
   // The owner's notes, written beside the recording and kept with it.
   const recordingNotes = useRecordingNotes(recordingState.isRecording);
+  // Onboarding without network lets the owner in without the model.
+  const speechModelMissing = useSpeechModelMissing();
   const [notesOpen, setNotesOpen] = useState(true);
   useEffect(() => {
     try {
@@ -242,6 +245,24 @@ export default function Home() {
         onOpenWithOtherKey={openWithOtherKey}
         onLoadPreview={loadMeetingTranscripts}
       />
+      {speechModelMissing && !recordingState.isRecording && (
+        <div
+          role="status"
+          className="flex items-center justify-between gap-3 border-b border-[var(--af-border)] bg-[var(--af-bg)] px-4 py-2 text-sm"
+        >
+          <span>{t('speechModelMissing')}</span>
+          <button
+            type="button"
+            onClick={() => {
+              sessionStorage.setItem('meetily-settings-tab', 'Transcriptionmodels');
+              router.push('/settings');
+            }}
+            className="shrink-0 rounded-md border border-[var(--af-border)] px-3 py-1 font-medium hover:bg-[var(--af-hover)]"
+          >
+            {t('speechModelMissingOpen')}
+          </button>
+        </div>
+      )}
       {recoverableMeetings.length > 0 && !showRecoveryDialog && !recordingState.isRecording && (
         <div
           role="status"
