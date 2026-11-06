@@ -9,10 +9,25 @@
 <p align="center"><b><a href="https://leyvanah.github.io/Talkkeeper/">Website</a></b> (in Russian) · <a href="https://github.com/leyvanah/Talkkeeper/releases/latest">Download for Windows</a></p>
 
 > **Коротко по-русски.** Talkkeeper записывает разговор, расшифровывает его и
-> помогает с заметками — целиком на вашем компьютере. Записи и текст зашифрованы
-> на диске, телеметрии нет, облако подключается только если вы сами этого
-> захотите. Интерфейс по умолчанию русский; распознавание русской речи — GigaAM.
-> Сборка для Windows 10/11. Сайт: <https://leyvanah.github.io/Talkkeeper/>.
+> помогает с заметками — целиком на вашем компьютере. С паролем записи и текст
+> зашифрованы на диске, телеметрии нет, облако подключается только если вы сами
+> этого захотите. Интерфейс по умолчанию русский; распознавание русской речи —
+> GigaAM. Сборка для Windows 10/11. Сайт: <https://leyvanah.github.io/Talkkeeper/>.
+>
+> **Установка.** Установщик — на странице
+> [Releases](https://github.com/leyvanah/Talkkeeper/releases). Он не подписан:
+> Windows покажет «Система Windows защитила ваш компьютер» — «Подробнее» →
+> «Выполнить в любом случае». Проверить, что файл тот самый: в PowerShell
+> `Get-FileHash <файл>` должен показать хеш из описания релиза, а
+> `gh attestation verify` — подтвердить, что файл собран здесь, на машинах
+> GitHub, из коммита, указанного в описании релиза (команда целиком — в
+> разделе [Install](#install)). До первой настоящей записи задайте пароль:
+> **Настройки → Защита**. Приложение само не проверяет обновления — новую
+> версию ставьте поверх старой, данные и ключи сохраняются. Перед обновлением
+> или удалением остановите запись и выйдите из программы через значок в трее:
+> установщик закрывает её, и идущая запись пропадёт. При удалении программы папка с записями (по умолчанию
+> `Музыка\meetily-recordings`) остаётся на диске. Подробнее — разделы
+> [Install](#install) и [What goes over the network](#what-goes-over-the-network).
 
 Talkkeeper is developed by [leyvanah](https://github.com/leyvanah). It started
 life as a fork of an open-source meeting recorder and has since been reshaped
@@ -27,9 +42,9 @@ the machine, and the software should behave accordingly.**
 - **Encrypted at rest.** With a password set, every recording and every line of
   text in the database is sealed. A copied disk, a stray backup or a synced folder
   gives nobody the conversation.
-- **No telemetry, no silent network.** Analytics are switched off in the code,
-  update checks are off unless you turn them on, and nothing is sent anywhere
-  without you asking for it.
+- **No telemetry, no silent network.** There is no analytics code, the app never
+  checks for updates by itself, and nothing is sent anywhere without you asking
+  for it.
 - **The person has the last word.** A transcript you corrected by hand stays
   corrected: recognising the recording again fills in around your edits instead
   of overwriting them.
@@ -73,20 +88,100 @@ the machine, and the software should behave accordingly.**
 
 ## Install
 
-Talkkeeper is built for **Windows 10/11 x64**. Builds of this fork will be
-published on this repository's [Releases](https://github.com/leyvanah/Talkkeeper/releases)
-page; until then, build from source (below).
+Talkkeeper is built for **Windows 10/11 x64**. Installers are published on this
+repository's [Releases](https://github.com/leyvanah/Talkkeeper/releases) page;
+you can also build from source (below).
 
-The installer is unsigned, so SmartScreen may show **Unknown publisher**.
-Updating over an existing installation keeps your data and your keys.
+1. Download `Talkkeeper_<version>_x64-setup.exe` from the release.
+2. Optional, but worth a minute: check that the file is the one that was
+   published. In PowerShell, in the folder with the file:
+
+   ```powershell
+   Get-FileHash .\Talkkeeper_<version>_x64-setup.exe
+   ```
+
+   The `Hash` it prints must match the SHA-256 in the release notes. With the
+   [GitHub CLI](https://cli.github.com/) (signed in with `gh auth login`) you
+   can also check where the file was built:
+
+   ```powershell
+   gh attestation verify .\Talkkeeper_<version>_x64-setup.exe --repo leyvanah/Talkkeeper --signer-workflow leyvanah/Talkkeeper/.github/workflows/release-signed.yml --format json --jq '.[].verificationResult.signature.certificate | {sourceRepositoryRef, sourceRepositoryDigest}'
+   ```
+
+   It succeeds (exit code 0) only for a file built by this repository's release
+   workflow on GitHub's machines, and prints the branch and the commit the file
+   was built from. A changed file, or one built anywhere else, fails with an
+   error. A test build from another branch passes too, so compare
+   `sourceRepositoryDigest` with the commit given in the release notes.
+3. Run it. The installer is **not code-signed**, so Windows SmartScreen shows
+   *Windows protected your PC* and *Unknown publisher*: choose **More info →
+   Run anyway**. It installs for the current user only, into
+   `%LOCALAPPDATA%\Talkkeeper` by default, without administrator rights, and
+   sets up Microsoft's Visual C++ runtime if needed. If you pick a folder that
+   already holds something, it installs into a `Talkkeeper` folder inside it.
+4. On first start, pick a speech recognition model. It is downloaded once (see
+   [What goes over the network](#what-goes-over-the-network)); after that,
+   recording and recognition work without a connection.
+5. Set a password in **Settings → Security** before the first real recording:
+   until then recordings and text are stored unencrypted.
+
+**Updating.** The app does not look for new versions. **Settings → About →
+Releases on GitHub** opens the releases page in your browser. Run the new
+installer over the old one: your meetings, recordings, models and keys are kept.
+
+**Before updating or uninstalling**, stop any recording, then quit Talkkeeper
+from its tray icon (closing the window only hides it there). The installer
+closes a running app once you press OK in its message, the uninstaller without
+asking (also when an update is set to *Uninstall before installing*); either
+way a recording still in progress is lost.
+
+**Uninstalling.** Use *Settings → Apps → Installed apps → Talkkeeper* in Windows.
+
+- By default only the program is removed; the data folder stays.
+- The tick box *Also delete meetings, models, and local data* deletes the data
+  folder as well, but only one the installer created; a `data` folder that was
+  there before is left alone. If a password is set, the uninstaller first asks
+  separately, then asks where to save a copy of the key
+  (`Documents\Talkkeeper-key-backup` by default), under a new name each time.
+  If that copy could not be written, the data folder is kept; the app's
+  settings outside the data folder (language, theme, recording settings such as
+  the recordings folder) are removed either way.
+- **The recordings folder is never deleted by the uninstaller.** Delete it
+  yourself if you no longer need it. Recordings made without a password are
+  ordinary audio files that anyone with access to the disk can play.
 
 ## Your data
 
 | Data | Where |
 | --- | --- |
-| Database, models, templates, keystore | the app's data folder beside the installation |
-| Recordings | `Music\meetily-recordings` by default; change it in **Settings → General** |
+| Database, models, templates, keystore | `data\` in the installation folder (`%LOCALAPPDATA%\Talkkeeper\data`) |
+| Recordings | `Music\meetily-recordings` by default; change it in **Settings → Recording** |
 | Recording folders | named by an opaque identifier, so a folder listing says nothing about who or what |
+
+## What goes over the network
+
+**Settings → Security → This computer only** is on by default. While it is on,
+summaries, the assistant and speech recognition talk only to programs on this
+computer; a request to a cloud provider or another machine is refused before it
+is made. Requests to programs on this computer, such as Ollama, never go through
+a system proxy. Turning it off is a deliberate choice, and a cloud provider
+still needs your own key.
+
+The app itself connects only when you ask it to:
+
+- **Downloading a model** you chose: speech recognition and summary models from
+  Hugging Face; speaker models, and a fallback copy of one speech model, from
+  the GitHub releases of *Meetily - Actually Free*. Hugging Face sources are
+  pinned to a commit; every downloaded file, from either host, is checked
+  against its SHA-256 before use.
+- **Downloading a model through Ollama**, if you use it: the app asks Ollama on
+  this computer to fetch the model, and Ollama downloads it from its own
+  registry. That download is Ollama's: Talkkeeper neither pins nor checks it.
+- **A cloud summary or recognition provider**, if you turned off *This computer
+  only* and chose one. The meeting text goes to that provider.
+
+*Releases on GitHub* in **About** opens your browser; the app does not make
+that request. See [`PRIVACY_POLICY.md`](PRIVACY_POLICY.md) for the full policy.
 
 ## Password and keys
 
@@ -156,7 +251,8 @@ no patched SQLite is shipped.
 - Setting or removing the password converts the database in one transaction; a
   copy is written beside it once, before the first conversion.
 - Search runs in the application, because SQL cannot read a sealed column.
-- The log files do not print titles, transcript text or names.
+- The log files do not print titles, transcript or summary text, search
+  queries or speaker names. Setting a password clears the log.
 
 **What stays visible:** how many meetings there are, when each was recorded, how
 long it ran, which client it is filed under, and how many lines it has. What was
@@ -265,12 +361,15 @@ See [`ARCHITECTURE.md`](ARCHITECTURE.md) for implementation details.
 
 ## Code signing policy
 
-Free code signing provided by [SignPath.io](https://about.signpath.io/), certificate
-by [SignPath Foundation](https://signpath.org/).
-
-Windows releases are built from this repository by the
-[`Signed release`](.github/workflows/release-signed.yml) workflow on
-GitHub-hosted machines, and every release is approved by hand before it is signed.
+Releases are **not code-signed** for now. Windows releases are built from this
+repository by the [`Signed release`](.github/workflows/release-signed.yml)
+workflow on GitHub-hosted machines, started by hand; a locally built installer
+is never published. The SHA-256 of each installer is given in its release
+notes, and each published installer carries a GitHub build attestation that
+ties it to this workflow and the commit it was built from; [Install](#install)
+shows how to check both. Signing through
+[SignPath Foundation](https://signpath.org/) is planned once the app has more
+users; the workflow is ready for it.
 
 Team roles:
 
