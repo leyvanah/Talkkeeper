@@ -130,6 +130,24 @@ fn get_cached_model_path(app_data_dir: &PathBuf, model_name: &str) -> Result<Pat
 ///
 /// # Returns
 /// Generated text
+/// Takes the helper's turn (see [`SidecarManager::take_turn`]), or gives up
+/// waiting for it when the generation is cancelled first.
+pub(super) async fn wait_for_turn(
+    manager: &SidecarManager,
+    cancellation_token: Option<&CancellationToken>,
+) -> Result<tokio::sync::OwnedMutexGuard<()>> {
+    let Some(token) = cancellation_token else {
+        return Ok(manager.take_turn().await);
+    };
+    tokio::select! {
+        turn = manager.take_turn() => Ok(turn),
+        _ = token.cancelled() => {
+            log::info!("Generation cancelled while waiting for another one to finish");
+            Err(anyhow!("Generation cancelled by user"))
+        }
+    }
+}
+
 pub async fn generate_with_builtin(
     app_data_dir: &PathBuf,
     model_name: &str,
@@ -167,6 +185,11 @@ pub async fn generate_with_builtin(
         }
         global_manager.clone().unwrap()
     };
+
+    // One generation at a time on the helper. Stopping a summary that is
+    // still waiting here only takes it out of the queue; the summary being
+    // written meanwhile - another meeting's - goes on (tasks#147).
+    let _turn = wait_for_turn(&manager, cancellation_token).await?;
 
     // Mutual exclusion: free Whisper/Parakeet VRAM before loading the LLM
     // (skipped automatically if a recording is in progress).
@@ -214,7 +237,9 @@ pub async fn generate_with_builtin(
             }
             _ = token.cancelled() => {
                 log::warn!("Generation cancelled by user, shutting down sidecar");
-                // Shutdown sidecar to stop generation immediately
+                // Shutdown sidecar to stop generation immediately. This
+                // request holds the turn, so the generation cut is its own;
+                // the next one in the queue starts the helper again.
                 if let Err(e) = manager.shutdown().await {
                     log::error!("Failed to shutdown sidecar during cancellation: {}", e);
                 }
