@@ -421,6 +421,7 @@ pub async fn api_process_transcript<R: Runtime>(
     let process_id_clone = process_id.clone();
     tauri::async_runtime::spawn(async move {
         let _busy = crate::security::session::busy();
+        let _meeting_work = crate::meeting_work::start(&meeting_id_clone);
         // Loading a recognition model would otherwise stop the summary model
         // under it; see `audio::common::prepare_for_stt`.
         let _writing = crate::summary::summary_engine::client::summary_writing();

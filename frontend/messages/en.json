@@ -45,6 +45,7 @@
     "recordingLeftOnDisk": "But its audio recording could not be deleted and is still in the recordings folder. See the application log.",
     "recordingsLeftOnDiskCount": "The audio of {count, plural, one {# meeting} other {# meetings}} could not be deleted and is still in the recordings folder. See the application log.",
     "deleteMeetingFailed": "Failed to delete meeting",
+    "deleteMeetingBusy": "The meeting is being processed (transcription, speaker labelling or a summary). Wait for it to finish, or cancel it, and delete again.",
     "deletedCount": "Deleted {count, plural, one {# meeting} other {# meetings}}",
     "failedToDeleteCount": "Failed to delete {count, plural, one {# meeting} other {# meetings}}",
     "failedToDeleteKeptSelected": "They are still in the list and selected.",

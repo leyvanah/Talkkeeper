@@ -737,6 +737,10 @@ pub async fn api_delete_meeting<R: Runtime>(
 /// folder is read before anything is deleted, and a failure to read it stops
 /// the deletion: rows deleted without knowing where the recording lives would
 /// leave the audio on disk with nothing in the application pointing at it.
+///
+/// A meeting with work running on it (retranscription, diarization, a
+/// summary) is not deleted at all: the job holds its files open and may write
+/// the folder back (see [`crate::meeting_work`]).
 async fn delete_meeting_and_recording<F, Fut>(
     pool: &sqlx::SqlitePool,
     meeting_id: &str,
@@ -746,6 +750,7 @@ where
     F: FnOnce(String) -> Fut,
     Fut: std::future::Future<Output = Result<(), String>>,
 {
+    crate::meeting_work::refuse_while_running(meeting_id)?;
     let folder: Option<String> = sqlx::query_scalar("SELECT folder_path FROM meetings WHERE id = ?")
         .bind(meeting_id)
         .fetch_optional(pool)
@@ -1536,6 +1541,31 @@ mod tests {
         assert!(removed);
         assert!(meeting_is_gone(&pool).await);
         assert_eq!(asked.lock().unwrap().as_deref(), Some("rec-1"));
+    }
+
+    #[tokio::test]
+    async fn a_meeting_being_processed_is_not_deleted() {
+        let pool = archive_with(Some("rec-1")).await;
+        let called = Arc::new(Mutex::new(false));
+        let flag = called.clone();
+
+        let work = crate::meeting_work::start("m1");
+        let result = delete_meeting_and_recording(&pool, "m1", |_| async move {
+            *flag.lock().unwrap() = true;
+            Ok(())
+        })
+        .await;
+
+        assert_eq!(result.unwrap_err(), crate::meeting_work::MEETING_BUSY);
+        assert!(!meeting_is_gone(&pool).await, "the rows went while a job ran");
+        assert!(!*called.lock().unwrap(), "the folder went while a job ran");
+
+        // Once the job is over, the same delete goes through.
+        drop(work);
+        assert!(delete_meeting_and_recording(&pool, "m1", |_| async { Ok(()) })
+            .await
+            .unwrap());
+        assert!(meeting_is_gone(&pool).await);
     }
 
     #[tokio::test]

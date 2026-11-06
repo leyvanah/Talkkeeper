@@ -1348,6 +1348,7 @@ pub async fn start_retranscription_command<R: Runtime>(
     // Spawn the retranscription in a background task
     tauri::async_runtime::spawn(async move {
         let _busy = crate::security::session::busy();
+        let _meeting_work = crate::meeting_work::start(&meeting_id_clone);
         let _operation_guard = crate::diarization::operation_guard().await;
         let result = start_retranscription(
             guard,
