@@ -113,6 +113,7 @@ pub enum Text {
     TranscriptionComplete,
     TestNotification,
     ErrorTitle,
+    ArchiveLockedNoRecording,
 }
 
 pub fn text(key: Text) -> &'static str {
@@ -172,6 +173,8 @@ fn words(lang: Lang, key: Text) -> &'static str {
         }
         (Lang::Ru, ErrorTitle) => "Talkkeeper — ошибка",
         (Lang::En, ErrorTitle) => "Talkkeeper Error",
+        (Lang::Ru, ArchiveLockedNoRecording) => "Архив заблокирован — войдите, чтобы начать запись.",
+        (Lang::En, ArchiveLockedNoRecording) => "The archive is locked — sign in to start recording.",
     }
 }
 
@@ -203,7 +206,7 @@ mod tests {
             TrayPausing, TrayResume, TrayResuming, TrayStopping, TrayOpenWindow, TraySettings,
             TrayQuit, TooltipRecording, TooltipPaused, TooltipStopping, RecordingStarted,
             RecordingStopped, RecordingPaused, RecordingResumed, TranscriptionComplete,
-            TestNotification, ErrorTitle,
+            TestNotification, ErrorTitle, ArchiveLockedNoRecording,
         ] {
             let ru = words(Lang::Ru, key);
             let en = words(Lang::En, key);

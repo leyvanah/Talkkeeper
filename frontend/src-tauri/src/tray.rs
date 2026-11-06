@@ -116,6 +116,19 @@ fn toggle_recording_handler<R: Runtime>(app: &AppHandle<R>) {
                     update_tray_menu_async(&app_clone).await;
                 }
             }
+        } else if archive_refuses_a_recording(
+            crate::security::session::archive_is_protected(),
+            crate::security::session::archive_is_open(),
+        ) {
+            // The window behind its lock screen does not start a recording,
+            // and the tray used to sit in "Starting..." with the recording
+            // dot until the archive was opened - with a damaged key file,
+            // until the app restarted - while nothing was recorded. Refuse
+            // here and say why; the window, already in front, shows where to
+            // sign in.
+            log::info!("Tray: not starting a recording, the archive is locked");
+            update_tray_menu_async(&app_clone).await;
+            notify_archive_locked(&app_clone).await;
         } else {
             // Immediately show starting state
             set_tray_state(&app_clone, RecordingState::Starting);
@@ -214,6 +227,28 @@ fn stop_recording_handler<R: Runtime>(app: &AppHandle<R>) {
             }
         }
     });
+}
+
+/// A recording needs the archive's key when it has a password: locked - or
+/// with a key file that could not be read, which looks the same - it cannot
+/// start.
+fn archive_refuses_a_recording(protected: bool, open: bool) -> bool {
+    protected && !open
+}
+
+/// Why the tray did not start a recording. Under the "system errors"
+/// notification setting; the window, brought to the front, shows the lock
+/// screen either way.
+async fn notify_archive_locked<R: Runtime>(app: &AppHandle<R>) {
+    let state = app.state::<crate::notifications::commands::NotificationManagerState<R>>();
+    let manager = state.read().await;
+    let Some(manager) = manager.as_ref() else {
+        log::info!("Tray: no notification manager to say the archive is locked");
+        return;
+    };
+    if let Err(error) = manager.show_notification(crate::notifications::types::Notification::archive_locked()).await {
+        log::error!("Tray: could not show the archive-locked notification: {}", error);
+    }
 }
 
 /// The notification the window's Stop shows, so a stop from the tray is
@@ -517,5 +552,17 @@ pub(crate) fn focus_main_window<R: Runtime>(app: &AppHandle<R>) {
         }
     } else {
         log::warn!("Could not find main window");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::archive_refuses_a_recording;
+
+    #[test]
+    fn only_a_locked_archive_refuses_a_recording_from_the_tray() {
+        assert!(archive_refuses_a_recording(true, false), "locked, or a damaged key file");
+        assert!(!archive_refuses_a_recording(true, true), "open");
+        assert!(!archive_refuses_a_recording(false, false), "no password at all");
     }
 }

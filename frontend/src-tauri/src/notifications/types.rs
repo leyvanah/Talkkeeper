@@ -174,6 +174,16 @@ impl Notification {
         .with_timeout(NotificationTimeout::Never)
     }
 
+    /// "Start recording" from the tray while the archive is locked. Shown
+    /// under the "system errors" setting, but only for a few seconds: it is
+    /// an answer to a click, not an alarm.
+    pub fn archive_locked() -> Self {
+        let message = text(Text::ArchiveLockedNoRecording);
+        Notification::new("Talkkeeper", message, NotificationType::SystemError(message.to_string()))
+            .with_priority(NotificationPriority::High)
+            .with_timeout(NotificationTimeout::Seconds(6))
+    }
+
     pub fn test_notification() -> Self {
         Notification::new(
             "Talkkeeper",
