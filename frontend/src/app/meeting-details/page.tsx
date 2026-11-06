@@ -386,6 +386,7 @@ function MeetingDetailsContent() {
     meeting={meetingDetails}
     summaryData={meetingSummary}
     lastSummaryFailure={lastSummaryFailure}
+    onSummaryFailure={setLastSummaryFailure}
     isPostCallRecording={source === 'recording'}
     shouldAutoGenerate={shouldAutoGenerate}
     onAutoGenerateComplete={() => setShouldAutoGenerate(false)}

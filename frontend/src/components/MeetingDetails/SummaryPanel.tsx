@@ -277,8 +277,10 @@ export function SummaryPanel({
 
   // A failure in this visit is already explained by the generation hook; one
   // from before is explained here, with the backend's text for the tooltip.
+  // The hook's fallback, "Summary generation failed", only repeats the line
+  // it would follow, so a failure with no known cause shows that line alone.
   const failure: SummaryFailure | null = summaryError
-    ? { explained: summaryError, raw: null }
+    ? { explained: summaryError === t('genFailedGeneric') ? null : summaryError, raw: null }
     : lastSummaryFailure
       ? {
           explained: lastSummaryFailure.error ? summaryErrorText(lastSummaryFailure.error, t) : null,
